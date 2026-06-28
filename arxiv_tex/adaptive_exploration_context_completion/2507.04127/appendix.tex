@@ -1,0 +1,106 @@
+\appendix
+
+
+
+
+\section{Scoring-based Triplet Retrieval}
+\label{app:scoring}
+
+Alternatively to the the LLM-based traversal of \Secref{sec:agentic}, scoring-based retrieval performs top-$k$ triplet selection $\gT_q$ based on question-triplet semantic similarity, where $|\gT_q| = k$ and $k$ is a hyperparameter.
+
+
+\subsection{Text-based Retrieval}
+\label{app:text-retrieval}
+
+Text-based retrieval converts KG triplets $\gT$ into natural language statements and retrieves the top-$k$ triplets based on their semantic similarity to the question. Since computing embeddings for all triplets in real-world KGs is computationally prohibitive, we adopt an efficient embedding decomposition approach~\citep{li2024subgraph}. Specifically, we decompose triplets into head, relation, and tail components, pre-compute embeddings for individual nodes and relations, and aggregate their similarity scores with the question. Formally, this approach is expressed as: \begin{align} 
+\gT_q = \underset{(h,r,t) \in \gT}{\arg\text{top-}k}  \big( & \texttt{Embed}(q,h) + \nonumber \\ 
+& \texttt{Embed}(q,r) + \nonumber\\ 
+& \texttt{Embed}(q,t)\big), 
+\label{eq:text-retrieval}
+\end{align} 
+where \texttt{Embed} computes cosine similarity using pretrained embedding models~\citep{chen2024bge}, implemented efficiently via FAISS~\citep{douze2024faiss}\footnote{https://huggingface.co/} .
+
+
+\subsection{Graph Reranker}
+\label{app:graph-reranker}
+Given linked entities $\gE$ (\Secref{sec:linking}) and query $q$, the graph reranker module retrieves the top-$k$ most relevant triplets by reranking~\citep{gao2023retrieval} triplets within an $L$-hop neighborhood of $\gE$.
+
+First, we collect triplets $\gT^{(L)}$ within an $L$-hop distance from $\gE$ as
+\begin{equation}
+   \gT^{(L)} = \bigcup_{e \in \gE} \{(h,r,t) \in \gG_{e}^{(L)}\}
+\end{equation}
+where $\gG_{e}^{(L)}$ denotes the $L$-hop subgraph starting from entity $e$, and $L$ is a hyperparameter that defaults to $L=2$.
+
+Since the number of triplets $|\gT^{(L)}|$ can be excessively large in dense graphs, we implement a two-step pruning process: first filtering out triplets with irrelevant relations, then eliminating irrelevant triplets from the remaining set. We use a lightweight reranker model (\texttt{bge-reranker-base} cross-encoder~\citep{bge_embedding}) to maintain the most relevant relations
+\begin{equation}
+    \gR_{q} = \arg \text{top-}k_r\big(\texttt{Reranker}(q, \gR^{(L)})\big),
+\end{equation}
+which returns the top-$k_r$ most relevant relations to the question $q$, where $\gR^{(L)}$ is the relation set in $\gT^{(L)}$, $|\gR_{q}| = k_r$, and  $k_r = 20$ by default. 
+Next, we collect triplets  of which relations are present in $\gR_{q}$ t9 $\gT_r^{(L)} = \{(h,r,t) \in \gT^{(L)}: r \in \gR_{q}\} $, and prune them again to $\gT_q^{(L)}$ by
+\begin{equation}
+    \gT_q^{(L)} = \arg \text{top-}k_t\big(\texttt{Reranker}(q, \gT_r^{(L)})\big),
+\end{equation}
+where $k_t = 100$ by default. Here, we transform the triplets to a natural language description for the reranker with a predefined template.
+We use a more powerful reranker (\texttt{bge-reranker-v2-minicpm-layerwise} cross-encoder) to obtain the final top-$k$ most relevant triplets $\gT_q$ as
+\begin{equation}
+    \gT_{q} = \arg \text{top-}k \big(\texttt{Reranker2}(q, \gT_q^{(L)})\big),
+\end{equation}
+where $|\gT_{q}| = k$.
+
+
+
+
+
+
+
+
+\input{tables/appendix/datasets}
+
+\section{Dataset Statistics}
+\label{app:data}
+
+We provide the dataset statistics in Table~\ref{tab:datasets}, along with question examples from each benchmark.
+
+\section{Other Evaluation Metrics}
+
+\textbf{LLMaaJ}. We conducted preliminary evaluations using LLM-as-a-Judge (LLMaaJ) with Claude-Sonnet-3.5 on the WebQSP-IH and CWQ-IH datasets. The results show an alignment between the Hit@1 and LLMaaJ metrics for \byokg: 86.6\% Hit@1 vs. 86.8\% LLMaaJ on WebQSP-IH, and 73.6\% Hit@1 vs. 74.2\% LLMaaJ on CWQ-IH.
+
+\textbf{F1}. F1 metric is suitable when question have multiple answers, common in KGQA tasks. \byokg is designed to support path-based retrieval and graph query execution, both of which naturally accommodate multiple valid answers. When \byokg successfully generates a correct path or Cypher query, it retrieves all associated anchor nodes, returning the full set of valid answers for the question.
+We conducted a preliminary experiment on the WebQSP-IH dataset using path retrieval. On the subset of questions where the generated paths are executable, we found that the F1 score closely aligns with the Hit@1 metric (80.2\% Hit@1 vs. 78.8\% F1).
+
+\section{Additional Experiments}
+\label{app:exps}
+\input{tables/appendix/refinement}
+\input{tables/latency}
+
+Table~\ref{tab:refine-results} presents the refinement effectiveness (\Secref{sec:refine}) of \byokg. In all cases presented, \byokg's  refinement improves the original graph retrieval methods considerably, highlighting the importance of iterative retrieval. To further analyze the impact of iteration count $T_R$, we ran additional experiments with 
+$T_R=3$. KG-Linker includes a self-termination mechanism (Algorithm~\ref{alg:refine}), allowing the retrieval process to stop early once sufficient information has been gathered. For WebQSP-IH, KG-Linker terminates after an average of 1.1 iterations, achieving the same performance as with 
+$T_R=2$. For CWQ-IH, it terminates after an average of 2.3 iterations, with a marginal performance gain (73.6\% for 
+$T_R=2$ vs. 73.9\% for 
+$T_R=3$). These findings suggest that the self-termination mechanism is effective in adapting to each query.
+
+
+
+Table~\ref{tab:latency-results} presents a latency analysis, showing that while \byokg introduces moderate overhead $2.4\times$ relative to the baseline), it achieves superior performance than agentic retrieval ($1.6\times$).
+
+\section{Case Studies}
+\label{app:case}
+\input{tables/appendix/cases}
+
+We provide case studies on how \byokg improves retrieval in Table~\ref{tab:cases}. In CronQuestion, \byokg retrieves the correct answer while Agentic retrieval does not. In CWQ, \byokg finds the answers step-by-step (1st vs. 2nd iteration), while path retrieval also find relevant information. In MedQA, different components of \byokg retrieve information relevant to the correct answer. In Northwind, \byokg generates an executable cypehr query while graph-query does not. 
+
+
+\section{Prompts}
+\subsection{\glink}
+\label{app:linker-prompt}
+\input{figures/appendix/entity_extraction}
+\input{figures/appendix/path_extraction}
+\input{figures/appendix/cypher_generation}
+\input{figures/appendix/answer_generation}
+The prompts per task employed in \glink (\Figref{fig:gconnector-prompt}) are presented in more details in \Figref{fig:linker-entity-prompt} (entity extraction), \Figref{fig:linker-path-prompt} (path extraction), \Figref{fig:linker-cypher-prompt} (graph query generation), and \Figref{fig:linker-answer-prompt} (answer generation).
+\input{figures/appendix/relation_prompt}
+\input{figures/appendix/entity_prompt}
+
+\subsection{Agentic Traversal}
+\label{app:agent-prompt}
+The prompts used in agentic KG traversal are presented in \Figref{fig:agent-relation-prompt} (relation selection) and \Figref{fig:agent-entity-prompt} (entity selection).

@@ -1,0 +1,244 @@
+% ============================================================
+\section{Failure Mode Analysis}
+\label{app:failure_mode}
+% ============================================================
+
+While \system\ consistently outperforms baselines
+across all configurations, it is not infallible.
+We identify three failure patterns that arise in
+practice.  Importantly, none stems from a design
+flaw in the calibration mechanism itself; rather,
+each is triggered by data-level conditions that
+degrade the quality of the signals $\Phi$ relies on.
+
+\subsection{Sparse Memory at Early Rounds}
+\label{app:failure_sparse}
+
+$\Phi$'s scoring passes evaluate $\Delta_t$ against
+the existing memory state $\mathcal{M}_t$.  When
+$\mathcal{M}_t$ contains very few entries (typically
+during the first $1$--$2$ debate rounds) the
+signals become unreliable.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Example: HotpotQA, MemBank, Round 1},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{Task}: \emph{``Which film came first,
+Interstellar or The Martian?''}\\[3pt]
+\textbf{$\Delta_t$}: ``Interstellar was released in
+2014. The Martian was released in 2015.
+Therefore Interstellar came first.''
+\hfill\textit{(correct)}\\[3pt]
+\textbf{$\rho_{\text{detect}}$}: Memory contains
+only 2 prior entries, both unrelated to these films.
+$\hat{r}_k = 0$ for all new vectors $\Rightarrow$
+$\rho_{\text{detect}} = 1.0$ (vacuously high).\\[3pt]
+\textbf{$\rho_{\text{align}}$}: Auditor queries
+return empty top-$k$ lists from the near-empty
+memory, so $d_{\text{RBO}} = 0.0$ for all auditors
+$\Rightarrow$ $\rho_{\text{align}} = 1.0$
+(vacuously high).\\[3pt]
+\textbf{Outcome}: $\rho = 1.0$.  The entry is
+committed with full trust, which happens to be
+correct here.  However, if $\Delta_t$ had been
+incorrect, $\Phi$ would have assigned the same score,
+because there is no existing evidence to calibrate
+against.
+\end{tcolorbox}
+
+\noindent
+\textbf{Analysis.}
+This is not a flaw in $\Phi$'s design but a
+data-availability issue: calibration requires a
+sufficiently populated $\mathcal{M}_t$ to produce
+meaningful scores.  The adaptive threshold $\rho^*$
+(running median of recent scores) partially mitigates
+this (early rounds produce uniformly high $\rho$
+values), so $\rho^*$ is also high, and only entries
+that are \emph{relatively} worse than their peers
+are filtered.  Nevertheless, the absolute quality of
+early-round gating is weaker than later rounds.
+Figure~\ref{fig:debate_rounds} confirms this: the
+performance gap between \system\ and Vanilla is
+smallest at round~1 and widens as $\mathcal{M}_t$
+grows.
+
+\subsection{Correlated Hallucinations Across Agents}
+\label{app:failure_correlated}
+
+$\rho_{\text{align}}$ measures whether $\Delta_t$
+disrupts retrieval relative to auditor queries.
+This signal loses power when multiple agents share
+the same misconception, because the auditors'
+queries are themselves biased toward the error.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Example: LoCoMo, G-Memory, Round 4},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{Context}: A long conversation mentions that
+``Alice moved to Boston in March'' (session 3) and
+``Alice started a new job in April'' (session 5).
+The ground truth is that the job is in Boston.\\[3pt]
+\textbf{$\Delta_t$}: ``Alice's new job is in
+New York.'' \hfill\textit{(incorrect)}\\[3pt]
+\textbf{What happens}: The backbone LLM
+(Qwen3-VL-8B-Instruct) has a parametric bias toward
+associating ``new job'' with ``New York'' (a frequent
+co-occurrence in pre-training data).  Four out of
+five auditors have the same bias in their reasoning
+context, so their intercepted queries are about
+``Alice's job in New York'' rather than ``Alice's
+job in Boston.''\\[3pt]
+\textbf{$\rho_{\text{align}}$}: Since $\Delta_t$
+is consistent with the majority of auditor queries,
+retrieval disruption is low $\Rightarrow$
+$\rho_{\text{align}} = 0.72$.\\[3pt]
+\textbf{$\rho_{\text{detect}}$}: The embedding of
+$\Delta_t$ does not cluster unusually densely
+$\Rightarrow$ $\rho_{\text{detect}} = 0.68$.\\[3pt]
+\textbf{Outcome}: $\rho = \sqrt{0.72 \times 0.68}
+= 0.70 > \rho^* = 0.55$.  \textbf{Committed
+(incorrectly).}
+\end{tcolorbox}
+
+\noindent
+\textbf{Analysis.}
+When agents share a correlated hallucination (often
+caused by the backbone LLM's parametric biases) the
+``crowd'' of auditor probes reinforces rather than
+challenges the error.  $\Phi$ is designed to detect
+manipulation by a \emph{minority} of agents
+(Section~\ref{sec:problem}), not systematic biases
+shared by the majority.  This failure mode is
+fundamentally a \emph{data quality} issue: the
+auditor probes are only as good as the diversity of
+the agents' reasoning.  Using heterogeneous backbones
+(e.g., mixing Qwen with Llama or Mistral) would
+reduce probe correlation, as different LLMs have
+different parametric biases.  We note that this
+failure mode also affects all baselines equally: LLM Audit and PPL Filter are even more susceptible,
+since they evaluate each entry independently without
+any crowd signal at all.
+
+\subsection{Ambiguous Graph Semantics}
+\label{app:failure_graph}
+
+The graph calibration passes ($s_{\text{local}}$,
+$s_{\text{path}}$) rely on the relation types and
+entity nodes extracted by the memory architecture.
+When the extraction produces ambiguous or
+inconsistent relation labels, calibration quality
+degrades.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Example: ALFWorld, AriGraph, Round 3},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{Existing edges in $\mathcal{M}_t$}:\\
+\texttt{(apple\_1, located\_in, fridge\_1)}\\
+\texttt{(fridge\_1, contains, apple\_1)}\\
+\texttt{(apple\_1, state, cool)}\\[3pt]
+\textbf{$\Delta_t$}: Agent extracts the edge
+\texttt{(apple\_1, inside, fridge\_1)}.
+\hfill\textit{(correct but redundant)}\\[3pt]
+\textbf{$s_{\text{local}}$}: The relation
+\texttt{inside} does not appear in
+$\mathcal{R}_{\text{compat}}(\texttt{located\_in})$
+because the co-occurrence statistics have not yet
+observed \texttt{inside} and \texttt{located\_in}
+together $\Rightarrow$ $s_{\text{local}} = 0.08$.\\[3pt]
+\textbf{$s_{\text{path}}$}: BFS from
+\texttt{apple\_1} to \texttt{fridge\_1} finds the
+existing path via \texttt{located\_in}, but
+$\text{comp}(\texttt{inside},
+\texttt{located\_in}) = 0.15 < \eta_t = 0.40$
+$\Rightarrow$ $s_{\text{path}} = 0.0$.\\[3pt]
+\textbf{Outcome}: $\rho_{\text{detect}} = 0.03$,
+leading to $\rho = 0.08 < \rho^*$.
+\textbf{Rejected (false positive).}
+\end{tcolorbox}
+
+\noindent
+\textbf{Analysis.}
+The edge \texttt{(apple\_1, inside, fridge\_1)} is
+semantically correct (\texttt{inside} and
+\texttt{located\_in} are near-synonyms) but $\Phi$
+rejects it because the compatibility relation
+$\mathcal{R}_{\text{compat}}$ is estimated from
+co-occurrence statistics in the graph, not from
+external semantic knowledge.  Early in the episode,
+when the graph is small, co-occurrence statistics
+are noisy and may not capture synonym relations.
+This is a data sparsity issue at the graph level,
+analogous to the embedding sparsity issue in
+\S\ref{app:failure_sparse}.
+
+This failure mode has limited practical impact for
+two reasons.  First, the rejected entry is
+\emph{redundant} (the same fact is already
+represented by \texttt{located\_in}) so rejecting
+it does not lose information.  Second, as the graph
+grows, $\mathcal{R}_{\text{compat}}$ accumulates
+more co-occurrence evidence and eventually learns
+that \texttt{inside} and \texttt{located\_in} are
+compatible, at which point similar edges would pass.
+The adaptive threshold $\eta_t$ (running median)
+also adjusts downward as more diverse relation types
+appear.
+
+\subsection{Summary}
+
+Table~\ref{tab:failure_summary} categorises the
+three failure modes by their root cause and
+mitigation.
+
+\begin{table}[h]
+\centering
+\caption{Summary of failure modes.  All three are
+  caused by data-level conditions, not by design
+  limitations of $\Phi$.}
+\label{tab:failure_summary}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{2.2cm}|p{2.5cm}|p{2.8cm}}
+\toprule
+\textbf{Failure mode} & \textbf{Root cause} &
+\textbf{Mitigation} \\
+\midrule
+Sparse memory (early rounds)
+  & Insufficient entries in $\mathcal{M}_t$ for
+    meaningful calibration
+  & Adaptive $\rho^*$ provides relative filtering;
+    impact diminishes as memory grows \\
+\midrule
+Correlated hallucinations
+  & Backbone LLM's parametric biases shared across
+    agents
+  & Heterogeneous backbones reduce probe correlation;
+    affects all methods equally \\
+\midrule
+Ambiguous graph semantics
+  & Noisy relation extraction from small graphs
+  & $\mathcal{R}_{\text{compat}}$ self-corrects as
+    graph grows; rejected entries are typically
+    redundant \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+Across all three failure modes, we observe a common
+pattern: $\Phi$'s calibration quality is bounded by
+the quality and diversity of the data in
+$\mathcal{M}_t$ and the agents' reasoning contexts.
+As memory accumulates and agent interactions
+diversify, all three failure modes naturally
+attenuate.  This is consistent with the debate-round
+analysis (Figure~\ref{fig:debate_rounds}), which
+shows \system's advantage growing over time as
+$\mathcal{M}_t$ becomes richer.

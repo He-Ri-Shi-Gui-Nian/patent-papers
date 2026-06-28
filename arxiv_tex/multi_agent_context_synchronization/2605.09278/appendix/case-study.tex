@@ -1,0 +1,299 @@
+% ============================================================
+\section{Case Study}
+\label{app:case_study}
+% ============================================================
+
+We present several examples illustrating how \system's
+calibration prevents memory corruption that baselines
+fail to catch.
+
+\textbf{Case 1: HotpotQA (MemBank + MacNet).}
+The task asks: \emph{``Were the directors of `Jaws'
+and `E.T.' born in the same city?''}  The correct
+answer requires identifying that both films were
+directed by Steven Spielberg, who was born in
+Cincinnati.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Round 2: Contributor $a_3$ proposes
+  $\Delta_t$}, fonttitle=\bfseries\small,
+  boxrule=0.4pt, arc=1.5mm]
+\small
+\texttt{memory\_entry}: ``The director of Jaws is
+Steven Spielberg (born in Cincinnati). The director
+of E.T. is \textbf{Tobe Hooper} (born in Austin).
+Therefore, they were born in different cities.''
+\end{tcolorbox}
+
+\noindent
+Agent $a_3$ hallucinates the director of E.T.\
+as Tobe Hooper (who directed \emph{Poltergeist}, a
+common confusion).  The entry is fluent and
+well-structured.
+
+\begin{tcolorbox}[colback=blue!3, colframe=blue!40,
+  title={\small \system\ calibration},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{$\rho_{\text{detect}}$}: The embedding of
+$\Delta_t$ lands in a dense region near existing
+Spielberg entries, yielding $\hat{r}_k / \bar{r} =
+1.42$ (above threshold) $\Rightarrow$
+$\rho_{\text{detect}} = 0.31$.\\[3pt]
+\textbf{$\rho_{\text{align}}$}: Auditor $a_1$'s
+intercepted query \texttt{``director of E.T.''}
+retrieves \texttt{``Steven Spielberg directed E.T.
+(1982)''} from $\mathcal{M}_t$. After merging
+$\Delta_t$, the top-1 result flips to the
+hallucinated entry, giving $d_{\text{RBO}} = 0.87$
+$\Rightarrow$ $\rho_{\text{align}} = 0.18$.\\[3pt]
+\textbf{Composite}: $\rho = \sqrt{0.31 \times 0.18}
+= 0.24 < \rho^* = 0.52$. \textbf{Rejected.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=red!3, colframe=red!40,
+  title={\small Baseline failures},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{LLM Audit}: The auxiliary LLM scores the
+entry as plausible (Tobe Hooper is a real director;
+the sentence is grammatically correct and
+well-reasoned). Score: 0.78 $\Rightarrow$
+\textbf{Committed.}  Subsequent agents retrieve the
+false entry and answer ``different cities.''\\[3pt]
+\textbf{PPL Filter}: Perplexity of the entry is 12.3,
+well below the adaptive threshold of 18.5 (the entry
+uses common vocabulary and natural syntax).
+$\Rightarrow$ \textbf{Committed.}  Same downstream
+error.
+\end{tcolorbox}
+
+\noindent
+\textbf{Why \system\ succeeds.}  The hallucinated
+entry is locally plausible: it names a real director,
+uses correct grammar, and provides a coherent
+reasoning chain.  LLM Audit and PPL Filter, which
+evaluate entries in isolation, cannot detect the
+error.  \system\ catches it through
+$\rho_{\text{align}}$: the entry contradicts existing
+evidence in $\mathcal{M}_t$ (``Spielberg directed
+E.T.''), causing a large retrieval disruption when
+an auditor's intercepted query surfaces the conflict.
+The geometric mean $\sqrt{\rho_{\text{detect}} \cdot
+\rho_{\text{align}}}$ ensures the entry is rejected
+even though $\rho_{\text{detect}}$ alone ($0.31$) is
+ambiguous.
+
+\textbf{Case 2: ALFWorld (G-Memory + MacNet).}
+The task is: \emph{``Put a hot mug in the cabinet.''}
+The correct action sequence is: find mug $\to$ pick
+up mug $\to$ go to microwave $\to$ heat mug $\to$ go
+to cabinet $\to$ put mug in cabinet.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Round 4: Contributor $a_5$ proposes
+  $\Delta_t$ (3 new edges)}, fonttitle=\bfseries\small,
+  boxrule=0.4pt, arc=1.5mm]
+\small
+\texttt{edge\_1}: (\texttt{mug\_1}, \texttt{located\_in},
+\texttt{cabinet\_2})\\
+\texttt{edge\_2}: (\texttt{mug\_1}, \texttt{state},
+\texttt{hot})\\
+\texttt{edge\_3}: (\texttt{cabinet\_2},
+\texttt{contains}, \texttt{mug\_1})
+\end{tcolorbox}
+
+\noindent
+Agent $a_5$ prematurely commits the goal state to
+memory \emph{before} executing the heating step.
+At this point in the episode, the mug has been picked
+up but not yet heated: the agent skipped the
+microwave step due to a planning error.
+
+\begin{tcolorbox}[colback=blue!3, colframe=blue!40,
+  title={\small \system\ calibration},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{$s_{\text{local}}$(edge\_2)}: The node
+\texttt{mug\_1} has existing edges
+\texttt{(mug\_1, state, picked\_up)} and
+\texttt{(mug\_1, located\_in, countertop\_1)}.
+Adding \texttt{(mug\_1, state, hot)} requires a
+\texttt{heat} action edge, which is absent
+$\Rightarrow$ $s_{\text{local}} = 0.12$.\\[3pt]
+\textbf{$s_{\text{path}}$(edge\_1)}: BFS from
+\texttt{mug\_1} to \texttt{cabinet\_2} finds no
+existing path (the mug is currently on the
+countertop, not near any cabinet) $\Rightarrow$
+$s_{\text{path}} = 0.0$.\\[3pt]
+\textbf{$\rho_{\text{detect}}$}: $\alpha_t \cdot
+0.12 + (1 - \alpha_t) \cdot 0.0 = 0.05$.\\[3pt]
+\textbf{$\rho_{\text{align}}$}: Auditor $a_2$ is
+walking path \texttt{countertop\_1 $\to$ mug\_1 $\to$
+picked\_up}. The sampled edge \texttt{edge\_1}
+(\texttt{mug\_1 $\to$ cabinet\_2}) is not reachable
+from $a_2$'s path endpoints via compatible
+relations $\Rightarrow$ $\rho_{\text{align}} = 0.21$.\\[3pt]
+\textbf{Composite}: $\rho = \sqrt{0.05 \times 0.21}
+= 0.10 < \rho^* = 0.48$. \textbf{Rejected.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=red!3, colframe=red!40,
+  title={\small Baseline failure},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{PPL Filter}: All three edges use standard
+relation types and entity names. Perplexity of the
+serialised edge text is 8.1 (below threshold 15.2).
+$\Rightarrow$ \textbf{All three edges committed.}\\[3pt]
+\textbf{Downstream effect}: Agents $a_1$--$a_4$ in
+subsequent rounds retrieve \texttt{(mug\_1, state,
+hot)} and \texttt{(mug\_1, located\_in, cabinet\_2)},
+concluding the task is already complete.  The episode
+terminates with \texttt{score = 0} because the mug
+was never actually heated.
+\end{tcolorbox}
+
+\noindent
+\textbf{Why \system\ succeeds.}  The premature goal
+state is \emph{locally valid}, wherein each edge uses
+correct entity names and relation types, and the
+serialised text has low perplexity.  PPL Filter
+passes all three edges.  \system\ catches the error
+through two complementary signals.  First,
+$s_{\text{local}}$ detects that the \texttt{state:
+hot} edge lacks a prerequisite \texttt{heat} action
+in \texttt{mug\_1}'s neighborhood.  Second,
+$s_{\text{path}}$ finds no existing path from
+\texttt{mug\_1} to \texttt{cabinet\_2}, revealing
+that the agent has not navigated to the cabinet.
+The combination produces $\rho = 0.10$, far below
+$\rho^*$, preventing the premature commit from
+corrupting downstream agents' planning.
+
+\textbf{Case 3: LoCoMo (MemBank + MacNet).}
+The task asks: \emph{``Where does Alice work now?''}
+based on a long conversation where session~3 mentions
+``Alice moved to Boston in March'' and session~7
+mentions ``Alice started a new job at a tech company
+in April.''  The correct answer is Boston.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Round 3: Contributor $a_2$ proposes
+  $\Delta_t$ with high confidence},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\texttt{memory\_entry}: ``Based on my analysis, Alice
+currently works in \textbf{San Francisco}.  Many tech
+companies are headquartered in San Francisco, and
+Alice started a new job at a tech company, so this is
+the most likely location.  \textbf{Confidence: very
+high.}''
+\end{tcolorbox}
+
+\noindent
+Agent $a_2$ fabricates a plausible-sounding inference
+from its pre-trained parametric bias (``tech company''
+$\to$ ``San Francisco'').  The entry explicitly
+asserts high confidence, which influences other
+agents.
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!60,
+  title={\small Auditor behaviour: sycophantic
+  agreement}, fonttitle=\bfseries\small,
+  boxrule=0.4pt, arc=1.5mm]
+\small
+\textbf{Auditor $a_1$}: Has previously retrieved
+``Alice moved to Boston'' but does not raise a
+conflict.  Its intercepted query is
+\texttt{``Alice job location''}.\\[3pt]
+\textbf{Auditors $a_3$--$a_5$}: Have no strong prior
+about Alice's location.  Their intercepted queries
+are generic: \texttt{``Alice new job''},
+\texttt{``Alice work''},
+\texttt{``Alice tech company''}.\\[3pt]
+\textbf{Result}: No auditor explicitly challenges
+$a_2$'s assertion.  Under a vote-based system,
+$\Delta_t$ would be committed unanimously.
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=blue!3, colframe=blue!40,
+  title={\small \system\ calibration},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{$\rho_{\text{detect}}$}: The embedding of
+``Alice works in San Francisco'' has moderate density
+in the memory manifold (tech/job entries are common)
+$\Rightarrow$ $\rho_{\text{detect}} = 0.61$.\\[3pt]
+\textbf{$\rho_{\text{align}}$}: \system\ samples
+$a_1$'s intercepted query \texttt{``Alice job
+location''} and computes top-$k$ retrieval before and
+after merging $\Delta_t$.
+\emph{Before}: top-1 is \texttt{``Alice moved to
+Boston in March''}.
+\emph{After}: top-1 flips to \texttt{``Alice works in
+San Francisco''}, displacing the Boston entry.
+$d_{\text{RBO}} = 0.82$.\\
+For $a_3$'s query \texttt{``Alice new job''}: top-1
+was \texttt{``Alice started a new job at a tech
+company in April''}, which does not mention a city.
+After merging, top-1 becomes the San Francisco entry.
+$d_{\text{RBO}} = 0.71$.\\[3pt]
+Weighted average: $\rho_{\text{align}} = 1 - 0.74 =
+0.26$.\\[3pt]
+\textbf{Composite}: $\rho = \sqrt{0.61 \times 0.26}
+= 0.40 < \rho^* = 0.51$. \textbf{Rejected.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=red!3, colframe=red!40,
+  title={\small Why baselines fail},
+  fonttitle=\bfseries\small, boxrule=0.4pt,
+  arc=1.5mm]
+\small
+\textbf{LLM Audit}: The auxiliary LLM reads
+``tech company $\to$ San Francisco'' as a plausible
+inference.  The entry is well-structured, confident,
+and factually coherent in isolation.  Score: 0.81
+$\Rightarrow$ \textbf{Committed.}\\[3pt]
+\textbf{PPL Filter}: Perplexity is 9.7 (well below
+threshold 17.3).  The entry uses common vocabulary
+and natural reasoning patterns.  $\Rightarrow$
+\textbf{Committed.}\\[3pt]
+\textbf{Vote-based audit}: All five auditors would
+approve---$a_1$ defers to $a_2$'s stated confidence
+despite holding conflicting evidence, and
+$a_3$--$a_5$ have no basis to disagree.
+$\Rightarrow$ \textbf{Committed unanimously.}
+\end{tcolorbox}
+
+\noindent
+\textbf{Why \system\ succeeds.}
+This case illustrates the core failure mode that
+\system\ is designed to prevent: a confident
+contributor overwhelms uncertain or sycophantic
+auditors, and the erroneous entry passes any
+vote-based or isolated check.  \system\ bypasses
+this failure entirely because it \emph{never uses
+auditor votes}.  Instead, it intercepts $a_1$'s
+query \texttt{``Alice job location''} and
+\emph{independently} measures how $\Delta_t$
+disrupts retrieval.  The key signal is that $a_1$'s
+existing top-$k$ already contains ``Alice moved to
+Boston''---a direct contradiction that $\Delta_t$
+displaces.  This contradiction is invisible to
+LLM~Audit (which never sees $\mathcal{M}_t$),
+invisible to PPL~Filter (which only checks surface
+statistics), and invisible to vote-based schemes
+(because $a_1$ chose not to raise it).  \system's
+$\rho_{\text{align}}$ detects it structurally:
+high $d_{\text{RBO}}$ on $a_1$'s query means the
+proposed entry overwrites existing evidence, which
+is precisely the manipulation pattern the zero-trust
+game is designed to catch
+(Section~\ref{ssec:equilibrium}).

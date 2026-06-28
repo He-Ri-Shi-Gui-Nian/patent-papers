@@ -1,0 +1,366 @@
+\pdfoutput=1
+
+\documentclass[11pt]{article}
+
+\usepackage[preprint]{acl}
+
+\usepackage{times}
+\usepackage{latexsym}
+
+\usepackage[T1]{fontenc}
+
+\usepackage[utf8]{inputenc}
+
+\usepackage{microtype}
+
+\usepackage{inconsolata}
+
+\usepackage{graphicx}
+
+
+\usepackage{tcolorbox}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{xspace}
+\usepackage{pifont}
+\usepackage{threeparttable}
+\usepackage{tikz}
+\usepackage{graphicx} 
+\usepackage{pgfplots}
+\usepackage{multirow}
+\RequirePackage{algorithm}
+\RequirePackage{algorithmic}
+\RequirePackage{algorithm}
+\RequirePackage{algorithmic}
+\usepackage{enumitem}
+\usepackage{wrapfig}
+\usepackage{subcaption}
+
+
+\usepackage{enumitem}
+\usepackage{amsthm}
+\usepackage{wrapfig}
+\usepackage{xcolor,colortbl}
+\usepackage{amssymb}
+\usepackage{subcaption}
+
+
+\newcommand{\byokg}{\textsc{ByoKG-RAG}\xspace}
+\newcommand{\glink}{KG-Linker\xspace}
+
+\input{math_commands}
+
+\title{
+\byokg: Multi-Strategy Graph Retrieval for Knowledge Graph Question Answering}
+
+
+
+\author{
+ \textbf{Costas Mavromatis\textsuperscript{1}},
+ \textbf{Soji Adeshina\textsuperscript{1}},
+ \textbf{Vassilis N. Ioannidis\textsuperscript{1}},
+ \textbf{Zhen Han\textsuperscript{1}},
+\\
+ \textbf{Qi Zhu\textsuperscript{1}},
+ \textbf{Ian Robinson\textsuperscript{1}},
+ \textbf{Bryan Thompson\textsuperscript{1}},
+ \textbf{Huzefa Rangwala\textsuperscript{1}},
+ \textbf{George Karypis\textsuperscript{1}}
+\\
+ \textsuperscript{1}Amazon
+\\
+ \small{
+   \textbf{Correspondence:} \href{mailto:email@domain}{mavrok@amazon.com}
+ }
+}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+Knowledge graph question answering (KGQA) presents significant challenges due to the structural and semantic variations across input graphs. Existing works rely on Large Language Model (LLM) agents for graph traversal and retrieval; an approach that is sensitive to traversal initialization, as it is prone to entity linking errors and may not generalize well to custom (``bring-your-own'') KGs. We introduce \byokg, a framework that enhances KGQA by synergistically combining LLMs with specialized graph retrieval tools. In \byokg, LLMs generate critical graph artifacts (question entities, candidate answers, reasoning paths, and OpenCypher queries), and graph tools link these artifacts to the KG and retrieve relevant graph context. The retrieved context enables the LLM to iteratively refine its graph linking and retrieval, before final answer generation.
+ By retrieving context from different graph tools, \byokg offers a more general and robust solution for QA over custom KGs.
+ Through experiments on five benchmarks spanning diverse KG types, we demonstrate that \byokg outperforms the second-best graph retrieval method by 4.5\% points while showing better generalization to custom KGs. \byokg framework is open-sourced at \url{https://github.com/awslabs/graphrag-toolkit}.
+ 
+
+
+
+\end{abstract}
+
+\section{Introduction}
+
+
+
+
+
+
+
+Knowledge Graphs (KGs)~\citep{vrandevcic2014wikidata} are databases that store information and data in structured format, typically using entities and relationships. The structure of KGs enables efficient data updates and complex queries, making them valuable assets for enterprises across multiple sectors~\citep{ozsoy2024text2cypher}. In the Large Language Model (LLM) era~\citep{brown2020language,bommasani2021opportunities}, KGs have been widely adapted as external information sources to ground LLM responses to semantics present in the graph and to solve KG Question Answering (KGQA) tasks~\citep{pan2024unifying}. 
+In  KGQA,  one prevalent approach is retrieval-augmented generation (RAG) that leverages graph retrieval methods to fetch relevant information from the KG as additional input for the LLM~\citep{lewis2020retrieval,peng2024graph}.
+
+\begin{figure}[tb]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/byokg_intro.pdf}
+    \caption{While agentic retrieval (top) may be prone to linking and retrieval errors, e.g., for aggregation queries, \byokg (middle) employs multi-strategy linking and retrieval, along with iterative refinement, to mitigate these errors. As a result, \byokg improves KGQA performance across diverse KGs (bottom). }
+    \label{fig:byokg-intro}
+    \vspace{-0.2in}
+
+\end{figure}
+
+
+Adapting RAG to custom (``bring-your-own'')  KGs presents significant challenges as KGs vary not only in their schema design and semantic representations, but also in how information must be retrieved, e.g., via complex aggregation queries.
+Current approaches~\citep{mavromatis2024gnn,luo2024rog,jiang2024kg} use graph retrievers specifically fine-tuned for a particular KG, but require training data, which may not be available due to privacy concerns or practical limitations. 
+Alternative methods utilize LLMs to traverse the graph step-by-step until arriving at the answers or until termination in an agentic fashion~\citep{jiang2023structgpt,sun2024tog}. These methods leverage the inherent knowledge within LLMs to handle `bring-your-own' scenarios, where training data is unavailable for KGQA. However, such approaches have limitations: Extracting knowledge from custom KGs may require operations like performing complex graph aggregations which is not readily obtained via LLM-based traversal.
+
+
+\begin{figure*}[tb]
+    \centering
+    \includegraphics[width=1\linewidth]{figures/byokg_next.pdf}
+    \caption{\byokg prompts an LLM to generate critical graph artifacts for graph linking. Then, a toolkit of graph retrievers operates on the underlying graph and, based on the generated artifacts and query's context, retrieves relevant information for final KGQA or linking refinement.}
+    \label{fig:byokg-rag}
+\end{figure*}
+
+In this work, we introduce \textbf{\byokg}, a framework that addresses these challenges through multi-strategy graph retrieval. Our key insight is to leverage LLMs as a \glink that generates diverse graph artifacts - from entity mentions to executable queries. These artifacts are then processed by specialized graph tools, each designed to handle different retrieval scenarios effectively.
+Given a user query and the  KG schema\footnote{The schema typically expresses the node and relation types present in the graph, among other properties, and is available in common graph databases via \texttt{graph.get\_schema()} functionality.}, the LLM is prompted to generate relevant graph artifacts, such as question and answer entities, relationship types, and executable graph queries. Subsequently, the graph toolkit takes these artifacts as input, links them to the KG and retrieves relevant graph context through  different retrieval methods. The retrieved context can be used in an iterative fashion so that \glink improves the accuracy of both the generated artifacts and subsequent retrieval, before final KGQA.
+Compared to agentic retrieval, which is restricted to the graph context that can be explored by the agent, \byokg retrieves context from multiple linking and retrieval tools, including agentic retrieval, to enhance KGQA accuracy; see \Figref{fig:byokg-intro} for a high-level comparison.  
+
+Our contributions are summarized below:
+\begin{itemize}
+    \item We introduce \byokg, a novel framework that improves KGQA across custom KGs via multi-strategy graph linking and retrieval. 
+    \item \byokg outperforms the best graph retrieval method by 4.5\% points in KGQA across four KGs. In addition, \byokg achieves on-par or better performance than state-of-the-art KG agents on key benchmarks. 
+    \item Our thorough evaluation across KGs with diverse semantics demonstrates the benefits of multi-strategy graph retrieval, and we open-source our toolkit.
+    
+\end{itemize}
+
+
+
+\section{Background \& Related Work}
+
+
+\subsection{Problem Formulation}
+
+Consider a Knowledge Graph (KG) $\gG$ containing facts represented as triplets $(h,r,t)$, where $h$ represents the head entity, $t$ represents the tail entity, and $r$ denotes the relation between them. The task of KGQA involves extracting a set of entities $\gA \in \gG$ that correctly answer a given natural language question $q$. Since KGs typically contain millions of facts and nodes, retrieval-augmented generation  retrieves relevant graph context $\gC$, which is then used by LLM to generate the answers as $\gA = \text{LLM}(q, \gC)$. To retrieve $\gC$, common approaches combine entity linking techniques~\citep{yih2015semantic} to identify question entities ${e_q}$ with graph retrieval methods that extract relevant information within an $L$-hop neighborhood of these entities~\citep{sun-etal-2018-open}.
+
+
+
+
+
+\subsection{Related Works}
+\textbf{KGQA Methods}. 
+KGQA methods involve either fine-tuning or zero-shot/few-shot inference. Fine-tuning methods encompass several approaches. Some methods focus on parsing the given question into a logical form query executable over the KG ~\citep{sun2020sparqa,lan-jiang-2020-query,ye-etal-2022-rng,gu-etal-2023-dont,agarwal2023bring}. Others involve training specialized neural networks for handling KG data~\citep{sun-etal-2018-open,he2021improving, mavromatis2022rearev,jiang2023unikgqa}. Recent approaches aim at teaching LLMs to better understand KG semantics~\citep{luo2024rog,ao2025lightprof} or instructing the LLM on how to explore the graph~\citep{jiang2024kg,luo2025kbqao1,zhang2025learning}. 
+Zero-shot and few-shot methods typically  rely on LLMs' knowledge and combine them with appropriate graph tools for graph traversal~\citep{jiang2023structgpt, kim2023kggpt, sun2024tog,dong-2025-effiqa,sui2024fidelis,jo2025r2}, graph querying~\citep{li2023binder,wang2023knowledge}, and constrained decoding on KGs~\citep{luo2024graph,li2024decoding}. 
+\byokg is a novel framework for improving graph linking and retrieval in ``bring-your-own-KG'' (zero-shot) settings.
+
+
+
+
+
+
+
+\textbf{Graph RAG}. Graph RAG refers to the framework of using context originating from a graph or a KG within RAG~\citep{edge2024local,he2024gretriever,mavromatis2024gnn}. Recently, methods~\citep{gutierrez2024hipporag,guo2024lightrag,luo2025gfm,chen2025pathrag} use LLMs for constructing KGs out of raw data to improve information retrieval  with graph information ~\citep{lee2024hybgrag,sarmah2024hybridrag}, beyond text-based semantics. With the increased deployment of KG-powered applications~\citep{peng2024graph}, \byokg offers a multi-strategy toolkit for retrieving task-specific graph information.
+
+
+\textbf{Graph Linking}. 
+Entity linking~\citep{yadav2019survey} in KGs maps mentions in natural language to their corresponding graph entities and has been extensively studied in KGQA systems~\citep{yih2015semantic,oliya2021end,li2020efficient}. 
+Beyond entity linking, some approaches focus on mapping natural language questions to graph paths~\citep{saxena2020improving,shi2021transfernet} and subgraphs via graph query execution~\citep{lan2020query,gu2022arcaneqa,shu2022tiara,yu2022decaf,gao2025promoting}, typically employing training data for more accurate linking and retrieval.
+\glink extends these ideas by combining multiple linking approaches with LLM capabilities, enabling robust graph retrieval without task-specific training data.
+
+
+
+\section{Bring-Your-Own-KG RAG (\byokg)}
+\label{sec:kglink}
+
+In \byokg, we address the challenges of graph retrieval in custom KGs through a novel two-stage approach. First, we prompt an LLM (\glink) to generate graph artifacts - including entities, paths, and queries - that serve as anchor points for graph retrieval. Then, these artifacts are processed by specialized graph tools that link them to the underlying KG and retrieve relevant context through multiple complementary methods. This synergistic combination of LLM-generated artifacts and specialized graph tools enables more robust retrieval across custom KGs. 
+The overall framework is  illustrated in \Figref{fig:byokg-rag}.
+
+\subsection{\glink}
+The key insight behind \glink is to leverage LLMs' natural language understanding to generate diverse graph artifacts that can be linked to the KG through specialized tools.
+In \glink, given an input a user query, a graph schema, and an optional graph context, an LLM is  prompted  to generate graph artifacts, including question entities, draft answers, useful relation paths, and graph queries. The LLM's prompt includes four main tasks: (1) Entity Extraction,  (2) Relation Path Identification, and (3) Graph Query Generation, and (4): Draft Answer Generation.  
+
+The instruction template $p$ is presented in \Figref{fig:gconnector-prompt}, where \texttt{\{question\}} is the input user query, \texttt{\{schema\}} is the KG schema, including node types and relations, and \texttt{\{graph\_context\}} denotes the graph context retrieved from intermediate steps (if available). \texttt{\{openCypher\}} may be replaced with other graph query languages.
+Based on the LLM prompt, the generated graph artifacts are the following,
+\begin{align}
+    \tilde{\gE} &= \text{LLM(task = ``Entity Extraction'')}, \\
+    \tilde{\gP} &= \text{LLM(task = ``Path Identification'')}, \\
+    \tilde{\gQ} &= \text{LLM(task = ``Graph Query Generation'')}, \\
+    \tilde{\gA} &= \text{LLM(task = ``Draft Answering'')},
+\end{align}
+where $\tilde{\gE}$, $ \tilde{\gP}$, $\tilde{\gQ}$, and $\tilde{\gA}$ denote the generated entities, paths, graph query, and answer entities, respectively. Note that those graph artifacts can be generated by a single LLM call.
+
+\input{figures/llm_connector}
+
+
+\subsection{Entity Linking}
+\label{sec:linking}
+Entity linking is fundamental to our framework, enabling graph traversal from accurate graph anchor points. Entity linking maps LLM-generated entities $\hat{\gE} = \tilde{\gE}  \cup \tilde{\gA}$ to actual entities $\gE$ in the graph, e.g., ``\textit{Jamaican people}'' $\mapsto$ ``\textit{Jamaica}''.
+We use the textual descriptions of the entities to perform entity linking and implement two complementary linking methods: fuzzy-string matching, and node embedding linking. 
+
+For each entity $\hat{e}_i \in \hat{\gE}$, we retrieve top-$m$ entities present in the graph based on string match scores, node embedding similarity, or the union of both, where $m$ is a hyperparameter, defaulting to $m=3$. By default, we use string-based matching$\footnote{https://github.com/seatgeek/thefuzz}$ and the encoder used for transforming entity names into embeddings is \texttt{bge-m3}~\citep{chen2024bge}. After performing entity linking, we obtain the linked entity set $\gE$, where $|\gE| \leq m \cdot |\hat{\gE}|$  when using single linking method, or $|\gE| \leq 2 m \cdot |\hat{\gE}|$ when using both string and embedding-based linking.
+
+\subsection{Path Retrieval}
+Path retrieval executes and validates the LLM-generated paths while discovering alternative routes in the graph that can lead to the required information.
+Formally, it takes as input the generated chain of relations $\tilde{\gP}$, executes them on the graph, and returns the resulting intermediate entities along with the relation paths. We implement a \texttt{follow-paths} functionality which takes as input a sequence of relations $\tilde{\gP}$ and source entities $\gE$ and returns the executable paths $\gP_f \subset \tilde{\gP}$ over the graph $\gG$ as
+\begin{equation}
+    \gP_f = \text{Follow-Paths}(\tilde{\gP}, \gE, \gG).
+\end{equation}
+We perform a breadth-first search starting from the source entities, exploring the graph until all valid paths generated by KG-Linker are found or no further valid paths remain. As source entities, we use the linked entities $\gE$ of the entity linking step~\Secref{sec:linking}.
+
+In addition, we retrieve the shortest paths connecting the extracted entities $\gE$ and candidate answers $\gA$ generated by the LLM (if non-empty). We implement a \texttt{shortest-paths} functionality which returns
+\begin{equation}
+    \gP_s = \text{Shortest-Paths}(\gE, \gA, \gG)
+\end{equation}
+based on the candidate entities and answers, using the Dijkstra algorithm\footnote{https://en.wikipedia.org/wiki/Dijkstra\%27s\_algorithm}. Path retrieval returns
+\begin{equation}
+    \gP = \gP_f \cup \gP_s.
+\end{equation}
+
+\subsection{Graph Query Retrieval}
+Graph query retrieval translates natural language into executable graph operations, crucial for handling complex queries in enterprise KGs.
+As a default, we prompt the LLM to generate a query $\tilde{Q}$ in openCypher language which is common in graph databases like Neptune and Neo4j. This step requires the graph to be stored in a format that supports the execution of the generated graph language queries. We implement  an \texttt{execute-query} functionality which takes as input a query $\tilde{Q}$ and returns 
+\begin{equation}
+    \gQ_a = \text{Execute-Query}(\tilde{Q}, \gG),
+\end{equation}
+which are the query execution results over $\gG$.
+
+
+\subsection{Triplet  Retrieval}
+\label{sec:agentic}
+Triplet retrieval complements the above methods by capturing relevant facts that might be missed through direct retrieval. Triplet retrieval operates on the triplet-level granularity of the KG, where triplets $\gT$ are formatted as $(h,r,t)$ and express natural language descriptions as ``\textit{head $\xrightarrow[]{}$ relation $\xrightarrow[]{}$ tail}'', e.g., ``\textit{Jamaica →
+language\_spoken → English}''. We implement two approaches: agentic retrieval for step-by-step exploration, and scoring-based retrieval for more efficient semantic matching.
+
+
+\input{algorithms/agentic}
+\input{algorithms/refine}
+
+
+
+\textbf{Agentic Retrieval.}
+Given the linked entities $\gE$ and the query $q$, agentic  retrieval  fetches the relevant triplets $\gT_q$, using an LLM that iteratively traverses the KG based on $q$. We provide the algorithm in Algorithm~\ref{alg:agentic} and the LLM prompts are in Appendix~\ref{app:agent-prompt}.
+
+
+At each iteration $t$, we obtain one-hop candidate triplets $\gT_q^t$ and prompt the LLM to  select  the most relevant relations $\gR_q^t$. The triplets are filtered based on the LLM's selection and subsequently we prompt the LLM to select the most relevant entities  $\gE_q^t$ to explore next. The process is terminated until self-termination (empty entity set to explore) or until we reach the maximum agentic iterations $T_A$, defaulting to $T_A=3$. The agent returns the graph context $\gT_q$ explored until termination. 
+
+
+\textbf{Scoring-based  Retrieval.}
+Alternative to LLM-based traversal, scoring-based retrieval performs top-$k$ triplet selection $\gT_q$ based on question-triplet semantic similarity, where $|\gT_q| = k$ and $k$ is a hyperparameter. In Appendix~\ref{app:scoring}, we present an implementation that uses reranker models to select relevant triplets within $L$-hop distance from linked entities. Our framework  also supports a more efficient embedding-based retrieval approach.
+
+
+
+
+ 
+
+
+
+
+\subsection{Iterative Process}
+\label{sec:refine}
+\byokg's iterative process enables progressive refinement of retrieved context. Each iteration combines information from multiple retrieval methods, allowing the LLM to generate more accurate artifacts based on accumulated context.
+\byokg's iterative process is presented Algorithm~\ref{alg:refine}.  After graph linking and retrieval, we collect the retrieved context 
+\begin{equation}
+    \gC = \gT_q \cup \gP_f \cup \gP_s \cup \gQ_a,
+\end{equation}
+and verbalize it with predefined templates. As shown in Algorithm~\ref{alg:refine}, the context $\gC$ is used as input to \glink's prompt (\Figref{fig:gconnector-prompt}) to iteratively refine its generations $\tilde{\gE}$, $ \tilde{\gP}$, $\tilde{\gQ}$, and $\tilde{\gA}$.  
+By default, we have $T_R = 2$ iterations, but we include self-termination when the \glink does not provide new entities to link. Finally, we collect the graph context $\gC$ as input for the final KGQA task.
+
+
+
+\section{Experimental Setup}
+
+\subsection{Datasets \& Metrics} 
+
+We evaluate KGQA benchmarks spanning different backbone KGs. The statistics are provided in Appendix~\ref{app:data}.
+
+\textbf{WebQSP}~\citep{yih2015semantic} and ComplexWebQuestions (\textbf{CWQ})~\citep{talmor2018web} involve questions answerable over the Freebase KG~\citep{bollacker2008freebase}. WebQSP and CWQ contain 1,628 and 3,531 questions, respectively, and involve general knowledge about entities, requiring 1-2 hop and 1-4 hop KG traversal, respectively. WebQSP-IH and CWQ-IH refer to in-house subsets, containing 500 questions each from the original set. For pre-processing the Freebase KG, we follow standard steps from previous works~\citep{he2021improving}.
+
+
+
+\textbf{CronQuestions}~\citep{saxena2021question} are questions that require temporal reasoning over a KG subset of Wikidata, which contains temporal information~\citep{lacroix2020tensor}. As the tempral KG contains quadruples (\textit{head}, \textit{relation}, \textit{tail}, 
+ \textit{timestamp}), we convert them to triplets (\textit{head}, \textit{relation: timestamp}, \textit{tail}).  We focus on CronQuestions's subset of complex questions and we sample 200 per question type (before/after, first/last, time join) resulting into 600 questions. 
+
+\textbf{MedQA}~\citep{jin2021disease} consists of questions extracted from USMLE exams. We combine MedQA with Disease DrugBank KG~\citep{wishart2018drugbank}, following previous works~\citep{yasunaga2021qagnn}. Since the KG may not be relevant for all questions, we filter for questions whose answer candidates appear in the KG (via entity matching). Additionally, we remove MedQA's multiple choices from the LLM's context to increase the benchmark's difficulty.
+
+
+The \textbf{Text2cypher} dataset~\citep{ozsoy2024text2cypher} emulates text2cypher queries encountered in enterprise KGs, such as Northwind. As not all ground-truth queries are executable over the KGs provided in the benchmark, we filter for questions whose ground-truth answers can be retrieved from the graphs. %
+
+
+\input{tables/main_results}
+
+
+\textbf{Metrics.} Similar to previous works, we report the \textit{Hit} metric for WebQSP, CWQ, and CronQuestions, which measures if the LLM generates any correct answer via exact string matching. In MedQA, we report Hit@2 (\textit{H@2}) by augmenting the LLM generation based on the retrieved KG context with its original prediction, and measure if correct answers are found. For Text2cypher, we use Claude-Sonnet-3.5 as an LLM-as-a-judge (\textit{LLMaaJ}) that scores if the executed results match the ground-truth results (1.0: correct, 0.5: partially correct, 0.0: incorrect). We also evaluate retrieval accuracy by Recall@$k$ which measures if correct answers are found within top-$k$ retrieval results.
+
+\subsection{Competing Methods}
+
+\textbf{Baselines.}  As key baselines, we include components present within \byokg's framework. \textit{Vanilla LLM} is the approach of direct QA without KG context. \textit{LLM+graph-query} prompts the LLM to generate an executable graph query, and augments the LLM's direct predictions along with the execution results. For MedQA, we prompt the LLM to generate answers based on the execution results. \textit{Text-based Retrieval} (Appendix~\ref{app:text-retrieval}) retrieves top-$k$ triplets based on embedding similarity, while \textit{Graph Reranker} (Appendix~\ref{app:graph-reranker}) uses a reranker to select top-$k$ triplets within $L=2$ hops of linked entities. We use $k=50$ for Freebase, $k=10$ for the rest KGs.  \textit{Agentic Traversal} (Algorithm~\ref{alg:agentic}) is the LLM-based KG traversal and retrieval as described in Algorithm~\ref{alg:agentic}. Note that Graph Reranker and Agentic Traversal require entity linking as a first step, and we also incorporate entity linking in LLM+graph-query for better query generation.  We employ the same LLM across methods for downstream KGQA, after graph retrieval. 
+
+For a fair comparison, we focus on zero/few-shot methods and evaluate against established KG agents, including those using agentic traversal~\citep{jiang2023structgpt,sun2024tog,sui2024fidelis} and LLM-guided graph retrieval~\citep{li2023binder,dong-2025-effiqa}.
+
+\textbf{\byokg Implementation.} We implement \byokg with default hyperparameters as described within subsections of \Secref{sec:kglink}. We use entity linking with top-$m=3$ via combining string and embedding-based matching. When executing graph queries, we store the KG in NeptuneAnalytics\footnote{https://aws.amazon.com/neptune/} and query the database with openCypher\footnote{https://opencypher.org/}. We retrieve triplets via agentic-based retrieval, and we combine it with top-$k=10$ efficient text-based retrieval. We also present results for `\byokg (scoring)', which substitutes the agentic retrieval with the scoring-based approach in Appendix~\ref{app:graph-reranker}. For the LLMs used in \glink, we experiment with Claude-Sonnet-3.5, Claude-Haiku-3.5~\citep{claude}, and Llama-3.3-70B~\citep{grattafiori2024llama}, accessed via Bedrock API\footnote{https://aws.amazon.com/bedrock/}. 
+
+
+
+\section{Experimental Results}
+
+\subsection{Main Results}
+
+
+Table~\ref{tab:main-results} demonstrates the effectiveness of \byokg across diverse KGQA benchmarks. On the Freebase-KG benchmarks, \byokg achieves 86.6\% and 73.6\% Hit rates on WebQSP-IH and CWQ-IH respectively, outperforming the best baseline methods (86.2\% and 69.3\%). The improvement is also pronounced on specialized KGs: for temporal reasoning on CronQuestions, \byokg achieves a 65.5\% Hit rate, showing a significant gain over text-based retrieval (59.8\%). Similarly, on the medical domain MedQA benchmark, \byokg improves H@2 performance to 65.0\% compared to graph-query's 59.2\%. The framework's generalization capability is further demonstrated on enterprise KGs, where it achieves 64.9\% LLMaaJ score on Northwind, outperforming graph-query (55.3\%).
+Table~\ref{tab:main-results} also evaluates \byokg  using different LLM backbones. While Claude-Sonnet-3.5 performs best overall, the performance improvements are consistent across Claude-Haiku-3.5 and Llama-3.3-70B, indicating that our framework's benefits are robust across different LLMs. Using Claude-Sonnet-3.5, \byokg outperforms the strongest baseline across benchmarks (agentic retrieval for WebQSP-IH/CWQ-IH, text-based retrieval for CronQuestions, and graph querying for MedQA/Northwind) by \textbf{4.5\% points}, on average.
+
+
+
+
+
+\input{tables/freebase_oracle}
+
+In Table~\ref{tab:freebase-results}, we compare \byokg against state-of-the-art zero/few-shot KGQA methods on WebQSP and CWQ benchmarks. \byokg achieves the best performance on WebQSP (87.1\% Hit rate) and comparable results on CWQ (71.1\%), while requiring fewer LLM calls than competing methods. Notably,  \byokg's more efficient scoring-based variant maintains strong performance while using only 2-3 LLM calls.
+
+
+
+
+
+\subsection{Ablation Studies}
+
+Our studies in Tables~\ref{tab:main-results},~\ref{tab:linker-results},~\ref{tab:retrieval},  and~\ref{tab:latency-results} analyze \byokg's components. 
+
+
+
+Table~\ref{tab:main-results} reveals the effectiveness of different retrieval methods in \byokg across diverse KG types. On Freebase benchmarks (WebQSP-IH, CWQ-IH), agentic traversal shows strong performance (86.2\%, 69.3\% with Claude-Sonnet-3.5), indicating step-by-step graph exploration is well-suited for multi-hop queries. For temporal reasoning in CronQuestions, text-based retrieval proves effective (60.2\% Hit  with Llama-3.3-70B), suggesting temporal information can be captured through semantic matching. For the medical domain (MedQA), the combination of different retrieval methods in \byokg yields notable improvements (65.0\% H@2 with Claude-Sonnet-3.5). Most distinctively, on enterprise KGs (Northwind), the ability to generate and execute Cypher queries proves crucial, with \byokg achieving 64.9\% accuracy and LLM+graph-query achieving 55.3\% with Claude-Sonnet-3.5.
+
+\input{tables/ablation}
+
+
+\input{tables/entity_linking}
+
+
+
+Table~\ref{tab:linker-results} demonstrates the value of multi-strategy linking beyond entity matching alone. On CWQ-IH, \glink improves performance from 63.0\% to 71.6\% with scoring-based retrieval and from 69.3\% to 73.6\% with agentic retrieval. Similar gains are observed on CronQuestions. 
+\input{tables/case}
+Table~\ref{tab:retrieval} compares retrieval effectiveness across different methods. While supervised methods like RoG, SubgraphRAG, and GNN-RAG achieve Recall@10 scores of 54.5-64.1\% using substantial training data (27.6K-30.5K examples), \byokg performs competitively without any training data. \byokg's agentic variant achieves 70.5\% Recall@10 while retrieving 396 tokens in total, while its scoring-based variant achieves 60.6\% with 1,483 tokens, demonstrating effective zero-shot retrieval with moderate context sizes.
+
+
+Furthermore, we provide a case study on how \byokg iteratively improves its retrieval in Table~\ref{tab:case}. 
+
+Additional experiments and cases studies are in Appendix~\ref{app:exps} and~\ref{app:case}.
+
+
+
+\section{Conclusion}
+
+We introduced \byokg, a framework that enhances KGQA by combining LLMs with graph retrieval tools. Through extensive experiments across five benchmarks, we demonstrated that multi-strategy graph retrieval matters: \byokg leverages multiple retrieval methods to achieve superior performance (4.5 percentage points improvement over the strongest baselines) while generalizing effectively to KGs with diverse semantics. 
+
+
+
+\section*{Limitations}
+
+\byokg leverages diverse graph tools to retrieve context, enabling more effective KGQA across custom KGs. However, without proper context pruning mechanisms, the retrieved context may become too lengthy and potentially confuse LLMs with limited context-handling capabilities~\citep{liu2023lost}. Furthermore, our current work considers the KG as the sole source of external information. Future work could expand \byokg's capabilities by incorporating additional information sources, such as text databases~\citep{wu2024stark}, thereby enhancing the framework's applications.
+
+
+
+\bibliography{KGQA}
+
+
+
+\input{appendix}
+
+\end{document}

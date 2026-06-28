@@ -1,0 +1,72 @@
+Most prior RL-based RAG frameworks~\citep{jin2025search,luo2025graph} treat retrieval as an implicit intermediate step and optimize the policy primarily with \emph{sparse, trajectory-level} supervision.
+All step~(turn)-level decisions within a reasoning trace has the same learning signal, even though early retrieval choices often determine whether later steps are feasible. 
+This uniform credit assignment can over-reinforce trajectories that happen to end correctly despite weak or noisy retrieval, while under-training the specific retrieval actions that actually enabled successful reasoning.
+
+Moreover, existing methods typically do not model the \emph{quality of retrieved evidence} as part of the optimization signal. In knowledge-intensive tasks, a final answer accuracy depends not only on the model’s generation policy but also on whether the retrieved information is relevant and consistent with the evolving reasoning state. Ignoring this interaction makes policy updates fragile: the model may learn to rely on spurious correlations in retrieved contexts or fail to correct retrieval behavior when the evidence is irrelevant or misleading.
+
+To address these limitations, we propose a retrieval-aware \emph{step-level} policy optimization framework in which the agent iteratively generates sub-queries $\boldsymbol{q}_t$ and interacts with a knowledge hypergraph $\mathcal{G}_K$. 
+Our HyperGraphPro can be formulated as a stepwise reasoning process where the agent iteratively generates sub-queries $\boldsymbol{q}_t$ for each turn $t$ and interacts with a knowledge hypergraph.
+
+\noindent\textbf{Step progress-based dense rewarding.}
+We apply the dense reward scoring mechanism to reflect the step-level progress.
+We design the progress score~$r_t^{SP}$ at step $t$, which captures the certainty of reaching ground-truth outputs $y^*$ after generating the current intermediate step:
+\begin{equation}
+    r_t^{sp}
+    = P(y^* \mid s_{\le t}, \mathcal{G}_{\le t}) - P(y^* \mid s_{<t}, \mathcal{G}_{<t}).
+\end{equation}
+We estimate $P(y^* \mid s_t, \mathcal{G}_t)$ by sampling multiple output sequences conditioned on the current history and retrieved context and averaging the resulting outcome reward values.
+
+\noindent\textbf{Structure-consistent progressive dense rewarding.}
+While $r_t^{SP}$ quantifies the informativeness of the intermediate thoughts at current step $t$, it does not enforce \emph{graph-consistent} progress in multi-hop reasoning.
+We therefore introduce structural shaping terms that encourage progress along coherent chains in the knowledge hypergraph.
+
+Let $\mathcal{V}(\cdot)$ denote the set of entities (nodes) contained within a given text or hyperedge. We define two connectivity scores for the retrieved hyperedge $\mathcal{G}_t$.
+We design a structure-based reward as:
+\begin{equation}
+    r_t^{struct} = r_t^{con} + r_t^{ans},
+\end{equation}
+where the reward consists of the connectivity score and answer reachness score.
+% \paragraph{Entity connectiveness ($r_t^{con}$).}
+To ensure consistent multi-hop reasoning, we reward retrievals that share entities with the previously generated state $s_{<t}$ or previously retrieved contexts.
+This encourages the agent to extend existing reasoning chains rather than retrieving isolated facts:
+\begin{equation}
+    r_t^{con} = \frac{|\mathcal{V}(\mathcal{G}_t) \cap \mathcal{V}(s_{<t})|}{|\mathcal{V}(\mathcal{G}_t)|}
+\end{equation}
+
+% \paragraph{Target alignment ($r_t^{ans}$)}
+To guide the agent toward the solution, we provide a sparse reward when the retrieved hyperedge contains entities present in the ground truth answer $y^*$:
+\begin{equation}
+    r_t^{ans} = \frac{|\mathcal{V}(\mathcal{G}_t) \cap \mathcal{V}(y^*)|}{|\mathcal{V}(\mathcal{G}_t)|}
+\end{equation}
+
+\paragraph{Total Reward.}
+The final step-level reward $R_t$ is defined as:
+\begin{equation}
+    R_t = r_{\text{outcome}} +  \lambda_1 r_t^{sp} + \lambda_2  r_t^{struct},
+\end{equation}
+where $r_{\text{outcome}}$ is the reward value calculated by outcome reward functions~(\textit{e.g.}, format reward, accuracy reward).
+This yields step-level supervision that reflects both (i) \emph{informational progress} (uncertainty reduction) and (ii) \emph{structural progress} (coherent traversal of the knowledge hypergraph).
+
+
+\input{Tables_Figures_tex/temp_tab1}
+
+\noindent\textbf{Stepwise Policy Optimization.}
+Different from standard GRPO using sequence-level advantage $\hat{A}$, our HyperGraphPro is trained with stepwise group-relative policy optimization using step-level modulated advantage $\hat{\tilde{A}}$ as follows:
+\begin{equation}
+% \small
+\begin{split}
+&\mathcal{J}_{\mathrm{StepGRPO}}(\theta)
+= \mathbb{E}_{\left[\boldsymbol{x} \sim \mathcal{D}_X, \{\boldsymbol{y}^{(i)}\}_{i=1}^N \sim \pi_{\theta_{\text{old}}}(\cdot | \boldsymbol{x}; \mathcal{G}_K)\right]}
+\\
+&\left[
+\frac{1}{\left\lvert\boldsymbol{y}^{(i)}\right\rvert}\sum_{t=1}^{\left\lvert \boldsymbol{y}^{(i)}\right\rvert}
+\min\Big(
+\hat{r}_{t}^{(i)}\hat{\tilde{A}}^{(i)}_t, \operatorname{clip}\!\left(\hat{r}_{t}^{(i)},\, 1 - \epsilon, 1+\epsilon \right)\,\hat{\tilde{{A}}}^{(i)}_t
+\Big)
+\right] -\beta \mathbb{D}_{\text{KL}}\left(\pi_\theta \mid\mid \pi_{\text{ref}} \right),
+\end{split}
+\end{equation}
+where $\hat{\tilde{A}}^{(i)}_t$ denotes the stepwise modulated advantage at decoding step $t$ for trajectory $i$, enabling the policy to focus on local rewards associated with specific reasoning decisions.
+The stepwise modulated advantage differentiates the advantage value for each step, reflecting the quality of each reasoning step.
+This allows for more fine-grained credit assignment during training, especially beneficial in multi-hop or structured reasoning settings.
+By optimizing this step-level objective, HyperGraphPro provides stepwise dense policy gradients that help reasoning on complex reasoning tasks.

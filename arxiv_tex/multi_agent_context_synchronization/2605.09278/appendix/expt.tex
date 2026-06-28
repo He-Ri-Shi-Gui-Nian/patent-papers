@@ -1,0 +1,942 @@
+\section{Experiments Results Analysis}
+\label{app:expt}
+
+\subsection{Configuration}
+\label{app:configuration}
+
+\textbf{LLM backbone and implementation.}
+All experiments in Table~\ref{tab:main} use
+Qwen3-VL-8B-Instruct~\citep{qwen3technicalreport} as the
+agent backbone, deployed locally via Ollama with
+$N = 6$ agents per system.  We select Qwen3-VL-8B-Instruct because it achieves SOTA on AgentBench and ToolBench among 8B models under the Apache 2.0 license, while its native function-calling interface simplifies multi-agent orchestration.  Alternative
+backbones (DeepSeek-R1-Distill-7B, Llama-3.1-8B)
+are evaluated in Appendix~\ref{app:diff-backbone}.
+
+Each agent operates independently with no shared
+parameters or centralised coordination, except for
+interaction through the shared memory $\mathcal{M}$.
+The calibration mechanism $\Phi$ is implemented as a
+standalone Python process with no generative LLM dependency for runtime scoring decisions,
+consistent with its role as the only component not
+subject to Definition~\ref{assm:zerotrust}.  This
+design ensures that $\Phi$ cannot be manipulated by
+any agent and remains a structurally trusted
+component in the system.
+
+Embeddings used in $\rho_{\text{detect}}$ and
+$\rho_{\text{align}}$ are computed using
+all-MiniLM-L6-v2~\citep{wang2020minilm} with
+approximate nearest-neighbour retrieval for efficient
+scaling to large memory sizes.  Experiments with
+varying agent counts $N \in \{4, 10\}$ are reported
+in Appendix~\ref{app:agent_scaling}.
+
+\medskip
+\textbf{Hyperparameter settings.}
+We summarise the key hyperparameters in
+Table~\ref{tab:hyperparams}.  Unlike prior
+multi-agent or memory-based systems that rely on
+manually tuned thresholds, \system\ minimises the
+number of fixed hyperparameters by estimating most
+quantities directly from data.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Key hyperparameters and configurations
+  in \system.}
+\label{tab:hyperparams}
+\begin{tabular}{l|l|l}
+\toprule
+\textbf{Component} & \textbf{Parameter}
+  & \textbf{Value / Strategy} \\
+\midrule
+Agents & Number of agents $N$
+  & 6 (default), varied in Appendix \\
+LLM & Backbone
+  & Qwen3-VL-8B-Instruct \\
+Memory & Top-$k$ retrieval
+  & $k = 5$ \\
+Embedding & Dimension $d$
+  & 384 (MiniLM default) \\
+\midrule
+Calibration & Commit threshold $\rho^*$
+  & Running median (adaptive) \\
+Detection & Radius threshold
+  & Median similarity (adaptive) \\
+Graph & Path depth $L_{\max}$
+  & $\lceil \log |\mathcal{V}| \rceil$ \\
+Alignment & Probe sampling
+  & Uniform random from $Q_i$ \\
+Credibility & Update rate $\delta_t$
+  & Invalid probe ratio (adaptive) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\medskip
+\textbf{Adaptive parameter estimation.}
+A key design principle of \system\ is that most
+hyperparameters are \emph{data-adaptive} rather than
+manually tuned:
+
+\begin{itemize}
+    \item The commit threshold $\rho^*$ is defined as
+    the running median of calibration scores over
+    recent committed entries, eliminating the need
+    for task-specific threshold tuning.
+
+    \item Detection thresholds (e.g., neighbourhood
+    radius in embedding space, compatibility scores
+    in graph memory) are derived from empirical
+    statistics such as median similarity or historical
+    co-occurrence patterns, ensuring robustness across
+    different domains.
+
+    \item The credibility update rate $\delta_t$ is
+    computed as the fraction of invalid probes in each
+    round, allowing the system to automatically adjust
+    its sensitivity to auditor behaviour without
+    introducing additional parameters.
+
+    \item Graph traversal depth $L_{\max}$ scales with
+    the logarithm of graph size, reflecting typical
+    structural properties of real-world knowledge
+    graphs while maintaining computational efficiency.
+\end{itemize}
+
+This adaptive design serves two purposes.  First, it
+reduces the risk of overfitting hyperparameters to
+specific benchmarks, improving generalisation across
+tasks and memory architectures.  Second, it aligns
+with the zero-trust assumption by avoiding reliance
+on any externally tuned or agent-provided signals.
+All thresholds are grounded in observable system
+statistics, ensuring that calibration remains
+consistent and robust under adversarial or
+non-cooperative agent behaviours.
+
+
+
+
+\subsection{Dataset Statistics}
+\label{app:datasets}
+
+\noindent\textbf{Why these benchmarks.} The four benchmarks are
+selected to stress-test the primary failure modes identified by
+our zero-trust game analysis: (i) a single dominant contributor
+injecting a locally plausible but globally inconsistent entry, and
+(ii) auditors rubber-stamping an incorrect proposal when 
+uncertain or sycophantic. These failures cause particular harm
+in long-horizon tasks---premature goal states in embodied action,
+fabricated intermediate facts in multi-hop reasoning, and temporal
+contradictions in lifelong conversation. The selected datasets
+span knowledge-intensive and action-intensive domains, providing
+the diverse challenge needed to evaluate \system's calibration.
+
+Table~\ref{tab:dataset_stats} summarises the four benchmarks
+used in our experiments. We report the number of task instances,
+the average interaction length, the evaluation metric, and the 
+domain of each benchmark.
+
+\input{tables/datasets}
+
+\textbf{ALFWorld} is a text-based embodied environment
+derived from ALFRED, covering six task categories:
+\texttt{pick\_and\_place}, \texttt{look\_at\_obj\_in\_light},
+\texttt{pick\_clean\_then\_place},
+\texttt{pick\_heat\_then\_place},
+\texttt{pick\_cool\_then\_place}, and
+\texttt{pick\_two\_obj\_and\_place}. We use the
+\texttt{valid\_unseen} split (134 tasks), where each task
+requires a sequence of physical actions with an average length of
+approximately 25 steps. \textbf{Why it matters:} The long action
+chain and strict precondition dependencies make this benchmark
+particularly susceptible to premature goal-state injection---a
+corrupted memory entry that incorrectly asserts a task is complete
+can terminate the entire episode with zero reward (see Case~2 in
+Appendix~\ref{app:case_study}).
+
+\textbf{WebShop} is an embodied decision-making benchmark
+that simulates online shopping through natural language
+interactions. Each task requires an agent to navigate search
+results, apply filters, and inspect product pages to locate a
+specified item. We evaluate on 1,000 randomly sampled tasks, with
+an average trajectory length of approximately 30 steps.
+\textbf{Why it matters:} The large, dynamic search space forces
+frequent memory writes under uncertainty; a dominant agent that
+confidently commits an incorrect product attribute (e.g., a wrong
+color or price) can mislead the entire downstream search process.
+
+\textbf{HotpotQA} is a multi-hop question answering benchmark
+constructed from Wikipedia. Each instance requires reasoning
+across multiple documents to derive the final answer. We use 500
+questions drawn from the full HotpotQA dev set, each consisting
+of a single query, and report accuracy. \textbf{Why it matters:}
+A hallucinated intermediate fact committed to shared memory can 
+override correct evidence later retrieved by other agents, 
+directly testing the ability of $\rho_{\text{align}}$ to detect 
+inconsistent overwrites in the retrieval pool (see Case~1).
+
+\textbf{LoCoMo} is a long-context conversational memory
+benchmark. Each original dialogue spans up to 35 sessions and
+averages 300 turns, simulating a lifelong, multi-session human
+conversation. From these long-form dialogues, we sample 500 
+question-answering tasks, each derived from a \emph{separate} 
+dialogue to guarantee statistical independence. Every task 
+presents the full dialogue history in memory and asks one 
+evaluative question requiring cross-session temporal reasoning. 
+We report F1 as the primary evaluation metric. \textbf{Why it 
+matters:} The extreme temporal span (300 turns) naturally creates 
+memory decay, contradiction, and topic drift across sessions.
+This tests the most dangerous failure mode for our theory: a
+contributor who proposes a confident but incorrect summary, and a
+room of auditors who, due to the cost of searching 300-turn
+memory, prefer to agree rather than verify (see Case~3).
+
+
+
+
+
+
+
+
+
+
+
+
+\subsection{Extended Analysis of Overall Effectiveness}
+\label{app:main_discussion}
+
+This section expands on our insights of \S\ref{ssec:main-expt} with deeper mechanistic explanation.
+
+\textbf{Why isolated checks saturate?} 
+On embedding memory, the gain from Vanilla to the strongest per-entry baseline (A-MemGuard) is modest, and \system\ then adds a further substantial improvement on top, exceeding the combined gain of all three intermediate baselines (LLM Audit, PPL Filter, A-MemGuard). The three baselines also cluster tightly with frequent rank inversions, suggesting they capture overlapping signals rather than complementary ones.
+
+Both observations are consistent with the saturation hypothesis: isolated entry level checks evaluate only the \emph{intrinsic quality} of $\Delta_t$ (grammaticality, fluency, perplexity), while the dominant errors in a growing memory $\mathcal{M}_t$ arise from \emph{relational inconsistency}, where an entry reads perfectly in isolation yet contradicts existing memory. The two pass design $\sqrt{\rho_{\text{detect}} \cdot \rho_{\text{align}}}$ breaks this ceiling by evaluating each delta against $\mathcal{M}_t$ as a whole rather than as an independent unit.
+
+\textbf{Qualitative pattern of ceiling aware gains.} 
+An inverse scaling effect is visible across all configurations: \system's gain over the next best baseline is largest where that baseline is weakest, and shrinks where the baseline already performs well. This pattern holds consistently across reasoning intensive and action intensive benchmarks alike, with the largest improvements appearing in settings where existing safeguards struggle the most.
+
+This shrinkage is not a weakness of $\Phi$ but a property of its gating regime: a calibration filter can only act on entries that would otherwise be admitted erroneously, so its marginal effect is bounded by the fraction of errors in the input stream. Importantly, this inverse scaling pattern is \emph{inconsistent} with the hypothesis that performance gains stem from external knowledge leakage, which would produce a constant additive boost regardless of baseline strength. Instead, it is \emph{consistent} with the hypothesis that $\Phi$ filters errors that downstream baselines would have admitted.
+
+\textbf{Memory benchmark interaction.} 
+The strongest results for reasoning intensive benchmarks come from AriGraph paired with \system, while the strongest action task results come from G-Memory paired with \system. This complementarity is already visible in the Vanilla setting: AriGraph leads on multi hop QA, while G-Memory leads on embodied action and long dialogue tasks. These pre existing biases reflect each architecture's native design. AriGraph's semantic knowledge graph with episodic memory is well suited to multi hop QA, while G-Memory's three tier hierarchical structure captures the long action chains and multi session dialogue history of action and conversational tasks.
+
+\system's calibration $\Phi$ \emph{inherits and amplifies} these biases rather than imposing a generic filter that flattens architectural differences. Because $\rho_{\text{detect}}$ and $\rho_{\text{align}}$ are computed directly from each architecture's geometry (embedding manifold) or topology (graph neighbourhood and multi hop paths), $\Phi$ filters out noisy entries that dilute the architecture's native signal, allowing each design's strengths to emerge more clearly. The gap between AriGraph and G-Memory therefore widens under \system\ in the directions each architecture is naturally suited to, rather than narrowing toward a common baseline.
+
+\textbf{Cross MAS consistency.} 
+Absolute performance differs substantially across MAD frameworks, with AutoGen generally leading, followed by DyLAN and MacNet. Yet \system's gain over the next best baseline is comparably stable across all three frameworks. The same ranking and the same inverse scaling pattern persist regardless of which orchestration scheme is used.
+
+The stability of the gain across orchestration regimes confirms that $\Phi$ acts at the memory layer rather than at the coordination layer. Weak orchestration and strong orchestration receive similar lifts because calibration filters $\Delta_t$ at the point of write, which is upstream of any MAS specific aggregation. This decoupling is a practical advantage: \system\ can be deployed with any MAD framework without re tuning or framework specific adaptation.
+
+
+
+
+
+\subsection{Ablation Study}
+\label{app:ablation}
+\input{tables/ablation}
+
+This part dissects \system's calibration mechanism $\Phi$ into its component scoring passes to identify which elements drive the gains observed in RQ1. We ablate one component at a time on two representative memory architectures (MemBank and G-Memory) across all three MAS frameworks and four benchmarks. Table~\ref{tab:ablation} reports the results.
+
+\textbf{Retrieval aware checks are the most important components.}
+Removing $\rho_{\text{align}}$ from embedding memory causes the largest drops in the table, with the steepest declines appearing on reasoning intensive benchmarks. In graph memory, removing $s_{\text{path}}$, which contributes to the detection signal $\rho_{\text{detect}}$, produces the largest single component drops, again with the most severe declines on reasoning tasks. These drops are substantially larger than those from removing reweighting alone.
+
+Both $\rho_{\text{align}}$ and $s_{\text{path}}$ share the same principle: they evaluate $\Delta_t$ against the \emph{broader memory state} $\mathcal{M}_t$ rather than in isolation. $\rho_{\text{align}}$ measures how much the proposed delta disrupts retrieval rankings (embedding) or violates multi hop path consistency (graph). Without this signal, \system\ loses its ability to detect entries that are locally plausible but globally inconsistent. This is the dominant failure mode shared by LLM~Audit and PPL~Filter (Section~\ref{ssec:main-expt}).
+
+\textbf{The dominant component depends on the benchmark category.}
+The alignment signal $\rho_{\text{align}}$ contributes most on reasoning intensive benchmarks (HotpotQA, LoCoMo), where multi hop evidence chains are critical and a single inconsistent entry can derail downstream reasoning. The drops from removing it are largest on these benchmarks, smaller on action tasks such as ALFWorld, and intermediate on WebShop.
+
+In contrast, detection signals ($\rho_{\text{detect}}$) contribute more on action intensive benchmarks (ALFWorld, WebShop), where state consistency matters. On embedding memory, removing $\rho_{\text{detect}}$ hurts action benchmarks more than removing $\rho_{\text{align}}$ does. The same pattern holds in graph memory, where removing detection components such as $s_{\text{local}}$ or $s_{\text{path}}$ produces noticeable drops on action tasks even when the corresponding alignment drops are smaller.
+
+This asymmetry validates the two pass design of Section~\ref{ssec:arch_calib}: $\rho_{\text{detect}}$ captures local plausibility and structural density (critical for state consistency in action tasks), while $\rho_{\text{align}}$ captures global consistency across evidence chains (critical for reasoning tasks). Their composition ensures that both failure modes are covered, regardless of benchmark category.
+
+\textbf{Auditor reweighting has the smallest benign effect.}
+Removing the credibility weight decay $w_i^{(t)}$ causes the smallest drops among the three ablated components in nearly every configuration. The declines from removing reweighting are markedly smaller than those from removing $\rho_{\text{align}}$ or $s_{\text{path}}$ under the same configurations.
+
+This is expected: reweighting penalises auditors whose probes are structurally invalid, but in the benign setting agents rarely produce invalid signals, so $w_i^{(t)}$ remains close to its initial value. The reweighting mechanism becomes critical under adversarial settings (Section~\ref{sec:rq2}), where malicious auditors submit misleading probes and credibility decay is required to suppress their influence over time. The minimal benign impact demonstrates that reweighting imposes essentially no cost on honest agents, while its protective value materialises precisely when the zero trust assumption is violated by adversaries.
+
+\textbf{No single component is sufficient.}
+Even the most impactful individual ablation does not collapse performance to the Vanilla level. The ablated system always retains a clear margin above the corresponding Vanilla score, even when the most important component is removed. Removing only reweighting leaves a system that is only marginally weaker than full \system\ in the benign setting, confirming that credibility tracking does not harm honest agents.
+
+This gradient confirms that $\Phi$ operates as a composed scoring mechanism: each component targets a distinct failure mode, and their combination is necessary for full robustness. The fact that even the most severe ablation retains performance above Vanilla demonstrates that the remaining components provide partial, non overlapping protection, exactly the property required for a defence in depth design under the zero trust assumption.
+
+% ============================================================
+\subsection{Alternative LLM Backbones}
+\label{app:diff-backbone}
+% ============================================================
+
+Table~\ref{tab:main} uses Qwen3-VL-8B-Instruct as the
+agent backbone throughout.  To verify that \system's
+advantage is not specific to one LLM, we replicate
+the MacNet evaluation on MemBank and G-Memory with
+two additional 7B/8B-class open-source models:
+\textbf{DeepSeek-R1-Distill-7B}~\citep{guo2025deepseek},
+a reasoning-optimised distillation of DeepSeek-R1,
+and \textbf{Llama-3.1-8B-Instruct}~\citep{patterson2022carbon},
+a general-purpose instruction-tuned model.
+Table~\ref{tab:backbone} reports the results.
+
+\input{tables/backbone}
+
+\textbf{\system ranks first across all backbones.}
+On every one of the 8 (memory $\times$ benchmark)
+cells, \system\ achieves the highest score regardless
+of which backbone is used.  The ranking among
+safeguards is also preserved: \system\ $>$
+A-MemGuard $>$ PPL~Filter $\approx$ LLM~Audit $>$
+Vanilla, with the same occasional inversions between
+intermediate baselines observed in
+Table~\ref{tab:main}.
+
+\textbf{Backbone strength shifts absolute levels
+but not relative patterns.}
+Qwen3-VL-8B-Instruct achieves the highest absolute performance
+among the three backbones, followed by
+DeepSeek-R1-Distill-7B ($2$--$7\%$ lower) and
+Llama-3.1-8B ($7$--$11\%$ lower).  The gap
+is consistent across safeguards: weaker backbones
+produce lower scores for every method, not just for
+\system.  Crucially, \system's \emph{relative} gain
+over the best baseline remains substantial across
+all backbones, confirming that calibration
+provides consistent benefit regardless of backbone.
+
+\textbf{Calibration quality tracks backbone
+quality.}
+The interaction between backbone and calibration is
+monotonic: stronger backbones produce higher-quality
+memory entries, which in turn give $\Phi$'s scoring
+passes richer structure to calibrate against.
+This is visible in the G-Memory + LoCoMo column,
+where \system\ achieves $62.1\%$ with Qwen,
+$59.0\%$ with DeepSeek, and $52.8\%$ with Llama.
+The pattern confirms that $\Phi$ amplifies backbone
+quality rather than substituting for it: calibration
+is complementary to, not independent of, the
+underlying LLM's capability.
+
+
+
+
+
+
+% ============================================================
+% Appendix: Agent Count Scaling
+% ============================================================
+
+\subsection{Effect of Agent Count}
+\label{app:agent_scaling}
+
+The main text reports results for $N = 6$ agents.
+This appendix evaluates how $\Phi$'s effectiveness
+varies with the number of participating agents.
+We test $N \in \{4, 6, 10\}$ on the AutoGen framework
+with Qwen3-VL-8B-Instruct and the G-Memory backbone in the
+benign setting.
+
+\input{tables/agent-count}
+
+\textbf{Small agent counts ($N = 4$).}
+With only four agents, each update is evaluated by a
+limited number of auditor probes (three independent
+signals per delta). Despite this reduced diversity,
+\system consistently outperforms all baselines by a
+substantial margin across benchmarks. Compared to the
+next-best safeguard, the absolute gains remain stable
+(typically around $5\%$--$9\%$), indicating that
+$\Phi$ does not rely on large numbers of auditors to
+function effectively. However, we observe slightly
+higher variance at $N = 4$, as adaptive statistics
+(e.g., $\rho^*$ and credibility weights) are estimated
+from fewer signals.
+
+\textbf{Moderate agent counts ($N = 6$).}
+At $N = 6$, performance improves modestly across all
+methods, with the largest gains observed when moving
+from $N = 4$ to $N = 6$. This suggests that increasing
+the number of agents initially provides more diverse
+reasoning traces and probe signals, improving both
+memory quality and calibration accuracy. Notably,
+\system achieves its strongest overall performance at
+this setting, balancing signal diversity and
+coordination overhead.
+
+\textbf{Larger agent counts ($N = 10$).}
+Increasing the agent count further to $N = 10$ yields
+only marginal improvements over $N = 6$. While
+$\rho_{\text{align}}$ benefits from additional probe
+diversity, these gains are offset by increased
+redundancy among agent reasoning traces and auditor
+signals. As a result, performance begins to saturate,
+indicating diminishing returns from additional agents.
+Importantly, \system maintains a consistent advantage
+over all baselines, suggesting that its effectiveness
+is largely insensitive to the exact choice of $N$.
+
+\textbf{Scaling implications.}
+Overall, agent count primarily affects the \emph{quality
+of collective signals} rather than acting as a dominant
+performance driver. $\Phi$ requires no assumption about
+a minimum number of reliable agents
+(Assumption~\ref{assm:zerotrust}) and remains effective
+even at small $N$. Increasing $N$ improves stability
+and slightly enhances performance, but the benefits
+quickly plateau beyond $N = 6$. For very large agent
+pools ($N > 50$), auditor probe/path generation can be
+sub-sampled to a random subset of $\min(N, 20)$ agents
+with negligible impact on calibration quality, ensuring
+scalability without increasing latency.
+
+
+% ============================================================
+\subsection{Effect of Debate Rounds (RQ1 Supplement)}
+\label{app:debate_rounds}
+% ============================================================
+
+Figure~\ref{fig:debate_rounds} examines how
+performance evolves as the number of debate rounds
+increases from $1$ to $5$, using LoCoMo (F1) on
+MacNet + Qwen3-VL-8B-Instruct with $N=6$ agents.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/debate_rounds.pdf}
+\caption{LoCoMo F1 vs.\ debate rounds on two memory
+  architectures (MacNet, Qwen3-VL-8B-Instruct, $N=6$).
+  Round~5 values match Table~\ref{tab:main}.
+  MemBank (left) saturates after round~3; G-Memory
+  (right) improves steadily.  \system\ follows
+  the same trend shape as Vanilla in both cases but
+  at a consistently higher level, with the gap
+  widening at later rounds.}
+\label{fig:debate_rounds}
+\end{figure}
+
+\textbf{Embedding memory saturates early.}
+On MemBank (left panel), all methods show a sharp
+rise from round~1 to round~3, followed by near-zero
+improvement from round~3 to round~5.  Vanilla
+improves from $12.4\%$ to $19.8\%$ ($+7.4\%$) in the
+first interval but only from $19.8\%$ to $20.7\%$
+($+0.9\%$) in the second.  This saturation occurs
+because embedding memory accumulates dense vectors
+that increasingly overlap, reducing the marginal
+information content of later rounds.  \system\
+follows the same saturation shape but at a higher
+level: $22.5\% \to 34.2\% \to 38.8\%$, with the
+gap over Vanilla widening from $+10.1\%$ at round~1
+to $+18.1\%$ at round~5.  The baselines (LLM~Audit,
+PPL~Filter, A-MemGuard) also saturate, clustered
+between Vanilla and \system.
+
+\textbf{Graph memory benefits from longer debate.}
+On G-Memory (right panel), all methods improve
+steadily across all three rounds.  Vanilla rises
+from $28.3\%$ to $38.5\%$ to $47.6\%$, with roughly
+equal gains per interval ($+10.2\%$ and $+9.1\%$).
+G-Memory's hierarchical knowledge graph continues
+to benefit from additional debate rounds because
+each round's edges extend the graph's coverage into
+previously unreached regions of the reasoning space.
+\system\ amplifies this trend:
+$40.2\% \to 57.8\% \to 62.1\%$, with the gap over
+Vanilla growing from $+11.9\%$ at round~1 to $+14.5\%$
+at round~5.
+
+\textbf{Calibration benefit grows with rounds.}
+In both panels, the gap between \system\ and
+baselines \emph{widens} at later rounds.  This is
+expected: as more entries accumulate in
+$\mathcal{M}_t$, the fraction of locally plausible
+but globally inconsistent entries grows, and
+$\Phi$'s memory-state-aware scoring becomes
+increasingly valuable.  Isolated entry-level
+checks (LLM~Audit, PPL~Filter, A-MemGuard) cannot
+leverage the growing memory state and therefore
+plateau alongside Vanilla.
+
+% ============================================================
+\subsection{Adversarial Baseline Comparison}
+\label{app:adversarial_baselines}
+% ============================================================
+
+This appendix supplements Section~\ref{sec:rq2} by
+reporting the adversarial performance of LLM~Audit
+and PPL~Filter under the same two attack schemes,
+memory architectures, benchmarks, and adversary
+counts used for \system\ in the main text.  All
+experiments use MacNet + Qwen3-VL-8B-Instruct with $N=6$
+agents. Algorithms~\ref{alg:memory_poisoning}
+and~\ref{alg:audit_collusion} detail the two
+adaptive attack procedures used throughout this
+section and Section~\ref{sec:rq2}.
+
+\begin{algorithm}[t]
+\caption{Memory Poisoning Attack}
+\label{alg:memory_poisoning}
+\begin{algorithmic}[1]
+\Require Adversary set $\mathcal{K} \subset \mathcal{N}$,
+  memory state $\mathcal{M}_t$, target safeguard type
+\Ensure Poisoned delta $\Delta_t^{\text{poison}}$
+
+\For{each round $t$ where contributor $a_c \in \mathcal{K}$}
+
+  \State \textcolor{gray}{\textit{\% --- Craft poison adapted to safeguard ---}}
+
+  \If{$\mathcal{M}_t$ is embedding-based}
+    \State $\boldsymbol{\mu} \gets \texttt{Centroid}(\{\mathbf{e}_j\}_{j=1}^{N})$
+      \Comment{centroid of existing vectors}
+    \State $\boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0},\, \sigma^2 \mathbf{I})$
+      \Comment{small perturbation}
+    \State $\mathbf{e}^{\text{poison}} \gets
+      (\boldsymbol{\mu} + \boldsymbol{\epsilon})\, /\,
+      \|\boldsymbol{\mu} + \boldsymbol{\epsilon}\|$
+      \Comment{retrieval magnet}
+    \State $m^{\text{poison}} \gets \texttt{LLM}(\texttt{``generate fluent
+      text near:''}, \mathcal{M}_t)$
+      \Comment{low PPL}
+    \State $\Delta_t^{\text{poison}} \gets
+      \{(\mathbf{e}^{\text{poison}},\, m^{\text{poison}})\}$
+  \EndIf
+
+  \If{$\mathcal{M}_t$ is graph-based}
+    \State $u \gets \arg\max_{v \in \mathcal{V}_t}
+      \deg(v)$
+      \Comment{high-degree node}
+    \State $v \gets \texttt{DistantNode}(u,\,
+      \mathcal{M}_t,\, \text{min\_hops}{=}3)$
+      \Comment{$\geq 3$ hops away}
+    \State $r \gets \texttt{MostCommonRelation}(u,\,
+      \mathcal{M}_t)$
+      \Comment{locally plausible}
+    \State $\Delta_t^{\text{poison}} \gets
+      \{(u,\, r,\, v)\}$
+      \Comment{passes $s_{\text{local}}$, fails $s_{\text{path}}$}
+  \EndIf
+
+  \State \textcolor{gray}{\textit{\% --- Adaptive: ensure poison evades
+    isolated checks ---}}
+  \State Assert $\texttt{PPL}(m^{\text{poison}}) <
+    \tau_{\text{PPL}}$
+    \Comment{defeats PPL Filter}
+  \State Assert $\texttt{LLM\_Score}(\Delta_t^{\text{poison}})
+    > 0.5$
+    \Comment{defeats LLM Audit}
+
+  \State \Return $\Delta_t^{\text{poison}}$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}[t]
+\caption{Audit Collusion Attack}
+\label{alg:audit_collusion}
+\begin{algorithmic}[1]
+\Require Adversary set $\mathcal{K} \subset \mathcal{N}$
+  ($|\mathcal{K}| = k$),
+  poisoned delta $\Delta_t$ from colluding contributor,
+  memory state $\mathcal{M}_t$, target safeguard type
+\Ensure Modified auditor probes
+  $\{q_i^{\text{collude}}\}_{a_i \in \mathcal{K} \cap \mathcal{A}_t}$
+
+\For{each round $t$ where auditors
+  $\mathcal{K} \cap \mathcal{A}_t \neq \emptyset$}
+
+  \State \textcolor{gray}{\textit{\% --- Colluding contributor injects mild
+    poison ---}}
+  \State $\Delta_t \gets \texttt{CraftDelta}(a_c,\,
+    \mathcal{M}_t)$
+    \Comment{plausible but incorrect}
+
+  \State \textcolor{gray}{\textit{\% --- Each colluding auditor crafts
+    a supportive probe ---}}
+  \For{each $a_i \in \mathcal{K} \cap \mathcal{A}_t$}
+
+    \If{$\mathcal{M}_t$ is embedding-based}
+      \State $\mathbf{e}^{\text{far}} \gets
+        \arg\min_{\mathbf{e}_j \in \mathcal{M}_t}
+        \cos(\mathbf{e}_j,\, \mathbf{e}^{\Delta})$
+        \Comment{farthest from poison}
+      \State $q_i^{\text{collude}} \gets
+        \texttt{TextOf}(\mathbf{e}^{\text{far}})$
+        \Comment{top-$k$ won't include $\Delta_t$}
+      \State \textcolor{gray}{\textit{\% Result:
+        $d_{\text{RBO}}(
+        \text{top-}k(\mathcal{M}_t, q_i),\,
+        \text{top-}k(\mathcal{M}_t \cup \Delta_t, q_i))
+        \approx 0$}}
+    \EndIf
+
+    \If{$\mathcal{M}_t$ is graph-based}
+      \State $(u, r, v) \gets$ sampled edge from
+        $\Delta_t$
+      \State $\pi_i^{\text{collude}} \gets
+        \texttt{BuildPathTo}(u,\, \mathcal{M}_t,\,
+        \mathcal{R}_{\text{compat}})$
+      \State \textcolor{gray}{\textit{\% Fabricate
+        a path that reaches $u$ via compatible
+        relations}}
+      \State $q_i^{\text{collude}} \gets
+        \pi_i^{\text{collude}}$
+        \Comment{validates poisoned edge}
+    \EndIf
+
+    \State Replace $a_i$'s real probe with
+      $q_i^{\text{collude}}$
+  \EndFor
+
+  \State \textcolor{gray}{\textit{\% --- Honest
+    auditors submit unmodified probes ---}}
+  \For{each $a_j \in \mathcal{A}_t \setminus \mathcal{K}$}
+    \State $q_j \gets$ intercepted from $a_j$'s
+      normal retrieval
+      \Comment{unmodified}
+  \EndFor
+
+  \State \textcolor{gray}{\textit{\% --- Effect on
+    different safeguards ---}}
+  \State \textcolor{gray}{\textit{LLM Audit: no
+    effect (does not use $q_i$)}}
+  \State \textcolor{gray}{\textit{PPL Filter: no
+    effect (does not use $q_i$)}}
+  \State \textcolor{gray}{\textit{EquiMem: inflates
+    $\rho_{\text{align}}$ via colluding probes,
+    but credibility decay on $\mathcal{K}$ agents
+    suppresses their weight over rounds}}
+
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Attack settings.}
+As specified in
+Algorithms~\ref{alg:memory_poisoning}--\ref{alg:audit_collusion},
+both attacks follow the \emph{adaptive} threat model:
+adversarial agents have full knowledge of the
+safeguard mechanism they face and craft their
+poisoned entries or colluding probes accordingly.
+For Memory Poisoning, adversarial contributors
+generate low-perplexity, fluent text that passes
+PPL~Filter's threshold and receive high scores from
+LLM~Audit's auxiliary judgment (since both defences
+evaluate entries in isolation, the attacker simply
+ensures each poisoned entry reads well on its own).
+For Audit Collusion, adversarial auditors coordinate
+to produce probe signals that reinforce the poisoned
+delta, though this has no effect on LLM~Audit or
+PPL~Filter, since neither baseline uses auditor
+signals.  We test small, medium, and large
+adversary counts: $k = 1$, $2$, $3$ out of $N = 6$
+agents ($17\%$, $33\%$, $50\%$ of the group).
+Adversary identities are fixed per run and
+randomised across the 5 seeds.  The same adaptive
+attack configurations are used for \system\ in
+Section~\ref{sec:rq2}, ensuring a fair comparison:
+the attacker adapts to whichever defence is deployed.
+
+
+\begin{figure*}[h]
+\centering
+\includegraphics[width=\linewidth]{figures/rq3_baselines.pdf}
+\caption{Adversarial robustness of LLM~Audit (top
+  row) and PPL~Filter (bottom row) under Memory
+  Poisoning (left column) and Audit Collusion (right
+  column).  Same setting as
+  Figure~\ref{fig:rq3}: MacNet, Qwen3-VL-8B-Instruct,
+  $N=6$, $k = 1,2,3$ adversaries.  Dashed orange
+  lines show each method's benign performance
+  ($k=0$, from Table~\ref{tab:main}).  Both
+  baselines degrade catastrophically when half the
+  agents are adversarial, frequently falling below
+  the Stateless baseline.}
+\label{fig:rq3_baselines}
+\end{figure*}
+
+\textbf{Both baselines collapse under attack.}
+Figure~\ref{fig:rq3_baselines} reveals a consistent
+pattern: both LLM~Audit and PPL~Filter degrade
+roughly linearly with the number of adversaries,
+with no sign of recovery or stabilisation.  With
+half the agents adversarial ($k = 3$), LLM~Audit
+loses a substantial fraction of its benign
+performance on both embedding and graph memories,
+dropping to levels far below the no‑memory
+baseline.  PPL~Filter follows a similar
+trajectory, suffering losses of comparable
+magnitude.  In contrast, under the same attack
+conditions, \system retains the vast majority of
+its benign performance, outperforming each baseline
+by a large margin.
+
+\textbf{Baselines fall below the Stateless level.}
+The Stateless baseline (no memory, no safeguard)
+provides a simple reference: any memory system that
+performs worse than this has been turned into a
+liability.  At the highest adversary count,
+LLM~Audit and PPL~Filter consistently score
+\emph{below} the Stateless level on several
+benchmarks.  This means the attacker has
+successfully reversed the benefit of memory.  By
+contrast, \system\ never falls below the Stateless
+level in any configuration, even when half the
+agents are adversarial.
+
+\textbf{Why baselines lack resilience.}
+The root cause is that LLM~Audit and PPL~Filter
+evaluate each $\Delta_t$ in isolation, with no
+mechanism to track or discount adversarial agents
+over time.
+
+LLM~Audit scores each proposed delta by prompting an
+auxiliary LLM with the delta text and generating a
+judgment.  A poisoned entry that reads as fluent,
+well-structured text receives a high audit score
+regardless of whether it is consistent with
+$\mathcal{M}_t$.  Under Audit Collusion, the attack
+is even simpler: the adversarial contributor crafts a
+plausible-sounding delta, and the colluding auditors
+are irrelevant because LLM~Audit does not use auditor
+signals at all; it relies solely on its own LLM
+call.  The result is that Memory Poisoning and Audit
+Collusion produce nearly identical degradation curves
+for LLM~Audit (top-left vs.\ top-right in
+Figure~\ref{fig:rq3_baselines}), confirming that
+LLM~Audit's vulnerability is to the \emph{content}
+of poisoned entries, not to the coordination of
+adversaries.
+
+PPL~Filter computes the perplexity of each delta
+under a reference language model and rejects entries
+above a threshold.  Adversaries trivially defeat this
+by generating poison with natural-sounding text
+(low perplexity).  Under Audit Collusion, PPL~Filter
+is again irrelevant because it does not process
+auditor signals.  The small advantage of PPL~Filter
+over LLM~Audit under Memory Poisoning on graph
+memory (which catches a minor fraction of
+statistically unusual poisoned text) is negligible
+compared to the overall collapse.
+
+\textbf{Contrast with \system's recovery.}
+\system's resilience stems from two mechanisms that
+baselines lack.  First, the credibility weight
+$w_i^{(t)}$ (Eq.~\ref{eq:cred_weight}) decays
+multiplicatively for auditors who submit structurally
+invalid probes.  Adversarial auditors who fabricate
+probes to support poisoned entries inevitably produce
+probes that fail structural validation (non-empty,
+well-formed, drawn from declared context), causing
+their weight to decay toward zero over rounds.  With
+a single adversary, the weight drops below a minimal
+level within a few rounds; even with three
+adversaries, the honest majority (equal in number)
+still dominates the score because credibility decays
+multiplicatively while honest auditors recover toward
+full weight.  Second, the calibration scores
+$\rho_{\text{detect}}$, $\rho_{\text{align}}$,
+$s_{\text{local}}$, and $s_{\text{path}}$ evaluate
+each $\Delta_t$ against the full memory state
+$\mathcal{M}_t$, catching poisoned entries that are
+locally plausible but globally inconsistent.
+Baselines, which score each entry independently,
+have no access to this global signal.
+
+\textbf{Attack asymmetry mirrors Section}~\ref{sec:rq2}.
+The same asymmetry observed for \system\ holds for
+baselines: Memory Poisoning causes larger drops on
+embedding memory than graph memory, while Audit
+Collusion causes larger drops on graph memory.
+However, the \emph{magnitude} of the asymmetry is
+amplified for baselines because they have no
+compensating mechanism.  For LLM~Audit under
+high‑adversary conditions, the drop on embedding
+memory is substantially smaller than on graph memory
+for one attack, and the pattern reverses for the
+other attack.  The absence of credibility decay
+means that colluding auditors maintain full
+influence throughout the episode, and the absence of
+memory‑state‑aware scoring means that globally
+inconsistent entries pass unchecked.
+
+% ============================================================
+\subsection{Time Latency Analysis}
+\label{app:latency}
+% ============================================================
+
+This section supplements the token-cost analysis
+of Section~\ref{sec:rq3} with wall-clock latency
+measurements, confirming that the sub-baseline
+complexity bounds of Table~\ref{tab:complexity_comparison}
+translate to marginal overhead in practice.
+
+\textbf{Setup.}
+We measure end-to-end wall-clock time per task
+on MacNet + Qwen3-VL-8B-Instruct with $N=6$ agents, averaged
+over 50 tasks per benchmark.  All experiments run on
+a single NVIDIA RTX 6000 Ada Generation (49\,GB
+VRAM) with Qwen3-VL-8B-Instruct deployed via Ollama.  We report
+three timing components: \emph{Agent time} (LLM
+inference for all agents), \emph{Memory time}
+(retrieval + write to memory store), and
+\emph{Calibration time} (\system's scoring passes
+only, excluding agent and memory time).
+
+\begin{table}[h]
+\centering
+\caption{Wall-clock latency breakdown (seconds per
+  task) on MacNet + Qwen3-VL-8B-Instruct, $N=6$ agents,
+  averaged over 50 tasks.  Calibration time is the
+  additional time introduced by \system\ on top of
+  Vanilla.  The overhead ratio is computed as
+  Calibration / (Agent + Memory).  All ratios are
+  below $5\%$, consistent with the sub-baseline
+  complexity bounds of
+  Table~\ref{tab:complexity_comparison}.}
+\label{tab:latency}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{ll|rrr|r}
+\toprule
+\textbf{Memory} & \textbf{Bench}
+  & \textbf{Agent (s)} & \textbf{Mem (s)}
+  & \textbf{Calib (s)} & \textbf{Overhead} \\
+\midrule
+
+\multirow{4}{*}{\shortstack[l]{MemBank\\\scriptsize{(emb.)}}}
+& HQA  & 21.6 & 5.8 & 0.9 & 3.3\% \\
+& LCM  & 28.3 & 8.5 & 1.2 & 3.3\% \\
+& ALF  & 85.4 & 14.1 & 3.2 & 3.2\% \\
+& WS   & 41.2 & 9.3 & 1.7 & 3.4\% \\
+
+\midrule
+
+\multirow{4}{*}{\shortstack[l]{G-Memory\\\scriptsize{(graph)}}}
+& HQA  & 22.4 & 7.5 & 1.1 & 3.7\% \\
+& LCM  & 30.1 & 10.2 & 1.5 & 3.7\% \\
+& ALF  & 88.6 & 19.8 & 3.9 & 3.6\% \\
+& WS   & 43.8 & 12.4 & 2.0 & 3.6\% \\
+
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Calibration overhead is below $5\%$
+across all configurations.}
+Table~\ref{tab:latency} shows that \system's
+calibration adds $0.9$--$3.9$ seconds per task,
+representing $3.2$--$3.7\%$ of the total Vanilla
+execution time (Agent + Memory).  This is consistent
+with the $1.05\times$ overhead bound claimed in
+Section~\ref{ssec:arch_calib}.  The overhead is
+slightly higher on graph memory ($3.6$--$3.7\%$)
+than embedding memory ($3.2$--$3.4\%$) because the
+bidirectional BFS in $s_{\text{path}}$ traverses
+more edges than the ANN range query in
+$\rho_{\text{detect}}$, but both remain well below
+$5\%$.
+
+\textbf{Agent inference dominates total time.}
+Across all configurations, LLM inference (Agent
+time) accounts for $70$--$80\%$ of total execution
+time, with memory operations contributing
+$15$--$20\%$.  Calibration is a distant third at
+$3$--$4\%$.  This confirms that the bottleneck in
+any memory-augmented MAS is the LLM forward pass,
+not memory operations or calibration.  \system's
+LLM-free design correctly avoids adding to the
+dominant cost component.
+
+\textbf{Comparison to LLM-based defences.}
+For reference, we also measure the latency of
+LLM~Audit, which requires one additional LLM
+inference call per proposed $\Delta_t$.  On MemBank
++ HotpotQA, LLM~Audit adds $16.5$ seconds per task
+($60.2\%$ overhead) versus \system's $0.9$ seconds
+($3.3\%$ overhead), an $18.3\times$ latency
+difference.  On G-Memory + ALFWorld, LLM~Audit adds
+$56.2$ seconds ($51.8\%$) versus \system's $3.9$
+seconds ($3.6\%$), a $14.4\times$ difference.
+A-MemGuard, which generates $K=3$ parallel reasoning
+paths per delta, adds even more: $25.8$ seconds on
+MemBank + HotpotQA ($94.2\%$ overhead).  These
+results confirm that LLM-based defences are
+bottlenecked by inference cost, while \system's
+algorithmic calibration avoids this entirely.
+
+\begin{table}[h]
+\centering
+\caption{Latency overhead comparison across
+  safeguards (seconds per task, MacNet +
+  Qwen3-VL-8B-Instruct, $N=6$).  \system\ adds
+  $<5\%$ overhead; LLM-based defences add
+  $50$--$94\%$.}
+\label{tab:latency_comparison}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{l|rr|rr}
+\toprule
+& \multicolumn{2}{c|}{\textbf{MemBank + HQA}}
+& \multicolumn{2}{c}{\textbf{G-Memory + ALF}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+\textbf{Safeguard}
+  & \textbf{Added (s)} & \textbf{Overhead}
+  & \textbf{Added (s)} & \textbf{Overhead} \\
+\midrule
+Vanilla      & 0.0  & 0.0\%  & 0.0   & 0.0\%  \\
+PPL Filter   & 0.4  & 1.5\%  & 1.4   & 1.3\%  \\
+\system      & 0.9  & 3.3\%  & 3.9   & 3.6\%  \\
+LLM Audit    & 16.5 & 60.2\% & 56.2  & 51.8\% \\
+A-MemGuard   & 25.8 & 94.2\% & ---   & ---    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Correspondence with complexity bounds.}
+Table~\ref{tab:complexity_comparison} predicts that
+every calibration stage has cost strictly less than
+the baseline retrieval cost.  The empirical overhead
+ratios ($3.2$--$3.7\%$) confirm this: since baseline
+retrieval accounts for $15$--$20\%$ of total time
+(the Memory column in Table~\ref{tab:latency}),
+calibration at $3$--$4\%$ is indeed sub-retrieval.
+The slightly higher overhead on graph memory
+corresponds to the path-check stage, which has cost
+$O(|\mathcal{E}_t^\Delta| \cdot d^{L_{\max}/2})$.
+This is the largest single calibration term in
+Table~\ref{tab:complexity_comparison}, but still
+well below the baseline's $O(d^{L_{\max}})$ because
+$|\mathcal{E}_t^\Delta| \ll d^{L_{\max}/2}$ holds
+for all incremental updates in our experiments
+(typical $|\mathcal{E}_t^\Delta| = 3$--$8$ edges,
+$d^{L_{\max}/2} \approx 50$--$200$).
+
+\textbf{Scaling with agent count.}
+Calibration overhead scales linearly with
+$|\mathcal{A}_t| = N - 1$ (the number of auditors),
+since each auditor contributes one probe.  At $N=4$,
+overhead drops to ${\sim}2.5\%$; at $N=10$, it rises
+to ${\sim}5.5\%$.  In all cases it remains dominated
+by the LLM inference cost, which also scales with
+$N$.  Detailed timing at $N \in \{4, 6, 10\}$ is
+in Table~\ref{tab:latency_scaling}.
+
+\begin{table}[h]
+\centering
+\caption{Calibration overhead vs.\ agent count
+  (MemBank + HotpotQA, MacNet, Qwen3-VL-8B-Instruct).}
+\label{tab:latency_scaling}
+\small
+\begin{tabular}{c|rrr|r}
+\toprule
+$N$ & \textbf{Agent (s)} & \textbf{Mem (s)}
+    & \textbf{Calib (s)} & \textbf{Overhead} \\
+\midrule
+4  & 15.2 & 4.6 & 0.5 & 2.5\% \\
+6  & 21.6 & 5.8 & 0.9 & 3.3\% \\
+10 & 35.4 & 8.1 & 2.4 & 5.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}

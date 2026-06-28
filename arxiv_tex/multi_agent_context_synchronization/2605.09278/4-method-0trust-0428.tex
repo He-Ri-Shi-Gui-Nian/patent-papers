@@ -1,0 +1,235 @@
+%=============================================================
+\section{\system: Equilibrium-Guided Memory Calibration}
+\label{sec:calibration}
+%=============================================================
+
+\subsection{Design Rationale}
+
+
+% What $\Phi$ does is choosing \emph{which} equilibrium of the
+% zero-trust game the system reaches. 
+\S\ref{sec:problem} showed that when the commit decision depends on agent decisions, each agent can
+improve its own utility and cause incorrect commitment (failures of the equilibrium). Hence, reaching the equilibrium 
+requires that the memory commit decision depend on indicators that no agent can
+dominate alone. Note that, the equilibrium between $u_c$ and $u_i$ supplies those indicators: The
+contributor's $u_c$ (Eq.~\ref{eq:utility-contributor}) rewards
+\emph{influence} over future retrieval, and the auditor's $u_i$
+(Eq.~\ref{eq:utility-auditor}) rewards \emph{alignment} with its own
+reasoning context. A truly informative $\Delta_t$ raises both simultaneously. A manipulative $\Delta_t$ raises $u_c$ but lowers $u_i$ for any
+auditor outside the manipulated region. Quantifying $\Delta_t$ against
+this gap reaches the equilibrium without trusting any
+single agent.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/equimem.pdf}
+  \caption{Overview of how the three calibration quantities in \system control utility components. 
+    See App.~\ref{app:utility-mapping} for component-by-component
+    justifications.}
+    \vspace{-3pt}
+  \label{fig:method}
+\end{figure}
+
+We hence implement the design  above as \textbf{\system}, an inference-time
+framework that turns each agent's normal action into evidence. \system does not replace agents, as contributors still propose
+updates and auditors still issue queries or walk paths during debate. Instead, the
+contributor's $\Delta_t$ is checked against the geometry or topology
+of $\mathcal{M}_t$. Each auditor's existing query or path traversal
+(used during debate anyway) becomes a \textbf{probe} that \system
+samples and quantifies. \system never reads agent-reported scores or
+votes, which turns the three failure modes into actions that
+either gain nothing or hurt the agent who tries them: an auditor who
+hides its probe loses credibility weight, an auditor who tries to
+craft a favorable probe cannot do so because the sample is drawn at
+random, and an auditor who rejects everything has no rejection power
+because votes are not used.
+
+Given $\Delta_t$, \system produces a calibration indicator
+$\rho(\Delta_t, \mathcal{M}_t) \in [0,1]$ that combines (i) a
+\textbf{detection signal} on the contributor side, (ii) an
+\textbf{alignment signal} from auditor probes, and (iii) a
+\textbf{credibility weight} $w_i^{(t)}$ on each auditor's
+contribution. Commitment proceeds iff $\rho \geq \rho^*$, where
+$\rho^*$ is the running median of recent committed scores
+(cold-start in App.~\ref{app:rho_star}). Committed entries are
+stored with trust weights proportional to $\rho$
+(\S\ref{ssec:retrieval}). No entry is deleted, so a low-trust entry
+can be promoted later if new evidence raises its score. Figure \ref{fig:method} shows how \system controls game-theoretical utilities ($u_c$ and  $u_i$) with detailed justification in \ref{app:utility-mapping}. Noticeably, \system incurs marginal latency comparing to base memory-augmented reasoning (App. \ref{app:complexity}).
+
+%-------------------------------------------------------------
+\subsection{Architecture-Specific Calibration}
+\label{ssec:arch_calib}
+
+We instantiate \system on two memory types: embedding-based
+\citep{wang2023voyager,zhong2024memorybank} and graph-based
+\citep{anokhin2024arigraph,zhang2025g}. Episodic and trajectory
+memories reduce to one of these two for retrieval purposes
+\citep{anokhin2024arigraph,wang2023voyager}.
+
+\textbf{Embedding-based memory} stores entries as dense vectors
+$\mathcal{M}_t = \{(\mathbf{e}_j, m_j)\}_{j=1}^N$ with $\mathbf{e}_j =
+f_\theta(m_j) \in \mathbb{R}^d$. A delta $\Delta_t =
+\{(\mathbf{e}_k^\Delta, m_k^\Delta)\}_{k=1}^K$ is calibrated in two
+parallel passes.
+
+The \emph{first pass} computes the detection signal from the local
+density of each new vector. For each $\mathbf{e}_k^\Delta$ we count
+its dense neighbors and compare to the running average:
+\(
+    \rho_{\text{detect}}(\Delta_t) = 1 -
+    \frac{1}{K} \sum_{k=1}^{K} \frac{\hat{r}_k}{\bar{r} + \epsilon}
+\)
+where $\hat{r}_k$ counts neighbors of $\mathbf{e}_k^\Delta$ within an
+adaptive radius (running median of pairwise similarities in
+$\mathcal{M}_t$, App.~\ref{app:adaptive_params}), and $\bar{r}$ is
+the running mean neighborhood size. A high $\hat{r}_k$ means the new
+entry would dominate retrieval across an unusually wide region of
+memory, which is the high-influence manipulation that $u_c$ rewards.
+
+The \emph{second pass} computes the alignment signal from auditor
+probes. Each auditor $a_i$ already keeps a queue of pending
+retrieval queries $Q_i$ during debate. \system samples one query
+$q_i \sim Q_i$ uniformly at random per auditor, so the auditor cannot
+choose which one is used. We then compute:
+\begin{equation}
+    \rho_{\text{align}}(\Delta_t) = 1 -
+    \frac{1}{|\mathcal{A}_t|} \sum_{i \in \mathcal{A}_t}
+    w_i^{(t)} \cdot
+    d_{\text{RBO}}\!\left(
+        \text{top-}k(\mathcal{M}_t, q_i),\
+        \text{top-}k(\mathcal{M}_t \cup \Delta_t, q_i)
+    \right)
+\label{eq:rho_ret}
+\end{equation}
+where $d_{\text{RBO}}(L_1, L_2) \in [0,1]$ is the rank-biased overlap
+distance between two lists \citep{corsi2024treatment}, equal
+to zero when the lists agree and one when they are disjoint. An
+informative $\Delta_t$ shifts retrieval results across
+auditors, while a manipulated $\Delta_t$ rewrites the top-$k$ auditor-retrieved entries
+from its original region. The latter produces high
+$d_{\text{RBO}}$ values that push $\rho_{\text{align}}$ down.
+
+The credibility weight $w_i^{(t)}$ adds an inter-round cost to
+cheating. After each round, \system checks whether $a_i$'s probe
+$q_i$ is \emph{well-formed}: non-empty, syntactically valid, and
+drawn from the context window the auditor declared. A bad probe pulls the weight toward $0$, and a good probe
+pulls it back toward $1$:
+\begin{equation}
+    w_i^{(t+1)} =
+    \begin{cases}
+        w_i^{(t)} \cdot (1 - \delta_t)
+        & \text{if } q_i \text{ is invalid} \\[2pt]
+        w_i^{(t)} + \delta_t \cdot (1 - w_i^{(t)})
+        & \text{if } q_i \text{ is valid}
+    \end{cases}
+    \quad
+    \delta_t = \text{fraction of invalid probes at round } t
+\label{eq:cred_weight}
+\end{equation}
+Both directions move at the same adaptive rate $\delta_t$, so no
+parameter is tuned. An auditor who slips once recovers after a few
+clean rounds. An auditor whose long-run invalid rate is $p$ settles
+at $w^* = 1 - p$, so credibility tracks long-run honesty (proof in
+App.~\ref{app:credibility}).
+
+The two passes combine as $\rho = \sqrt{\rho_{\text{detect}} \cdot
+\rho_{\text{align}}}$. The geometric mean prevents a delta that fails
+one pass from being saved by the other. The square root keeps $\rho
+\in [0,1]$ on the same scale as each pass and avoids the
+score-shrinking of a plain product.
+
+\textbf{Graph-based memory} stores knowledge as a directed graph
+$\mathcal{M}_t = (\mathcal{V}_t, \mathcal{E}_t, \ell)$ with edges
+$\mathcal{E}_t \subseteq \mathcal{V}_t \times \mathcal{R} \times
+\mathcal{V}_t$. A delta $\Delta_t = (\mathcal{V}_t^\Delta,
+\mathcal{E}_t^\Delta)$ is first written into a hidden \emph{staging
+area} $\mathcal{M}_t^{\text{stage}}$. The delta becomes visible only
+after calibration. Staging blocks adversarial rejection because no
+agent can see what to reject, and adds no cost because writes use
+the standard graph-write path.
+
+The \emph{first pass} computes the detection signal from two
+topological checks per new edge $e = (u, r, v) \in
+\mathcal{E}_t^\Delta$: (i) The \textit{local check} asks whether $e$
+fits $u$'s existing neighborhood, using a compatibility set
+$\mathcal{R}_{\text{compat}}(r)$ of relation types that frequently
+co-occur with $r$ elsewhere in the graph
+(App.~\ref{app:compat_estimation}):
+\begin{equation}
+    s_{\text{local}}(e) =
+    \frac{\bigl|\{(u, r', v') \in \mathcal{E}_t :
+    r' \in \mathcal{R}_{\text{compat}}(r)\}\bigr|}
+    {|\mathcal{N}(u)| + \epsilon}
+\end{equation}
+(ii) The \textit{path check} asks whether existing multi-hop paths $\mathcal{P}_{u,v}$
+between $u$ and $v$ already support a relation of type $r$. We
+enumerate paths $\pi \in \mathcal{P}_{u,v}$ by bidirectional BFS up to depth $L_{\max} = \lceil
+\log |\mathcal{V}_t| \rceil$, which matches the typical diameter of
+knowledge graphs and keeps BFS efficient
+(App.~\ref{app:graph_bfs}):
+\begin{equation}
+    s_{\text{path}}(e) =
+    \frac{1}{|\mathcal{P}_{uv}|}
+    \sum_{\pi \in \mathcal{P}_{uv}}
+    \mathbf{1}\!\left[
+        \text{comp}(r, \text{type}(\pi)) \geq \eta_t
+    \right]
+    \label{eq:path-check}
+\end{equation}
+where $\eta_t$ is the running median of past compatibility scores.
+Combining the two gives the per-edge score $\rho_{\text{detect}}(e) =
+\alpha_t \, s_{\text{local}}(e) + (1 - \alpha_t) \, s_{\text{path}}(e)$.
+The weight $\alpha_t$ is the fraction of this round's edges that have
+at least one supporting path, so it shifts toward whichever check has
+more evidence. An edge that fails either check raises the detection
+cost that $u_c$ must pay for manipulation.
+
+The \emph{second pass} computes the alignment signal from auditor
+probes. Each auditor $a_i$ is already walking some path $\pi_i$ in
+$\mathcal{M}_t$ during reasoning. \system samples one new edge
+$e_i^* \in \mathcal{E}_t^\Delta$ uniformly at random per auditor:
+\(
+    \rho_{\text{align}}(\Delta_t) =
+    \frac{1}{|\mathcal{A}_t|}
+    \sum_{i \in \mathcal{A}_t}
+    w_i^{(t)} \cdot
+    \mathbf{1}\!\left[
+        \text{reachable}(e_i^*, \pi_i;\ \mathcal{R}_{\text{compat}})
+    \right]\), where $\text{reachable}(\cdot)$ is an $O(\log |\mathcal{V}_t|)$
+lookup that returns $1$ when $e_i^*$ connects to either endpoint of
+$\pi_i$ via compatible relations. As in the embedding case, an
+informative $\Delta_t$ extends paths the auditor is already walking,
+while a manipulative $\Delta_t$ adds edges disconnected from
+existing reasoning. Reachability is a graph-structural fact rather
+than a semantic judgment, so a failed probe triggers the same
+credibility decay as Eq.~\ref{eq:cred_weight}.
+
+The two passes combine as $\rho = \sqrt{\rho_{\text{detect}} \cdot
+\rho_{\text{align}}}$ with $\rho_{\text{detect}} = \frac{1}{|\mathcal{E}_t^\Delta|}
+\sum_{e \in \mathcal{E}_t^\Delta} \rho_{\text{detect}}(e)$, by the
+same rationale as the embedding case.
+
+%-------------------------------------------------------------
+\subsection{Memory Retrieval}
+\label{ssec:retrieval}
+%-------------------------------------------------------------
+
+Calibration shapes both \emph{what gets written} and \emph{how much
+written entries count when read back}. Each committed entry carries
+its score $\rho$ as a trust weight. For embedding memory, retrieval
+re-scales each candidate vector as $\tilde{\mathbf{e}}_k =
+\sqrt{\rho_k} \cdot \mathbf{e}_k$, so low-trust entries sit closer
+to the origin and are less likely to land in the top-$k$. For graph
+memory, a path's strength is the product $\prod_{e \in \pi} \rho_e$
+of trust weights along its edges, so a path through any low-trust
+edge is automatically discounted. Retrieval cost is unchanged in
+both cases because trust weights are baked into the index at load
+time, not computed at query time
+(App.~\ref{app:retrieval_complexity}).
+
+This dual enforcement closes two gaps. A delta that barely passes
+$\rho^*$ at write time still has a small trust weight, so a
+contributor cannot inject low-quality content by aiming at the
+threshold. And when later evidence raises or lowers an entry's
+$\rho$, we update the weight in place rather than delete the entry,
+so memory remains recoverable as evidence accumulates.

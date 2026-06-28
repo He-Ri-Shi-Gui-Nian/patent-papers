@@ -1,0 +1,212 @@
+% ============================================================
+\section{Experiments}
+\label{sec:experiments}
+% ============================================================
+
+We evaluate \system along three research questions: \textbf{RQ1:} How effectively does \system maintain memory integrity compared to existing approaches? 
+% \textbf{RQ2:} How much does each component of the mechanism contribute to overall performance? 
+\textbf{RQ2:} How robust is \system under different attack strategies? \textbf{RQ3:} How much computational overhead does \system add?
+
+
+
+
+
+
+
+
+
+
+
+% ------------------------------------------------------------
+\subsection{Experimental Setup}
+\label{sec:setup}
+% ------------------------------------------------------------
+
+\textbf{Datasets.}
+We evaluate on four datasets spanning two groups:
+\textbf{(1) reasoning-intensive}, including
+HotpotQA~\citep{yang2018hotpotqa} (multi-hop question
+answering) and
+LoCoMo~\citep{maharana2024evaluating} (long-term
+conversational memory requiring temporal reasoning
+across distant dialogue sessions); and
+\textbf{(2) action-intensive}, including
+ALFWorld~\citep{shridhar2020alfworld} (embodied
+household tasks with sequential action chains) and
+WebShop~\citep{yao2022webshop} (web-based product
+search and purchase).  All require agents to
+update and retrieve the shared memory.
+
+% : reasoning benchmarks demand accurate recall of prior evidence, while action benchmarks demand consistent state tracking across steps. We report accuracy for HotpotQA, F1 for LoCoMo, success rate for ALFWorld, and reward for WebShop, averaged over 5 runs with different random seeds.
+
+\textbf{Baselines.} We compare four baseline methods that safeguard agentic memory:
+\textbf{(1) Vanilla}: no additional safeguarding mechanism; LLMs are simply prompted to ensure safe memory use;
+\textbf{(2) LLM-Audit} (used in \citep{wei2025memguard}): an auxiliary LLM scores each proposed $\Delta_t$;
+\textbf{(3) PPL-Filter}~\citep{alon2023detecting}: memory entries whose perplexity under a reference LLM exceeds an adaptive threshold are filtered out; and
+\textbf{(4) A-MemGuard}~\citep{wei2025memguard}: consensus is validated across the reasoning paths of agents. 
+
+
+% LLM~Audit and PPL~Filter both perform isolated
+% entry-level checks and apply to all memory types.
+% A-MemGuard requires dense retrieval and does not
+% extend to graph memory; graph rows are marked
+% \texttt{---} in Table~\ref{tab:main}.
+% \textbf{\system\ (ours)} is the fifth configuration
+% and the only defense that (i)~operates on both
+% embedding and graph memory, (ii)~evaluates each
+% $\Delta_t$ against the full memory state
+% $\mathcal{M}_t$ rather than in isolation, and
+% (iii)~adds zero LLM-generated tokens for
+% calibration---$\Phi$ reuses queries and paths that
+% auditors produce as part of their normal debate
+% activity (Section~\ref{sec:calibration}).
+
+\textbf{Memory architectures.}
+We evaluate on two embedding-based (vector) memories,
+Voyager \citep{wang2023voyager} and
+MemoryBank~\citep{zhong2024memorybank}, and two graph-based (structural) memory,
+AriGraph~\citep{anokhin2024arigraph} and
+G-Memory~\citep{zhang2025g}.  We additionally
+report a No~Memory (stateless) baseline as a lower bound. 
+
+
+\textbf{Backbone of MAD systems.}
+To cover various MAD designs, we integrate \system, baselines, and memory architectures into three
+different MAD systems:
+AutoGen~\citep{wu2024autogen} (conversational
+turn-taking),
+MacNet~\citep{qian2024scaling} (configurable graph
+topologies), and
+DyLAN~\citep{liu2023dynamic} (dynamic LLM-agent
+network with learned topology selection).
+
+% Coverage across three frameworks with distinct communication patterns demonstrates that $\Phi$ composes with different MAS orchestration strategies, since it operates at the memory layer independently of the communication topology.
+
+\textbf{Other configurations.} By default, all evaluations use 6$\times$ Qwen3-VL-8B-Instruct \citep{qwen3technicalreport} as the MAD backbone besides specification. We defer configuration details, other settings, and results to App. \ref{app:expt}.
+
+
+
+
+% ------------------------------------------------------------
+\subsection{Overall Effectiveness (RQ1)}
+\label{ssec:main-expt}
+% ------------------------------------------------------------
+
+\input{tables/performance}
+
+Table \ref{tab:main} reports results across all configurations, which yield several insights:
+
+\ding{182} \textbf{State-aware calibration beats isolated checks.} Observe that \system ranks first in all columns, and its improvement over the strongest baseline is even larger than the gap separating those baselines from each other. We attribute this to a property of growing memory: as $\mathcal{M}_t$ accumulates entries, the dominant errors are those that read fluently in isolation but conflict with the broader memory state, wherein per-entry checks (LLM Audit, PPL Filter) cannot catch such errors, and even A-MemGuard's local consensus misses global conflicts. \system's two passes break this constraint by quantifying each $\Delta_t$ against $\mathcal{M}_t$ as a whole memory space rather than on isolated memory entries.
+
+\ding{183} \textbf{Gains scale inversely with baseline strength.} \system's improvement over the next-best safeguard is largest where baselines are weakest (LoCoMo, WebShop) and smallest where they are already strong (ALFWorld + G-Memory). Calibration acts as an amplifier of memory quality rather than a fixed-offset gain: when fewer errors reach the gating step, \system has less to filter.
+
+\ding{184} \textbf{Architecture-benchmark interactions are amplified, not flattened.} AriGraph outperforms on multi-hop QA and long-context tasks and G-Memory on action tasks; \system amplifies both without modification because the calibration is instantiated from each architecture's own geometry or topology (\S\ref{ssec:arch_calib}). This also explains why \system is the only calibration applicable across all memory designs.
+
+\ding{185} \textbf{Gains are robust to MAD.} Absolute performance varies substantially across different MAD backbones, yet \system's ranking and inverse-scaling pattern persist. We explain this by highlighting that \system operates at the memory layer, upstream of coordination, so calibration quality is decoupled from orchestration quality.
+
+\ding{186} \textbf{Further analysis.} Due to space constraints, we defer the (1) ablation studies and discussions to App. \ref{app:ablation}, (2) alternative MAD backbones to App. \ref{app:diff-backbone}; (3) the effect of debate rounds to App. \ref{app:debate_rounds}, (4) how \system addresses memory-commitment failures and provide case studies to App.\ref{app:case_study}, (5) failure modes of \system itself to App.\ref{app:failure_mode}.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+% ------------------------------------------------------------
+\subsection{Robustness under Adaptive Attacks (RQ2)}
+\label{sec:rq2}
+% ------------------------------------------------------------
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\linewidth]{figures/rq3_EQUIMEM.pdf}
+\caption{Adversarial robustness of \system\ under
+  two attacks. Bars show performance at $k=1,2,3$ adversarial
+  agents; dashed orange lines show benign
+  performance ($k=0$).
+  Dots show individual run results (5 seeds). Baseline comparisons are in
+  App.~\ref{app:adversarial_baselines}.}
+  \vspace{-5pt}
+\label{fig:rq3}
+\end{figure}
+
+We further test whether \system guarantees robustness when $k$ out of $N$ MAD agents are adversarial. We evaluate under two adaptive attack schemes targeting opposite sides of the zero-trust game: \textit{(i) Memory Poisoning} injects fabricated entries to fool $\rho_{\text{detect}}$, while \textit{(ii) Audit Collusion} has adversarial auditors coordinate fabricated probes to inflate $\rho_{\text{align}}$ ( detailed settings and results in App.~\ref{app:adversarial_baselines}).
+
+\ding{182} \textbf{\system degrades gracefully, while baselines collapse dramatically.} Figure \ref{fig:rq3} shows that \system stays within 2-5\% of benign performance at $k=1$ and within 9-16\% at $k=3$. LLM Audit and PPL Filter, as shown in Figure \ref{fig:rq3_baselines}, App. \ref{app:adversarial_baselines}, drop by 19-35\% at $k=3$ and frequently fall below the no-memory baseline, i.e., the memory system with its defense becomes worse than no memory at all. The asymmetry traces to a single design choice: \system measures $\Delta_t$ against the memory space structurally, while baselines score each entry in isolation (or local consensus for A-MemGuard), which is exactly what adversaries exploit by generating fluent, low-perplexity poison.
+
+% \ul{The two attacks stress different components of calibration.} Memory Poisoning hurts embedding memory more, because $\rho_{\text{detect}}$ alone cannot scan all plausible poisoned vectors, whereas the multi-hop $s_{\text{path}}$` check in graph memory provides a second line of defense. Audit Collusion shows the opposite asymmetry, hurting graph memory more because graph calibration relies more heavily on auditor attestation paths. This split validates the architecture-specific design of \S\ref{ssec:arch_calib}: each instantiation has a distinct vulnerability, and no single component carries the full robustness.
+
+\ding{183} \textbf{Credibility decay is the load-bearing mechanism under attack.} Credibility weighting matters little in benign settings (2-6\%, as in Table \ref{tab:ablation}), but under attack it becomes decisive. Adversarial auditors who submit fabricated probes accumulate weight decay over rounds, progressively muting their influence on $\rho_{\text{align}}$. A single adversary's weight collapses below 0.1 within a few rounds, and even at $k = 3$ the honest majority's probes still dominate because credibility decays multiplicatively while honest auditors recover toward $w_i$$\approx$1. Detailed baseline results are in App. \ref{app:adversarial_baselines}.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+% ------------------------------------------------------------
+\subsection{Computational Overhead (RQ3)}
+\label{sec:rq3}
+% ------------------------------------------------------------
+
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/cost_analysis.pdf}
+\caption{Performance vs.\ token consumption. Each sub-figure shows MemBank (M) and G-Memory (G) under five calibration methods. Bubble size reflects token-cost variability.}
+ \vspace{-5pt}
+\label{fig:cost_analysis}
+\end{figure*}
+
+A critical property of \system is that calibration is LLM-free and algorithmic (\S\ref{sec:calibration}). Figure \ref{fig:cost_analysis} measures token consumption, and App. \ref{app:latency} quantifies inference time latency.
+
+\ding{182} \textbf{\system matches Vanilla's token cost while delivering active-defense gains.} \system uses the same number of tokens as Vanilla, yet performs far better than every other method (its bubbles sit well to the right). This gain comes at no extra token cost, which is only possible because \system's calibration runs without any LLM call. In contrast, baseline methods pay \textasciitilde{}2× tokens for marginal gains: LLM Audit and A-MemGuard nearly double Vanilla's tokens for only +2 to +9\%, since each method requires an LLM call per $\Delta_t$, scaling linearly with the number of deltas and unavoidable without removing the defense.
+
+
+\ding{183} \textbf{\system gives the best of both worlds.} No other method achieves both top performance and the lowest cost at the same time. PPL Filter is also free to run but achieves substantially smaller gains than \system. This pattern holds across embedding and graph memory and across reasoning and action benchmarks, showing that the LLM-free design is a built-in advantage rather than a lucky implementation choice. Inference timing (App. \ref{app:latency}) tells the same story: \system adds under 5\% latency, while LLM-based defenses add 50-94\%.
+
+% \subsection{Case Study and Failure Mode}
+% \label{sec:case-study}
+
+
+
+\section{Conclusion}
+
+
+This work formulates shared-memory multi-agent debate as a zero-trust memory game and shows that its equilibrium structure indicates optimal trust in memory without assuming any agent honest. Guided by this formulation, we propose \system to calibrate memory using agents' existing retrieval activity as evidence, requiring no LLM call for calibration itself. Across extensive evaluations, \system consistently outperforms existing calibration methods, remains robust under up to half adversarial agents, and adds zero token overhead with under marginal latency. These results suggest that strong memory protection in multi-agent systems is achievable without trusting any individual agent or inflating inference cost.
+
+% \newpage
+% \subsection*{Limitations}
+% \label{sec:limitations}
+% \system relies on a degree of diversity across agents' reasoning contexts: when the backbone LLM induces correlated parametric biases shared across most agents, auditor probes may reinforce rather than challenge an erroneous entry, narrowing the discriminative power of the alignment signal. Similarly, in graph-based memory, calibration relies on relation-extraction quality, and small or noisy graphs can occasionally lead to conservative rejections of semantically valid but redundant edges. We view these as natural attenuation conditions tied to data availability and agent heterogeneity rather than structural limits of the framework, and they diminish as memory accumulates and agent interactions diversify, as evidenced by the widening performance gap across debate rounds. 
+
+
+% \subsection*{Broader Impacts}
+% \label{sec:broader_impacts}
+% \system aims to improve the reliability of multi-agent LLM systems by preventing memory corruption without inflating inference cost, which we see as a positive direction for deploying shared-memory agents in long-horizon reasoning, planning, and assistive applications where downstream decisions depend on accumulated context. By calibrating updates structurally rather than through additional LLM judgments, \system also reduces the energy and token footprint that safeguards typically introduce, contributing modestly to more compute-efficient agentic systems. 
+
+% On the other hand, openly publishing the calibration mechanism in detail may, over time, help adversaries design attacks specifically tailored to evade the scoring passes; we partially address this through the adversarial evaluation in Section~\ref{sec:experiments}, while acknowledging that stronger adaptive adversaries remain an open direction for future study. More broadly, as memory-augmented multi-agent systems are deployed in higher-stakes settings, calibration mechanisms like \system should be viewed as one component within a layered approach to reliability rather than a standalone guarantee.

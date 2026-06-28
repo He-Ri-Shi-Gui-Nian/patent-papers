@@ -1,0 +1,71 @@
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\textwidth]{Figs/pipeline_eccv.pdf}
+    \caption{VL-KnG system architecture. \textbf{Phase~1} (offline): a source tour video is split into frame chunks, each processed by a VLM World Expert to produce chunk graphs; an Association Agent merges these into a unified spatiotemporal knowledge graph, while a Vision Encoder (SigLIP2) embeds cropped object regions into a vector database. \textbf{Phase~2} (online): given a user query, a Reasoning \& Retrieval Agent combines GraphRAG subgraph retrieval with object similarity search to produce an answer and ranked frames. \textbf{Phase~3}: the top-ranked goal frame provides a navigation target for downstream robotic use.}
+    \label{fig:pipeline}
+\end{figure*}
+
+VL-KnG operates in two phases (\cref{fig:pipeline}): i) an offline phase that constructs a spatiotemporal knowledge graph and an object embedding database from a source video, and ii) an online phase where a reasoning agent answers user queries via GraphRAG subgraph retrieval and visual similarity search, producing both textual answers and ranked goal frames for navigation.
+
+\subsection{Spatiotemporal Knowledge Graph Construction}
+The knowledge graph construction process begins with chunking of video frames to maintain temporal consistency while ensuring computational efficiency.
+Given a video sequence $\mathcal{I} = \{I_t\}_{t=1}^T$, we partition it into chunks of size $b$: $\mathcal{C}_k = \{I_{kb+1}, \ldots, I_{kb+b}\}$ for $k = 0, \ldots, B$, where $B = \lfloor T/b \rfloor - 1$.
+
+For each chunk $\mathcal{C}_k$, we employ a modern vision-language model with multi-image prompting capabilities~\cite{comanici2025gemini, bai2025qwen2} to extract object descriptors $\mathcal{O}_k = \{o_i^k\}_{i=1}^{N_k}$ \footnote{prompt templates are provided in the supplementary material.}. Those object descriptors form a \textit{chunk graph} $\mathcal{G}_k^{\textit{chunk}}$, which can be considered as a `local' knowledge graph that covers frames in chunk $k$ only.
+We are building the final knowledge graph $\mathcal{G}$ iteratively, processing chunks one by one, naming the accumulated knowledge graph at iteration $k$ as $\mathcal{G}^{(k)}$. At chunk $k=0$, the chunk graph $\mathcal{G}_0^{\textit{chunk}}$ is obtained, and we initialize $\mathcal{G}^{(0)} \leftarrow \mathcal{G}_0^{\textit{chunk}}$. On the next iterations, the graph is updated:
+\begin{equation}
+\mathcal{G}^{(k)} \leftarrow \text{STOA}(\mathcal{G}^{(k-1)}, \mathcal{G}_k^{\textit{chunk}}),
+\end{equation}
+where $\text{STOA}$ stands for the spatiotemporal object association procedure, described in \cref{sec:soa}. The knowledge graph $\mathcal{G}^{(B)}$ is considered as a final environment knowledge graph $\mathcal{G}$ that is stored in a graph database~\cite{miller2013graph} used in further stages of the pipeline.
+This structured representation enables efficient spatial reasoning through graph traversal operations, providing a persistent memory of the environment that scales independently of video length.
+
+\subsection{Spatiotemporal Object Association} \label{sec:soa}
+Maintaining object identity across temporal sequences is crucial for coherent scene understanding.
+Traditional approaches rely on visual similarity metrics, which often fail when objects undergo appearance changes due to lighting, occlusion, or viewpoint variations.
+Recent geometry-grounded methods such as SegMASt3R~\cite{jayanti2025segmastr} and propagation-based trackers like SAM~2~\cite{ravi2025sam} address segment matching across frames using visual and spatial cues.
+However, in our chunk-based pipeline, temporally distant observations may lack visual overlap, motivating a semantic association approach based on reasoning the textual object descriptions.
+We propose a semantic-based association mechanism that leverages large language model reasoning~\cite{comanici2025gemini, bai2025qwen2} to establish object correspondences across chunks.
+
+For objects $o_i^k$ and $o_j^{k+1}$ detected in chunks $\mathcal{C}_k$ and $\mathcal{C}_{k+1}$ respectively, we compute semantic similarity using their textual descriptions:
+\begin{equation}
+\text{Sim}(o_i^k, o_j^{k+1}) = \text{LLM}\big(o_i^k, o_j^{k+1}\big) \in [0, 1]
+\end{equation}
+
+The association decision is made through a threshold-based approach:
+\begin{equation}
+\text{Assoc}(o_i^k, o_j^{k+1}) = \begin{cases}
+1 & \text{if } \text{Sim}(o_i^k, o_j^{k+1}) > \tau \\
+0 & \text{otherwise}
+\end{cases},
+\end{equation}
+
+where $\tau$ is a similarity threshold.
+This approach enables robust object tracking even when visual features change significantly, maintaining temporal consistency in the knowledge graph.
+
+\subsection{Query Processing via GraphRAG}
+
+The query processing pipeline employs a GraphRAG-based approach~\cite{Han2024RetrievalAugmentedGW} to enable efficient subgraph retrieval and reasoning over the spatiotemporal knowledge graph.
+Given a natural language query $q$, the system performs the following steps:
+\begin{enumerate}
+    \item \textbf{Query Decomposition:} The input query is parsed to identify key entities, spatial relationships, and temporal constraints using LLM reasoning.
+    \item \textbf{Subgraph Retrieval:} Based on the decomposed query, relevant subgraphs $\mathcal{G}_{sub} \subseteq \mathcal{G}$ are retrieved using graph traversal operations, focusing on objects and relationships that match the query criteria.
+    \item \textbf{Reasoning and Localization:} The retrieved subgraph is processed using LLM reasoning to determine the most relevant frame(s) for localization, considering both spatial relationships and temporal dynamics.
+\end{enumerate}
+While this pipeline is demonstrated for embodied QA and navigation goal identification, the graph-based reasoning is general and applicable to any task requiring structured scene understanding from video.
+
+\subsection{Graph-Enhanced Retrieval (GER)} \label{sec:ger}
+To improve frame localization beyond purely graph-based retrieval, we introduce Graph-Enhanced Retrieval with Object-Level Visual Grounding (GER).
+This approach augments the GraphRAG's retrieval pipeline \cite{Han2024RetrievalAugmentedGW} with visual similarity search over object-level embeddings \cite{tschannen2025siglip}.
+
+Given a query, relevant objects are retrieved through two complementary mechanisms:
+\begin{enumerate}
+    \item[(i)] \textbf{Graph-based retrieval} over the knowledge graph, as described above, yielding a set of semantically matched objects and their associated frames.
+    \item[(ii)] \textbf{Visual similarity search} over SigLIP2 embeddings \cite{tschannen2025siglip} extracted from detected object bounding boxes. For each detected object in the knowledge graph, we extract its bounding box region from the corresponding video frame and compute an image embedding. At query time, the query text is encoded using the same vision-language encoder \cite{tschannen2025siglip}, and cosine similarity is computed against all stored object embeddings to retrieve visually relevant objects.
+\end{enumerate}
+
+The resulting candidates from both mechanisms are combined into a unified set of relevant video frames.
+For objects retrieved via embedding similarity, their corresponding semantic and relational context is extracted from the knowledge graph, yielding the same structured representation as graph-based retrieval.
+This produces a unified subgraph that integrates symbolic relationships with visually grounded object cues.
+We evaluate two SigLIP2 model sizes: \emph{GER-L} (Large) and \emph{GER-G} (Giant), demonstrating that combining structured graph reasoning with visual similarity consistently improves frame localization accuracy.
+
+

@@ -1,0 +1,60 @@
+\section{Methods}
+
+The proposed method draws from the PAI-1~\cite{11479299}. PAI-2 search pipeline (QA pipeline), designed to retrieve knowledge from memory graph and generate factually correct answers to the given questions, is shown in Figure~\ref{fig:mediumqaipeline_diagram}.
+
+\begin{figure*}[th!]
+	\centering
+	\includegraphics[width=.85\textwidth]{images/PersonalAI2MediumQApipeline.jpg}
+	\caption{PAI-2`s QA pipeline for information search in memory graph} 				
+	\label{fig:mediumqaipeline_diagram}
+\end{figure*}
+
+As depicted in Figure~\ref{fig:mediumqaipeline_diagram}, the search algorithm consists of thirteen stages and most of them can be executed in parallel (for corresponding sub-questions and clue-queries). At the first stage, pipeline receives user question (in natural language), which is subsequently denoised, enhanced and decomposed into independent sub-questions. Each sub-question is then processed independently (in parallel, optionally); next we will describe the workflow for one such sub-question.
+In stage two, for a given sub-question an initial search plan is generated in the form of natural-language queries (search steps). In stage three, named entities are extracted from current search step. On stage four, these entities are matched to relevant object vertices from memory graph. Stage five involves generation of aligned clue-queries based on linear combinations of selected object vertices and search step. These clue-queries are subsequently processed in parallel; here again, we will describe the workflow for one specific clue-query.
+
+Stages six and seven involve memory graph traversal starting from matched object vertices and filtering retrieved triplets by their relevance score to the search step. At stage eight, information, collected based on each clue-query, is summarized, according to the current search step. New information is then added to the current search plan at stage nine, where it checked whether sufficient knowledge has been collected to generate a valid answer to the current sub-question or not. If not, workflow proceeds to stage ten, where uncompleted steps of the plan are refined. Once completed, the next step/query is chosen, and execution returns to stage three. 
+
+If relevant sub-answer cannot be generated due to reaching the maximum number of allowed exploration steps, a "No Answer" stub is generated at stage twelve. Finally, all sub-answers are combined into a single final response on stage thirteen. This string-formatted output is returned as a result of PAI-2`s QA pipeline.
+
+PAI-2`s workflow employs a novel approach to enhance knowledge graph retrieval and reasoning through a carefully designed multi-stage query processing pipeline. Unlike traditional Graph-based Retrieval-Augmented Generation (GraphRAG) systems that primarily rely on direct node-level retrievals and static pre-defined ontologies, our proposed method introduces a dynamic planning mechanism to optimize both efficiency of subgraph traversal and query resolution. Specifically, subdivision of complex questions into manageable sub-questions allows targeted retrieval of only relevant portions of the underlying knowledge in existing memory. Additionally, iterative refining ensures gradual accumulation of necessary context until appropriate confidence level is reached for formulating coherent answer. Furthermore, by extracting named entities from search steps and matching them to vertices from memory graph, PAI-2 effectively grounds abstract concepts onto concrete stored representation. Subsequent refinement of entity matches via graph traversal and triplet filtering ensures that only high-relevance knowledge contributes to downstream reasoning processes.
+
+In this section, we will explain and formalize each step in detail. Pseudocode of proposed QA pipeline is presented in Appendix~\ref{app:medium_qa_pseudocode}.
+
+\subsection{Question Preprocessing}
+
+Given a question $q$, PAI-2 preprocess it $Preprocess(q)$ by denoising $Denoise(q)$, enhancement $Enhance(q)$ and decomposition $Decompose(q)$ operations: $\{q_1, q_2, ..., q_N\} = Preprocess(q) = Decompose(Enhance(Denoise(q)))$. In denoising function we prompt LLM subsequently: (1) to check $q$ on syntactical/punctuational mistakes; (2) to remove stop words and unnecessary information from it. Used prompts for this tasks are presented in Tables~\ref{tab:qp_denois_gcheck} and~\ref{tab:qp_denois_stremov}, respectively. As a result we get $q_{d} = Denoise(q) = PROMPT_{syntax}(PROMPT_{stopwords}(q))$. In enhancing function we prompts LLM subsequently: (1) to edit $q$ according to grammatical rules; (2) to rephrase it with use of common and precise terminology; (3) to expand it so its meaning become more clear. As a result we get $q_{e} = Enhance(q) = PROMPT_{grammar}(PROMPT_{terms}(PROMPT_{expand}(q)))$. Used prompts for this tasks are presented in Tables~\ref{tab:qp_ench_lcheck},~\ref{tab:qp_ench_tcheck} and~\ref{tab:qp_ench_qexp}, respectively. In decomposition function we prompt LLM to determine for $q$ whether it contains several independent questions or not:
+\[
+PROMPT_{decompose\_cls}(q) = \left\{ \begin{array}{rcl}
+True, & \text{if $q$ is composite}. \\ 
+False, & \text{otherwise}. \\ 
+\end{array}\right.
+\]
+If $True$, then we prompt LLM to split $q$ on several questions $q_i$, that can be answered independently to each other. As a result we get $\{q_1, q_2, ..., q_N\} = Decompose(q) = PROMPT_{decompose}(PROMPT_{decompose_cls}(q))$. Used prompts for this tasks are presented in Tables~\ref{tab:qp_decomp_cls} and~\ref{tab:qp_decomp_exec}, respectively.
+
+\subsection{Memory Graph Exploration}
+
+Then, for each sub-question $q_i$, a memory graph exploration operation is performed to search for relevant information in a constructed knowledge graph and generate accurate and factually correct answer $a$: $a = GraphExploration(q)$. This operation consists of eleven steps. For clarity, we will describe it on a sub-question $q_i$ (next we will use just $q$).
+
+Firstly, for $q$ an initial exploration plan $P = InitialPlanGen(q)$ is generated, represented as a collection of natural language queries $s_j$ (search steps): $P=[s_1,s_2,...,s_M]$. This operation is done by one LLM inference step: $P = PROMPT_{plan\_init}(q)$. Used prompt for this task is presented in Table~\ref{tab:kgreasoner_spenh_pinit}. Next, given search step $s_j$ we prompt LLM to extract key named entities $E_j = \{e_1, e_2, ..., e_U\}$ from it: $E$ = NER($s$). Used prompt for this task is presented in Table~\ref{tab:kgreasoner_entextr_entextr}. Then, we links $E_j$ to object vertices $V^j_{U \times V_m} = [[v_{11}, v_{12}, ..., v_{1V_m}], ..., [v_{U1}, v_{U2}, ..., v_{UV_m}]]$ from memory graph, where $V_m$ is a hyperparameter (maximum number of object vertices that can be linked to one entity): $V^j_{ U \times V_m} = Entities2VerticesMatching(E_j, V_m)$. This operation can be done by dense and/or sparse retrieval models (BM25, DRMs, including dual-tower and single-tower models). We using combination of dense and sparse retrieval models.
+
+Secondly, for $V^j_{U \times V_m}$ linear combination is performed and first $C_m$ vertices groups are selected, where $C_m$ is hyperparameter: $V = LinearCombination(V, C_m)$. Next we prompt LLM to generate detailed clue-queries $CQ_j = \{cq_1, cq_2, ..., cq_{C_m}\}$ based on $s_j$ and $V^j_{C_m \times U}$: $CQ = ClueQueriesGen(s, V)$. Clue-query represent reformulated $s$ with respect to given group (row) of object vertices from $V$. Used prompt for this task is presented in Table~\ref{tab:kgreasoner_clqgen_clqgen}. Then, each clue-query $cq_l$ from $CQ_j$ is used as control mechanism to perform independent graph traversal and relevant triples $T^{raw}_{l} = \{t_1, t_2, ..., t_Y\}$ accumulation: $T^{raw}_{l} = KGraphTraverse(cq_l, V[l])$. Vertices from $V$ are used as a starting points for traversal. After that $T^{raw}_{l}$ are filtered out to remain only $F_m$ triples that is more closer (by dense embeddings) to $cq_l$: $T = FilterByRelevance(s, T^{raw})$. Finally, all filtered triples $\{T_1, T_2, ..., T_{C_m}\}$ are summarized in one answer for a given $s_j$ by two step aggregation procedure. On first step we prompt LLM to summarize each $T_l$ based on $cq_l$: $ca_l = ClueAnswerGen(cq, T_l)$. Used prompt for this task is presented in Table~\ref{tab:kgreasoner_clagen_clagen}. On second step we prompt LLM to summarize $CA_j = \{ca_1, ca_2, ..., ca_{C_m}\}$ based on $s_j$ and $CQ_j$: $sa = SummarizeClueAnswers(s, CQ, CA)$, where $sa$ is a knowledge, retrieved from a memory graph with respect to search step $s$. Used prompt for this task is presented in Table~\ref{tab:kgreasoner_clagen_summ}.
+
+Thirdly, given newly discovered knowledge $sa_j$ for $s_j$ and knowledge $[sa_1, sa_2, ..., sa_{j-1}]$, discovered from previous steps we prompt LLM to determine whether relevant answer $a$ can be generated for $q$ or not: 
+\[
+PROMPT_{answer\_cls}(q, P, SA) = \left\{ \begin{array}{rl}
+True, & \text{if relevant $a$ can be} \\ & \text{generated}. \\ 
+False, & \text{otherwise}. \\ 
+\end{array}\right.
+\], where $SA = [sa_1, sa_2, ..., sa_j]$. If $True$, then we prompt LLM to generate $a$ to $q$ based on $SA$: $a = PROMPT_{answer_subq}(q, P, SA)$. Used prompts for this tasks are presented in Tables~\ref{tab:kgreasoner_answgen_answcls} and~\ref{tab:kgreasoner_answgen_answgen}, respectively. If $False$, them we prompt LLM to determine whether current search plan $P$ (its next search steps $[s_{j+1}, s_{j+2}, ..., s_M]$) needs to be modified or not: 
+\[
+PROMPT_{plan\_enhance\_cls}(q, P, SA) = \left\{ \begin{array}{rl}
+True, & \text{if $P$ needs} \\ & \text{to be enhanced}. \\ 
+False, & \text{otherwise}. \\ 
+\end{array}\right.
+\]. If $True$ we prompt LLM to enhance $P$ with respect to newly discovered knowledge: $P = P_{new} = SearchPlanEnhance(q, P, SA)$. Used prompts for this tasks are presented in Tables~\ref{tab:kgreasoner_spenh_enchcls} and~\ref{tab:kgreasoner_spenh_planench}, respectively. If we not exceed a search limit we add $sa_i$ to $SA$ and repeat the same procedure for the next $s_{j+1}$ step. If we exceed the maximum number of completed search steps and no sufficient knowledge were discovered to generate relevant answer to $q$, then "No Answer" stub will be return as $a$: $a = NoAnswerStubGen(q)$.
+
+\subsection{Answers Aggregation}
+
+After receiving all answers $SubA = [a_1, a_2, ...,a_N]$ to sub-questions $SubQ = [q_1, q_2, ..., q_N]$ we prompt LLM to generate final answer $a$ to initial question $q$: $a = AggregateSubAnswers(q, SubQ, SubA)$. Used prompt for this task is presented in Table~\ref{tab:aggr_answ_summ}.
+
+

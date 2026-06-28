@@ -1,0 +1,727 @@
+%=============================================================
+\section{Calibration Mechanism: Implementation Details and Proofs}
+\label{app:calibration_details}
+%=============================================================
+
+This appendix supplies the technical details deferred from
+\S\ref{sec:calibration}. We provide necessary justifications, document every adaptive parameter and how
+it is initialized at cold start, prove the recovery property of the
+credibility update, justify the latency claim, characterize the
+additional memory and token overhead, and give implementation notes
+for both the embedding and graph instantiations of \system.
+\subsection{Mapping Between Calibration Quantities and Utility Components}
+\label{app:utility-mapping}
+
+This subsection makes precise the claim, illustrated visually in
+Figure~\ref{fig:method}, that every component of the contributor utility
+$u_c = \Pr[C{=}1]\cdot I - D$ and the auditor utility
+$u_i = \mathrm{Align}(\Delta_t,M_t) - c_i$ defined in
+Section~\ref{sec:problem} is controlled, at the calibrated equilibrium of
+$\widetilde\Gamma$, by exactly one of the three calibration quantities in
+\system: the detection signal $\rho_{\text{detect}}$, the alignment
+signal $\rho_{\text{align}}$, and the credibility weight $w_i^{(t)}$
+(into which we fold the commit gate $\mathbf{1}[\rho \geq \rho^*]$, since
+the gate's structural authority comes from $w_i^{(t)}$ entering $\rho$
+multiplicatively). Table~\ref{tab:utility-mapping} summarizes the mapping;
+the rest of the subsection states and justifies each row. We address
+mechanisms only insofar as they bear on equilibrium utility control;
+implementation details are deferred to the rest of Appendix \ref{app:calibration_details}.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Per-component mapping between the three calibration quantities
+of \system and the utility components they control at the calibrated
+equilibrium. Each row identifies the component, the calibration quantity
+that controls it, and the property that does the control.}
+\label{tab:utility-mapping}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Calibration quantity & Side & Utility component & Controlling property \\
+\midrule
+\multirow{2}{*}{$\rho_{\text{detect}}$}
+ & Contributor & $D(\Delta_t,M_t)$ & detection regulation \\
+ & Contributor & $I(\Delta_t,M_t)$ & influence ceiling \\
+\midrule
+\multirow{2}{*}{$\rho_{\text{align}}$}
+ & Auditor     & $\mathrm{Align}(\Delta_t,M_t)$ & sample-time regulation \\
+ & Auditor     & $c_i$ & probe re-use and damping \\
+\midrule
+\multirow{2}{*}{$w_i^{(t)}$ (with commit gate)}
+ & Contributor & $\Pr[C{=}1]$ & vote-independent regulation \\
+ & Auditor     & $c_i$ &  damping \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{The detection signal \texorpdfstring{$\rho_{\text{detect}}$}{rho\_detect} controls \texorpdfstring{$D$}{D} and \texorpdfstring{$I$}{I}}
+
+The detection signal scores how the proposed $\Delta_t$ sits in the
+geometry (embedding case) or topology (graph case) of $M_t$. Both
+contributor utility components on the left of $u_c$, namely $D$ and
+$I$, are controlled by this single quantity at equilibrium.
+
+\textbf{Control of $D(\Delta_t,M_t)$ via detection regulation.}
+In the uncalibrated game $\Gamma$, $D$ is conceptual: detection has no
+operational meaning unless an external mechanism makes inconsistency
+observable. \system supplies that mechanism by setting
+$D := 1 - \rho$, where $\rho_{\text{detect}}$ is the dominant input
+(low alignment alone cannot redeem a high-density delta because
+$\rho = \sqrt{\rho_{\text{detect}}\cdot\rho_{\text{align}}}$).
+
+\textit{Justification.}
+By construction $\rho \in [0,1]$, hence $D \in [0,1]$ as required by
+Eq.~(\ref{eq:utility-contributor}). The substitution $D = 1-\rho$
+is the natural one in the sense that the correlation coefficient
+between $D$ and $1-\rho$ is exactly $\kappa = 1$, achieving the
+manipulation ceiling derived in Appendix~\ref{app:failure_modes}
+(Channel~1). In particular, $\rho_{\text{detect}}$ becomes informative
+as a detection signal precisely when $\Delta_t$ disturbs the local
+density (embedding) or violates local/path consistency (graph) -- the
+two manipulations the contributor's $I$ relies on. There is therefore
+no slack at equilibrium in which a high-$I$ delta scores low on
+$D$.
+
+\textbf{Control of $I(\Delta_t,M_t)$ via influence ceiling.}
+The influence term $I$ measures how much $\Delta_t$ shifts downstream
+retrieval. A manipulative contributor maximizes $I$ by placing
+$\Delta_t$ in regions of $M_t$ that dominate retrieval, i.e., regions of
+high local embedding density, or graph edges that bypass existing
+multi-hop paths. These are exactly the patterns that
+$\rho_{\text{detect}}$ scores; the retrieval re-scaling described in
+\S\ref{ssec:retrieval} then forces every committed entry's effective
+influence to be capped by its $\rho_{\text{detect}}$ score.
+
+\textit{Justification (embedding case).}
+For an entry $e_k^\Delta$,
+$\rho_{\text{detect}}(\Delta_t) = 1 - \frac{1}{K}\sum_k \hat r_k/(\bar r+\epsilon)$.
+Let $I_k$ denote the marginal influence of $e_k^\Delta$ on top-$k$
+retrieval against an arbitrary query distribution. Top-$k$ retrieval
+returns the $k$ nearest neighbours, so $e_k^\Delta$ enters the result
+for any query lying within a ball of radius proportional to its
+neighbourhood density, giving $I_k = \Theta(\hat r_k)$ asymptotically
+in $|M_t|$. The retrieval re-scaling
+$\tilde e_k = \sqrt{\rho_k}\,e_k$ at read time then yields
+\[
+I_k^{\text{eff}} \;=\; \rho_k \cdot I_k \;\leq\; \rho_k \cdot \Theta(\hat r_k)
+\]
+which is jointly capped because $\rho_k$ is decreasing in $\hat r_k$
+through $\rho_{\text{detect}}$. A delta cannot simultaneously score
+high on $\rho_{\text{detect}}$ and exert large $I$.
+
+\textit{Justification (graph case).}
+For a new edge $e=(u,r,v)$, $I(e)$ is determined by how often $e$ lies
+on multi-hop retrieval paths. The path-strength product
+$\prod_{e\in\pi}\rho_e$ used at retrieval ensures that any path through
+a low-$\rho_{\text{detect}}$ edge is automatically discounted, so
+$I^{\text{eff}}(e) \leq \rho_{\text{detect}}(e)\cdot I_{\max}$. The
+ceiling $D \leq 1/(1+\kappa)$ in
+Eq.~(\ref{eq:integrity_gap_bound}) of
+Appendix~\ref{app:gap_closing} then gives a closed-form upper bound on
+equilibrium influence.
+
+\subsubsection{The alignment signal \texorpdfstring{$\rho_{\text{align}}$}{rho\_align} controls \texorpdfstring{$\mathrm{Align}$}{Align} and \texorpdfstring{$c_i$}{c\_i}}
+
+The alignment signal is computed from auditor probes (queries $q_i$ for
+embedding memory, traversal paths $\pi_i$ for graph memory). Both
+auditor utility terms are controlled by this single quantity at
+equilibrium: the alignment signal in $u_i$ is regulated in
+$\rho_{\text{align}}$ directly, and the effort cost $c_i$ collapses
+because the probes that produce $\rho_{\text{align}}$ are reused from
+the auditor's normal debate activity.
+
+\textbf{Control of $\mathrm{Align}(\Delta_t,M_t)$ via sample-time non-manipulability.}
+\system regulates the alignment signal as
+$\mathrm{Align}(\Delta_t,M_t) := 2\rho - 1 \in [-1,+1]$
+(Eq.~\ref{eq:utility-auditor}, Appendix~\ref{app:utility_rationale}),
+where $\rho_{\text{align}}$ is the auditor-side input. We make
+explicit why this regulating is unmanipulable by any auditor at
+equilibrium.
+
+\textit{Justification.}
+Let auditor $a_i$ submit probe evidence $\xi_i$. The alignment signal
+decomposes as
+\[
+\rho_{\text{align}}(\Delta_t)
+\;=\; 1 - \frac{1}{|\mathcal{A}_t|}\sum_{j\in\mathcal{A}_t} w_j^{(t)}\cdot s(\xi_j;\Delta_t,M_t)
+\]
+where $s$ is the per-auditor disagreement (RBO distance for embeddings,
+indicator of unreachability for graphs). Two structural properties
+make $\rho_{\text{align}}$ robust to single-auditor manipulation.
+First, $\xi_i$ is sampled uniformly from $Q_i$ (or fixed to the
+auditor's current path), so $a_i$ cannot pre-commit to a probe that
+flatters its preferred outcome; the sampling is performed by \system,
+not $a_i$. Second, the multiplicative entry of $w_j^{(t)}$ caps any
+single auditor's marginal influence:
+\[
+\Big|\frac{\partial \rho_{\text{align}}}{\partial \xi_i}\Big| \;\leq\; \frac{w_i^{(t)}}{|\mathcal{A}_t|}
+\]
+At equilibrium, honest auditors converge to $w_i^{(t)}\to 1$
+(Proposition~\ref{prop:credibility_fp}), giving them full influence;
+adversarial auditors converge toward $0$. The alignment term in $u_i$
+therefore tracks the structural quantity $2\rho-1$ rather than any
+self-reported judgment.
+
+\textbf{Damping $c_i$ via probe re-use.}
+The effort cost $c_i$ in $u_i$ models the resource cost an auditor
+incurs by performing scrutiny. In $\Gamma$, scrutiny is a separate
+costly action, which produces the free-riding equilibrium
+(Proposition~\ref{prop:freeriding}). \system neutralizes this cost
+because the probes used to compute $\rho_{\text{align}}$ are exactly
+the queries and traversals the auditor already issues during debate.
+
+\textit{Justification.}
+Let $\mathcal{T}_i^{\text{debate}}$ be the set of LLM calls and tool
+invocations $a_i$ performs as part of normal debate participation, and
+let $\mathcal{T}_i^{\Phi}$ be the additional set induced by \system.
+Every probe used by \system is sampled from $Q_i$ (which $a_i$
+generates regardless of \system) or set to $\pi_i$ (the path $a_i$
+already walked), so
+\[
+\mathcal{T}_i^{\Phi} \subseteq \mathcal{T}_i^{\text{debate}}
+\]
+The empirical effort cost (Appendix~\ref{app:utility_rationale})
+\[
+\widehat c_i^{(t)} \;=\; \frac{1}{W}\sum_{t'=t-W}^{t-1}\big[\text{cost}(\mathcal{T}_i^{\text{debate}} \cup \mathcal{T}_i^{\Phi}, t') - \text{cost}(\mathcal{T}_i^{\text{debate}}, t')\big] \;=\; 0
+\]
+in expectation, modulo $O(1)$ algorithmic overhead dominated by LLM
+inference cost (Appendix~\ref{app:latency}). The marginal scrutiny cost
+is therefore asymptotically zero at equilibrium, and the free-riding
+incentive of Proposition~\ref{prop:freeriding} dissolves.
+
+\subsubsection{The credibility weight \texorpdfstring{$w_i^{(t)}$}{w\_i} (with commit gate) controls \texorpdfstring{$\Pr[C{=}1]$}{Pr[C=1]} and \texorpdfstring{$c_i$}{c\_i}}
+
+The credibility weight enters $\rho$ multiplicatively through
+$\rho_{\text{align}}$ and gates commitment via
+$\mathbf{1}[\rho \geq \rho^*]$. The commit gate is therefore not a
+separate calibration quantity but the structural endpoint of $w_i^{(t)}$:
+without credibility weighting, the gate would be vote-equivalent. We
+group them and show that together they control the contributor's
+commit-probability term and the auditor's collusion incentive at
+equilibrium.
+
+\textbf{Control of $\Pr[C{=}1]$ via vote-independent commitment.}
+Under $\Gamma$, the commit probability is the expectation over auditor
+strategies $\Pr[C(\{v_i\})=1\mid\Delta_t]$, which depends multilinearly
+on the mixed strategies $\{\pi_i\}$ and is therefore manipulable by any
+pivotal coalition (Propositions~\ref{prop:freeriding}--\ref{prop:adversarial_rejection}).
+Under $\widetilde\Gamma$, \system replaces this term with the indicator
+$\mathbf{1}[\rho \geq \rho^*]$. The structural authority of this
+substitution comes from $w_i^{(t)}$: an adversarial auditor who tries
+to push $\rho_{\text{align}}$ up or down sees its $w_i^{(t)}$ decay
+multiplicatively, so its leverage on the commit decision vanishes at
+equilibrium.
+
+\textit{Justification.}
+Fix any $\Delta_t$ and $M_t$, and let
+$\sigma=(\sigma_c, \sigma_1, \dots, \sigma_{|\mathcal{A}_t|})$ be the
+joint strategy profile. The commit indicator under $\widetilde\Gamma$
+satisfies
+\[
+\frac{\partial}{\partial \sigma_i} \,\mathbf{1}[\rho(\Delta_t,M_t)\geq\rho^*] \;=\; 0
+\qquad\forall\, a_i\in\mathcal{A}_t
+\]
+because $\rho$ is computed from $(\Delta_t,M_t)$ and from the sampled
+probes, neither of which is a vote or self-report; the auditor's only
+channel of influence is its probe distribution, weighted by
+$w_i^{(t)}$. At the calibrated equilibrium, $w_i^{(t)} \to 1 - p_i$
+where $p_i$ is the auditor's long-run invalid-probe rate
+(Proposition~\ref{prop:credibility_fp}), so an adversarial auditor's
+contribution to the commit decision is bounded by $1 - p_i$ and shrinks
+to zero as it persists in attempting manipulation. Conditional on prior
+debate actions, the commit decision is therefore a deterministic
+function of $(\Delta_t,M_t)$ and an auditor's marginal vote does not
+move it. This eliminates the pivot-probability term that drives the
+three failure equilibria and replaces vote-based commitment with a
+structural rule.
+
+\textbf{Control of $c_i$ via multiplicative damping.}
+The cost $c_i$ in $u_i$ models the resource effort an auditor incurs
+when submitting a structurally invalid probe in support of a manipulative
+$\Delta_t$ (collusion). The credibility weight $w_i^{(t)}$ damps the
+auditor's lifetime alignment payoff multiplicatively whenever such an
+invalid probe is detected, so collusion incurs both an immediate cost
+and a long-run weight loss.
+
+\textit{Justification.}
+A single invalid probe at round $t$ multiplies the auditor's
+subsequent credibility trajectory by a factor of $(1-\delta)$ relative
+to honest play (Eq.~\ref{eq:cred_weight}). Consider a one-shot
+deviation at round $t=0$ followed by honest behaviour. Let
+$\bar A := \mathbb{E}[\mathrm{Align}(\Delta_t,M_t)]$ at the calibrated
+equilibrium and $\bar w := \mathbb{E}[w_i^{(t)}]\to 1$ along the honest
+trajectory. The discounted lifetime payoff is
+\[
+V_i \;=\; \sum_{t=0}^{\infty}\beta^t\!\left(\mathrm{Align}(\Delta_t,M_t)\cdot w_i^{(t)}\;-\;c_i\cdot\mathbf{1}[\text{collude at }t]\right)
+\]
+Computing the difference between honest and colluding play under a
+one-shot deviation,
+\[
+V_i^{\text{honest}}-V_i^{\text{collude}} \;=\; c_i \;+\; \sum_{t=1}^{\infty}\beta^t\,\bar A\,\bar w\,\delta
+\;=\; c_i \;+\; \frac{\beta\,\delta}{1-\beta}\,\bar A\,\bar w \;>\; 0
+\]
+for any $c_i\geq 0$, $\bar A>0$, and $\beta\in(0,1)$. The first term is
+the immediate cost the auditor avoids by staying honest; the second is
+the long-run weight loss that compounds geometrically because
+credibility decay propagates through every future round's alignment
+contribution. Both terms favour honesty, so collusion is strictly
+dominated under $\widetilde\Gamma$ at the calibrated equilibrium without $c_i$ needing any specific value: even at $c_i=0$, the
+multiplicative damping alone suffices.
+
+%-------------------------------------------------------------
+\subsection{Adaptive Parameters and Cold-Start Behavior}
+\label{app:adaptive_params}
+%-------------------------------------------------------------
+
+\system uses several adaptive parameters in place of fixed
+hyperparameters. Each is computed from observable round statistics,
+so no value is set by the user. Table~\ref{tab:adaptive_params}
+summarizes them.
+
+\begin{table}[h]
+\caption{Adaptive parameters used by \system. Each is computed from
+observable round statistics rather than tuned.}
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Symbol} & \textbf{Definition} & \textbf{Source} \\
+\midrule
+$\rho^*$ & commit gate & running median of last $W$ committed
+$\rho$ scores \\
+$\delta_t$ & credibility update rate & fraction of probes invalid in
+round $t$ \\
+$\eta_t$ & path-compatibility cutoff & running median of past
+$\text{comp}(\cdot)$ values \\
+$\alpha_t$ & local/path mixture weight & fraction of edges in
+$\Delta_t$ with $|\mathcal{P}_{uv}| > 0$ \\
+adaptive radius & embedding similarity cutoff & running median of
+pairwise similarities in $\mathcal{M}_t$ \\
+$L_{\max}$ & BFS depth bound & $\lceil \log |\mathcal{V}_t| \rceil$ \\
+$W$ & history window for medians & $\max(30, \lceil \sqrt{|\mathcal{M}_t|}
+\rceil)$ \\
+\bottomrule
+\end{tabular}
+\label{tab:adaptive_params}
+\end{table}
+
+\textbf{Cold start for the commit gate $\rho^*$.}
+\label{app:rho_star}
+At round $t=0$ no committed scores exist, so the running median is
+undefined. We initialize $\rho^* = 0.5$, the midpoint of the score
+range. Every $\Delta_t$ is provisionally accepted while the history
+buffer fills. Once the buffer reaches $W$ entries, $\rho^*$ becomes
+the running median and \system enters its steady-state regime. This
+warm-up affects only the first $W$ rounds, and the only effect is
+that early commits may be lower-trust than steady-state commits.
+Subsequent retrieval discounts these early entries through the
+trust-weight mechanism (\S\ref{ssec:retrieval}), so any inaccuracy is
+absorbed at read time rather than persisting in the memory.
+
+\textbf{Cold start for the credibility rate $\delta_t$.}
+At $t = 0$ no probes have been observed, so we initialize $\delta_0 =
+0.1$, a conservative default that produces a slow update. From round
+$t = 1$ onward, $\delta_t$ is the empirical fraction of invalid
+probes observed in round $t$. The choice of $\delta_0$ affects only
+the first round's weight movement and is forgotten by round $t = 2$,
+so it is not a tunable parameter in any meaningful sense.
+
+\textbf{Cold start for $\eta_t$ and $\alpha_t$.}
+Both depend on observed graph statistics. At $t = 0$ we set $\eta_0 =
+0$ (accept any compatibility score) and $\alpha_0 = 0.5$ (equal
+weighting of local and path checks). They become data-driven from
+round $1$ onward.
+
+\textbf{Why these defaults are not tunable.}
+A reviewer might object that $\rho^*_0 = 0.5$, $\delta_0 = 0.1$,
+$\eta_0 = 0$, and $\alpha_0 = 0.5$ are themselves choices. We
+emphasize that these defaults affect only a $O(W)$-round warm-up and
+have no effect on steady-state behavior, since the running statistics
+overwrite each initial value within $W$ rounds.
+
+%-------------------------------------------------------------
+\subsection{Credibility Recovery: Proof of Fixed Point}
+\label{app:credibility}
+%-------------------------------------------------------------
+
+We prove the claim from \S\ref{ssec:arch_calib} that an auditor whose
+long-run invalid-probe rate is $p$ has credibility weight converging
+to $w^* = 1 - p$.
+
+\begin{proposition}[Credibility fixed point]
+\label{prop:credibility_fp}
+Let $a_i$ produce invalid probes independently with probability $p
+\in [0,1]$ at each round, and let $\delta_t \in (0, 1)$ for all $t$.
+Then under Eq.~\ref{eq:cred_weight}, $\mathbb{E}[w_i^{(t)}] \to 1 - p$
+as $t \to \infty$.
+\end{proposition}
+
+\begin{proof}
+Taking expectations on both sides of Eq.~\ref{eq:cred_weight} and
+treating $\delta_t$ as approximately constant at its long-run value
+$\delta$ (justified because $\delta_t$ converges to its empirical
+mean by the law of large numbers):
+\begin{align}
+\mathbb{E}[w_i^{(t+1)}]
+&= p \cdot \mathbb{E}[w_i^{(t)}](1 - \delta) +
+   (1-p) \left( \mathbb{E}[w_i^{(t)}] + \delta(1 - \mathbb{E}[w_i^{(t)}]) \right) \\
+&= \mathbb{E}[w_i^{(t)}] \left( p(1-\delta) + (1-p)(1 - \delta) \right) +
+   (1-p) \delta \\
+&= \mathbb{E}[w_i^{(t)}] (1 - \delta) + (1-p) \delta.
+\end{align}
+This is a linear contraction with contraction factor $1 - \delta \in
+(0, 1)$ and offset $(1-p) \delta$. Its unique fixed point is
+\begin{equation}
+w^* = \frac{(1-p) \delta}{1 - (1 - \delta)} = 1 - p,
+\end{equation}
+and convergence is geometric at rate $1 - \delta$. \qed
+\end{proof}
+
+\textbf{Recovery time.}
+The half-life of weight movement is $\log 2 / \log(1/(1-\delta))
+\approx \ln 2 / \delta$ rounds. With a typical $\delta \approx 0.1$,
+an honest auditor that suffered a one-time slip recovers half the
+distance to $w^* = 1$ in roughly $7$ rounds, and reaches within $5\%$
+of $w^*$ in roughly $30$ rounds.
+
+\textbf{Robustness to time-varying $\delta_t$.}
+If $\delta_t$ is non-constant but bounded away from $0$ and $1$, the
+update remains a contraction and the fixed point still tracks
+$1 - p_t$, where $p_t$ is the auditor's invalid rate at round $t$.
+This means a previously dishonest auditor who reforms can recover
+full credibility, and a previously honest auditor who turns
+adversarial loses credibility without instant collapse, both of
+which are desirable robustness properties.
+
+%-------------------------------------------------------------
+\subsection{Latency Analysis}
+\label{app:complexity}
+%-------------------------------------------------------------
+
+We show that calibration adds only marginal time on top of the
+baseline retrieval cost in both architectures. The key reason is that
+\system reuses computations and data structures already produced by
+baseline retrieval, so it never pays a second time for the same work.
+
+\textbf{Embedding case.}
+Baseline top-$k$ retrieval costs $O(k \log N)$ per query using an
+HNSW or IVF index. Calibration adds two passes whose cost can be
+analyzed below the baseline:
+\begin{itemize}
+    \item \textbf{Detection pass.} For each of $K$ new entries we
+    perform an ANN range query to count neighbors within the
+    adaptive radius. Because $K \ll N$ in any incremental update
+    (the delta is small relative to memory size), the total
+    $O(K \log N)$ is much smaller than the $O(k \log N)$ baseline cost,
+    not comparable to it. Concretely, this pass costs no more than
+    $\frac{K}{k}$ of one baseline retrieval.
+    \item \textbf{Alignment pass.} For each auditor $a_i$, the
+    top-$k$ result against $\mathcal{M}_t$ is already produced by
+    baseline retrieval (the auditor was about to use $q_i$ anyway),
+    so calibration reuses it for free. Only the marginal effect of
+    $\Delta_t$ needs to be computed: we score the $K$ new vectors
+    against $q_i$ in $O(K)$ time and merge them into the cached
+    top-$k$ in $O(k)$ time, then compute $d_{\text{RBO}}$ in $O(k)$.
+    Total per auditor: $O(K + k)$, with no $\log N$ factor. Across
+    auditors: $O(|\mathcal{A}_t|(K + k))$.
+\end{itemize}
+Total added cost: $O(K \log N + |\mathcal{A}_t|(K + k))$. Since both
+$K$ and $|\mathcal{A}_t|(K + k)$ are independent of $N$ except for the
+single $K \log N$ term (which itself is much smaller than baseline
+because $K \ll k$ in practice), calibration overhead is sub-baseline.
+
+\textbf{Graph case.}
+Baseline graph retrieval traverses up to $L_{\max}$ hops at cost
+$O(d^{L_{\max}})$, where $d$ is the average degree and $L_{\max} =
+\lceil \log |\mathcal{V}_t| \rceil$. Calibration adds three pieces:
+\begin{itemize}
+    \item \textbf{Local check.} A neighborhood scan over $u$'s
+    existing edges costs $O(d)$ per new edge, so $O(|\mathcal{E}_t^\Delta| \, d)$
+    in total. Since baseline retrieval is $O(d^{L_{\max}})$ with
+    $L_{\max} \geq 2$, this is smaller than baseline by a factor of
+    $d^{L_{\max} - 1}$.
+    \item \textbf{Path check.} Bidirectional BFS gives
+    $O(d^{L_{\max}/2})$ per edge, which is the square root of the
+    baseline's $O(d^{L_{\max}})$. Even summed over
+    $|\mathcal{E}_t^\Delta|$ edges, this stays well below baseline as
+    long as $|\mathcal{E}_t^\Delta| \ll d^{L_{\max}/2}$, true for any
+    realistic incremental update.
+    \item \textbf{Alignment pass.} A reachability check costs
+    $O(\log |\mathcal{V}_t|)$ per auditor by reusing the adjacency
+    index already loaded for baseline retrieval. Total:
+    $O(|\mathcal{A}_t| \log |\mathcal{V}_t|)$.
+\end{itemize}
+All three terms are smaller than the baseline $O(d^{L_{\max}})$ by at
+least one factor of $d^{L_{\max}/2}$, so calibration cost is again
+sub-baseline.
+
+\textbf{No extra LLM calls.}
+The dominant cost in any agent-based system is the LLM forward pass.
+\system makes zero additional LLM calls. Probes reuse queries and
+walks the auditors generate during normal debate, and every scoring
+step is algorithmic (ANN lookups, BFS, RBO). The asymptotic added
+cost above is therefore the full added cost.
+
+\textbf{Complexity table.}
+Table~\ref{tab:complexity_comparison} states the asymptotic cost of
+every stage and the ratio between added cost and the baseline
+retrieval cost. The ratio is shown in the rightmost column and is
+strictly less than $1$ across all stages under the regimes named in
+the caption.
+
+\begin{table}[h]
+\caption{Time complexity of each calibration stage and the ratio of
+added cost to baseline retrieval cost. The ratios are small under
+typical operating regimes: $K \ll k$ (delta size much smaller than
+top-$k$ width), $|\mathcal{A}_t|$ a small constant, $|\mathcal{V}_t|$
+a small graph, $|\mathcal{E}_t^\Delta| \ll d^{L_{\max}/2}$
+(incremental updates). Under these conditions every added stage is
+sub-baseline, and total calibration overhead remains marginal
+relative to one round of baseline retrieval.}
+\centering
+\small
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lllll}
+\toprule
+\textbf{Arch.} & \textbf{Stage} & \textbf{Baseline cost} &
+\textbf{\system added cost} & \textbf{Ratio (added / base)} \\
+\midrule
+\multirow{4}{*}{Embedding}
+ & Retrieval / query & $O(k \log N)$ & --- & --- \\
+ & Detection pass & --- & $O(K \log N)$ & $K / k \ll 1$ \\
+ & Alignment pass & --- & $O(|\mathcal{A}_t|(K + k))$ &
+   $|\mathcal{A}_t|(K{+}k) / (k \log N) \ll 1$ \\
+ & Credibility / re-weight & --- & $O(|\mathcal{A}_t| + K)$ &
+   negligible \\
+\midrule
+\multirow{4}{*}{Graph}
+ & Retrieval / query & $O(d^{L_{\max}})$ & --- & --- \\
+ & Local check & --- & $O(|\mathcal{E}_t^\Delta| \, d)$ &
+   $|\mathcal{E}_t^\Delta| / d^{L_{\max} - 1} \ll 1$ \\
+ & Path check & --- & $O(|\mathcal{E}_t^\Delta| \, d^{L_{\max}/2})$ &
+   $|\mathcal{E}_t^\Delta| / d^{L_{\max}/2} \ll 1$ \\
+ & Alignment & --- & $O(|\mathcal{A}_t| \log |\mathcal{V}_t|)$ &
+   $|\mathcal{A}_t| \log |\mathcal{V}_t| / d^{L_{\max}} \ll 1$ \\
+\bottomrule
+\end{tabular}}
+\label{tab:complexity_comparison}
+\end{table}
+
+Two observations close the analysis. \textbf{(i)} Every added stage
+shares the same asymptotic terms as the baseline ($\log N$ for
+embeddings, $d^{L_{\max}}$ or smaller for graphs), so calibration
+scales with the same primitives the baseline uses. \textbf{(ii)} The
+multiplicative factors in front of those terms ($K$, $|\mathcal{A}_t|$,
+$|\mathcal{E}_t^\Delta|$) are all independent of memory size and stay
+small in practice, which is what makes the added cost marginal rather
+than merely comparable.
+
+%-------------------------------------------------------------
+\subsection{Memory and Token Overhead}
+\label{app:memory_overhead}
+%-------------------------------------------------------------
+
+\textbf{Memory overhead.}
+\system stores three additional pieces of state beyond the base
+memory:
+\begin{itemize}
+    \item One scalar trust weight $\rho \in [0,1]$ per committed
+    entry. For a memory of $N$ entries, this is $N$ floating-point
+    numbers, or roughly $4N$ bytes at single precision. Compared to
+    the embedding storage of $4dN$ bytes (for $d$-dimensional
+    embeddings), this is a $1/d$ relative overhead, which is
+    negligible at typical $d \in [768, 1536]$.
+    \item One credibility weight $w_i^{(t)} \in [0,1]$ per auditor.
+    For $|\mathcal{N}|$ agents, this is $|\mathcal{N}|$ scalars,
+    constant in $N$.
+    \item A bounded history buffer of recent calibration scores for
+    computing $\rho^*$ and $\eta_t$. We maintain the last $W$ scores
+    using a fixed-size ring buffer, so memory is $O(W)$ regardless of
+    how many rounds have elapsed.
+\end{itemize}
+Total: an additional $O(N + W + |\mathcal{N}|)$ scalars on top of the
+base memory, dominated by the trust-weight column.
+
+\textbf{Token overhead.}
+We emphasize again that \system makes zero additional LLM calls. The
+contributor's $\Delta_t$ generation, the auditors' query and
+path-walking activity, and the agent debate itself are all unchanged.
+The probes \system uses are exactly the queries and walks the
+auditors would issue without calibration. There is no calibration
+prompt, no auditor-side reasoning solicited, and no contributor-side
+justification generated. Token consumption per round is therefore
+identical to an uncalibrated multi-agent debate of the same
+configuration.
+
+\textbf{Index overhead.}
+For embedding memory we reuse the existing ANN index. Calibration
+queries it but does not modify it beyond standard insertion, so no
+new index structure or rebuild step is added. For graph memory we
+reuse the existing adjacency structure plus a small side index
+$\mathcal{R}_{\text{compat}}$ of relation co-occurrence counts. The
+side index has size $O(|\mathcal{R}|^2)$ where $|\mathcal{R}|$ is the
+number of relation types ($\leq 10^3$ even for large knowledge
+graphs), so it adds at most a few megabytes regardless of
+$|\mathcal{V}_t|$. Both index costs are constant in the memory size
+and therefore do not enter the asymptotic analysis of
+\S\ref{app:complexity}.
+
+%-------------------------------------------------------------
+\subsection{Compatibility Set Estimation}
+\label{app:compat_estimation}
+%-------------------------------------------------------------
+
+The compatibility set $\mathcal{R}_{\text{compat}}(r)$ used in the
+graph-memory local check is learned from the existing graph rather
+than supplied as an external ontology. We compute it as follows.
+
+For each pair of relation types $(r, r') \in \mathcal{R} \times
+\mathcal{R}$, we count the number of nodes $u \in \mathcal{V}_t$
+where $u$ has both an outgoing edge of type $r$ and an outgoing edge
+of type $r'$. Call this count $c(r, r')$. We define the
+co-occurrence score:
+\begin{equation}
+    \text{cooc}(r, r') = \frac{c(r, r')}{c(r) \cdot c(r') /
+    |\mathcal{V}_t|}
+\end{equation}
+where $c(r) = \sum_{r'} c(r, r')$ is the marginal occurrence count
+of relation $r$. This is the standard pointwise mutual information
+form, normalized so that random co-occurrence yields
+$\text{cooc} = 1$.
+
+The compatibility set is then:
+\begin{equation}
+    \mathcal{R}_{\text{compat}}(r) = \{r' \in \mathcal{R} :
+    \text{cooc}(r, r') \geq \tau_t\}
+\end{equation}
+where $\tau_t$ is the running median of all $\text{cooc}$ values in
+the current graph (again adaptive, no manual setting). At cold start
+(empty graph), $\mathcal{R}_{\text{compat}}(r) = \mathcal{R}$ for all
+$r$, meaning the local check is uninformative until the graph has
+enough edges to estimate co-occurrence. This degrades the detection
+signal during warm-up but does not produce false rejections, because
+$s_{\text{local}}$ stays at $1$ when the set is universal.
+
+\textbf{Update cost.}
+$\mathcal{R}_{\text{compat}}$ is recomputed incrementally. Each new
+edge $(u, r, v)$ updates at most $|\mathcal{N}(u)|$ entries of $c(r,
+\cdot)$, so per-edge update cost is $O(|\mathcal{N}(u)|)$. Summed
+over the new-edge set, the total $O(|\mathcal{E}_t^\Delta| \cdot d)$
+matches the local-check term in Table~\ref{tab:complexity_comparison}
+and is therefore absorbed into the marginal-cost budget already
+analyzed in \S\ref{app:complexity}. No separate latency cost is
+incurred for maintaining $\mathcal{R}_{\text{compat}}$.
+
+\textbf{Storage cost.}
+$\mathcal{R}_{\text{compat}}$ is stored as a $|\mathcal{R}| \times
+|\mathcal{R}|$ co-occurrence matrix, where $|\mathcal{R}|$ is the
+number of relation types. Even at $|\mathcal{R}| = 10^3$ (large for a
+knowledge graph), this is $10^6$ scalars, i.e., a few megabytes,
+independent of $|\mathcal{V}_t|$. Compared to the base graph
+storage of $O(|\mathcal{V}_t| + |\mathcal{E}_t|)$ entries, this is a
+constant additive overhead and does not affect any complexity
+bound.
+
+%-------------------------------------------------------------
+\subsection{Bidirectional BFS Depth and Cost}
+\label{app:graph_bfs}
+%-------------------------------------------------------------
+
+We chose $L_{\max} = \lceil \log |\mathcal{V}_t| \rceil$ for the
+bidirectional BFS in the path check. This choice rests on two
+empirical regularities of knowledge graphs.
+
+First, real-world knowledge graphs satisfy a small-world property:
+the typical shortest-path distance between two random nodes scales
+as $O(\log |\mathcal{V}|)$. This holds for ConceptNet, Wikidata,
+Freebase, and the graph memories used by \cite{anokhin2024arigraph}
+and \cite{zhang2025g}. Setting $L_{\max}$ to this scale captures
+essentially all paths the contributor could plausibly justify, while
+truncating exponential blowup of BFS at deeper levels.
+
+Second, bidirectional BFS searches from both endpoints simultaneously
+and meets in the middle, so the effective branching factor is
+$d^{L_{\max}/2}$ rather than $d^{L_{\max}}$. With $L_{\max} = \log
+|\mathcal{V}_t|$ this gives a worst-case cost of $\sqrt{|\mathcal{V}_t|}
+\cdot \text{poly}(d)$, which is sub-linear in graph size.
+
+\textbf{Failure modes.}
+If the graph is unusually dense or has a large diameter, $L_{\max} =
+\log |\mathcal{V}_t|$ may either over-explore or miss valid paths. We
+detect this online by tracking the running ratio
+$|\mathcal{P}_{uv}| / \text{expected paths}$ across rounds. If the
+ratio drifts outside $[0.5, 2.0]$, we adjust $L_{\max}$ by $\pm 1$.
+The adjustment changes the BFS cost by at most a factor of $d^{1/2}$
+(the same bidirectional speedup applies), so the marginal-cost
+analysis in Table~\ref{tab:complexity_comparison} still holds within
+a constant factor.
+
+%-------------------------------------------------------------
+\subsection{Retrieval Complexity Under Trust Weighting}
+\label{app:retrieval_complexity}
+%-------------------------------------------------------------
+
+We claimed in \S\ref{ssec:retrieval} that trust weighting adds zero
+asymptotic cost to retrieval (not just marginal cost, but no added
+cost at all). We justify this for both architectures.
+
+\textbf{Embedding retrieval.}
+The trust-weighted vector $\tilde{\mathbf{e}}_k = \sqrt{\rho_k} \cdot
+\mathbf{e}_k$ is computed once at index-load time and stored in place
+of $\mathbf{e}_k$. Top-$k$ retrieval against
+$\{\tilde{\mathbf{e}}_k\}$ uses the same ANN index structure as
+retrieval against $\{\mathbf{e}_k\}$, with the same $O(k \log N)$
+cost per query. When an entry's $\rho_k$ is updated, we re-scale that
+single vector in $O(d)$ and re-insert into the ANN index in $O(\log
+N)$, identical to a standard memory write. No new cost term enters
+Table~\ref{tab:complexity_comparison}.
+
+\textbf{Graph retrieval.}
+For path queries, the trust-weighted path strength $\prod_{e \in \pi}
+\rho_e$ is computed lazily during traversal: each edge access
+multiplies the running product by $\rho_e$. This is one extra
+multiplication per visited edge, an $O(1)$ overhead on top of the
+$O(1)$ baseline edge-access cost. Total query complexity stays at
+$O(d^{L_{\max}})$, identical to baseline. When an edge's $\rho_e$ is
+updated, we modify a single entry in the edge attribute table in
+$O(1)$.
+
+%-------------------------------------------------------------
+\subsection{Implementation Notes}
+\label{app:impl_notes}
+%-------------------------------------------------------------
+
+We provide a few practical notes for re-implementation.
+
+\textbf{ANN index choice.}
+We use HNSW \citep{malkov2018efficient} with $M = 16$ and $\text{ef} =
+200$ for the embedding case. The detection pass requires range
+queries (count neighbors within a similarity radius), which HNSW does
+not natively support, so we issue a top-$k$ query with a generous
+upper bound (e.g., $k_{\text{filter}} = 100$) and filter by the
+adaptive radius post-hoc. The post-hoc filter is $O(k_{\text{filter}})$
+per call and does not change the $O(\log N)$ asymptotic of the
+underlying ANN query, so it is absorbed into the $O(K \log N)$
+detection-pass cost reported in
+Table~\ref{tab:complexity_comparison}.
+
+\textbf{RBO truncation.}
+Rank-biased overlap is defined as an infinite series, but it
+converges geometrically. We truncate at depth $k$ (the same $k$ used
+for top-$k$ retrieval) with persistence parameter $p_{\text{RBO}} =
+0.9$, the default in the original RBO paper. This is a property of
+RBO itself and not a hyperparameter introduced by \system.
+
+\textbf{Probe sampling.}
+For embedding memory, $Q_i$ is the auditor's pending-query queue
+(typically size $1$ to $5$ per round). For graph memory, $\pi_i$ is
+the auditor's most recent traversal path. In both cases, we sample
+uniformly using the system's standard random number generator with a
+seed reset at each round to prevent adaptive auditors from predicting
+future samples from past behavior.
+
+\textbf{Numerical stability.}
+We clamp all $\rho$, $w_i$, $\rho_{\text{geo}}$, and $\rho_{\text{ret}}$
+values into $[10^{-6}, 1 - 10^{-6}]$ before taking products or square
+roots, to avoid underflow when scores accumulate over many rounds.
+This is standard numerical hygiene and not a tunable parameter.

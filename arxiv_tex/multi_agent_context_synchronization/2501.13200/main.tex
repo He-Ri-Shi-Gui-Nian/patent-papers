@@ -1,0 +1,488 @@
+
+\documentclass{article} % For LaTeX2e
+
+\usepackage{conference,times}
+\usepackage{graphicx} 
+\usepackage{booktabs} 
+\usepackage{multirow}
+% \usepackage{subfig}
+\usepackage{subcaption}
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{svg}
+
+\title{SRMT: Shared Memory for Multi-agent Lifelong Pathfinding}
+
+
+\author{
+Alsu Sagirova$^{1,2}$ \ \ 
+Yuri Kuratov$^{1,2}$ \ \ 
+Mikhail Burtsev$^3$ \\ \\
+$^1$AIRI, Moscow, Russia \\ 
+$^2$Neural Networks and Deep Learning Lab, MIPT, Dolgoprudny, Russia \\
+$^3$London Institute for Mathematical Sciences, London, UK \\
+\texttt{\{alsu.sagirova,\ yurii.kuratov\}@phystech.edu, mb@lims.ac.uk}
+}
+
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to \LaTeX{} to determine where to break
+% the lines. Using \AND forces a linebreak at that point. So, if \LaTeX{}
+% puts 3 of 4 authors names on the first line, and the last on the second
+% line, try using \AND instead of \And before the third author name.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\finalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+
+
+Multi-agent reinforcement learning (MARL) demonstrates significant progress in solving cooperative and competitive multi-agent problems in various environments. One of the principal challenges in MARL is the need for explicit prediction of the agents' behavior to achieve cooperation. To resolve this issue, we propose the Shared Recurrent Memory Transformer (SRMT) which extends memory transformers to multi-agent settings by pooling and globally broadcasting individual working memories, enabling agents to exchange information implicitly and coordinate their actions. We evaluate SRMT on the Partially Observable Multi-Agent Pathfinding problem in a toy Bottleneck navigation task that requires agents to pass through a narrow corridor and on a POGEMA benchmark set of tasks. In the Bottleneck task, SRMT consistently outperforms a variety of reinforcement learning baselines, especially under sparse rewards, and generalizes effectively to longer corridors than those seen during training. On POGEMA maps,  including Mazes, Random, and MovingAI, SRMT is competitive with recent MARL, hybrid, and planning-based algorithms. These results suggest that incorporating shared recurrent memory into the transformer-based architectures can enhance coordination in decentralized multi-agent systems. The source code for training
+and evaluation is available on GitHub: \url{https://github.com/Aloriosa/srmt}.
+
+%The field of AI research is increasingly focusing on multi-agent systems due to their capacity to tackle complex issues through distributed problem-solving. One of the actual tasks is a decentralized Multi-agent Pathfinding (MAPF) where each agent \textit{individually} analyzes its local observations and decides the action based on this information. We propose the Shared Recurrent Memory Transformer (SRMT) to tackle this task. SRMT, inspired by the memory-augmented transformers, adapts working memory to improve collaboration and global information usage in multi-agent systems. For empirical evaluation, we use the Partially Observable Lifelong Multi-Agent Pathfinding task. It entails dynamically setting new objectives for the agents as they accomplish their previous tasks. Our findings indicate that integrating shared memory mechanisms into agent policy can boost collaborative behavior in distributed multi-agent environments, leading to enhanced overall system performance.
+
+%Multi-agent systems are gaining attention in AI research due to their ability to solve complex problems in a distributed manner, but coordinating multiple agents remains challenging. Inspired by the global workspace theory, we introduce the Shared Recurrent Memory Transformer (SRMT).\footnote{The code will be released upon acceptance.} SRMT extends memory transformers to multi-agent settings by pooling and globally broadcasting individual working memories, enabling agents to implicitly exchange information and coordinate behavior. We evaluate SRMT on the Partially Observable Multi-Agent Pathfinding in a bottleneck navigation task requiring agents to pass through a narrow corridor. SRMT consistently outperforms a range of reinforcement learning baselines, especially under challenging reward structures with sparse feedback. Our experiments also demonstrate that SRMT generalizes effectively to environments with significantly longer corridors than those seen during training, highlighting its scalability and robustness. These results suggest that incorporating shared memory structures into transformer-based architectures can enhance coordination in decentralized multi-agent systems.
+
+%Multi-agent reinforcement learning (MARL) demonstrate significant progress in solving cooperative and competitive multi-agent problems in various environments. One of the main challenges for MARL is the need to explicitly predict the behavior of the other agents to implement cooperative behavior. As a solution to this problem, we propose the Shared Recurrent Memory Transformer (SRMT) that extends memory transformers to multi-agent settings by pooling and globally broadcasting individual working memories, enabling agents to implicitly exchange information and coordinate actions. We evaluate SRMT on the Partially Observable Multi-Agent Pathfinding in a toy bottleneck navigation task requiring agents to pass through a narrow corridor and a set of mazes from POGEMA benchmark. In the bottleneck task, SRMT consistently outperforms a range of reinforcement learning baselines, especially under sparse rewards, and generalizes effectively to longer corridors than those seen during training. On POGEMA maps including Mazes, Random and Warehouse SRMT is competitive to a variety of recent MARL, hybrid and planning-based algorithms. These results suggest that incorporating shared memory structures into transformer-based architectures can enhance coordination in decentralized multi-agent systems.
+
+
+
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Multi-agent systems have significant potential to solve complex problems through distributed intelligence and collaboration. 
+%Centralized vs distributed planning.
+%In MARL it is hard to coordinate because need to predict. 
+However, coordinating the interactions between multiple agents remains challenging, often requiring sophisticated communication protocols and decision-making mechanisms. We propose a novel approach to address this challenge by introducing a \textit{shared memory} as a global workspace for agents to coordinate behavior. The global workspace theory~\citep{Baars1988-BAAACT} suggests that in the brain, there are independent functional modules that can cooperate by broadcasting information through a global workspace. Inspired by this theory, we consider the agents in Multi-Agent Pathfinding (MAPF) as independent modules with shared memory and propose a \textit{Shared Recurrent Memory Transformer} (SRMT) as a mechanism for exchanging information to improve coordination and avoid deadlocks. SRMT extends memory transformers~\citep{burtsev2020memory,bulatov2022recurrentmemorytransformer,yang2022transformer,cherepanov2024recurrentactiontransformermemory} to multi-agent settings by pooling and globally broadcasting individual working memories. 
+
+In this study, we test the shared recurrent memory approach on Partially Observable Multi-agent Pathfinding (PO-MAPF)~\citep{stern2019multi}, where each agent aims to reach its goal while observing the state of the environment, including locations and actions of the other agents and static obstacles, only locally. Multi-agent pathfinding can be considered in the \textit{decentralized} manner, where each agent independently collects rewards and makes decisions on its actions. There are many attempts to solve this problem: in robotics~\citep{van2008reciprocal,zhu2022decentralized}, in machine and reinforcement learning field~\citep{damani2021primal,ma2021dcc,wang2023scrimp,sartoretti2019primal,riviere2020glas}. Such methods often involve manual reward-shaping and external demonstrations. Also, several works utilize the communication between agents to solve decentralized MAPF~\citep{ma2021distributed,Li2022MultiAgentPF,wang2023scrimp}. However, the resulting solutions are prone to deadlocks and poorly generalizable to the maps not used for training. In this work, we compare SRMT to a range of reinforcement learning baselines and show that it consistently outperforms them in the Bottleneck navigation task. Tests on POGEMA benchmark~\cite{skrynnik2024pogema} show that SRMT is competitive with numerous recent MARL, hybrid, and planning-based algorithms.
+
+%Our research aims to advance the field of multi-agent systems and uncover improved methods for coordinating actions between agents. The potential impact of this work extends to diverse areas such as robotics, distributed problem-solving, and the development of artificial general intelligence.
+
+\section{Related Work}
+\label{sec:related}
+% on communication and shared memory [https://arxiv.org/abs/1911.10635]
+% a - centralized, b - decentralized setting with networked agents, c - fully decentralized
+% shared memory - decentralized setting with networked agents 
+\subsection{Shared memory and communication in multi-agent reinforcement learning}
+
+Shared memory is designed to help agents coordinate their behavior, and it is closely related to existing approaches in multi-agent reinforcement learning (MARL), particularly those involving inter-agent communication. Compared to a single-agent reinforcement learning, providing agents with communication protocol presents a significant challenge in MARL~\citep{NIPS2016_learning_to_communicate,DBLP:journals/corr/abs-1810-02912,pmlr-v80-zhang18n}. Common strategies to address this problem include (1) a centralized setting, where a central controller aggregates information from all agents; (2) a fully decentralized setting, where agents make decisions based solely on local observations; and (3) a decentralized setting with networked agents, allowing agents to share local information with each other~\citep{zhang2021multi,10314538,nayak2023scalablemultiagentreinforcementlearning,DBLP:journals/corr/abs-1906-01202}.
+
+In multi-agent pathfinding (MAPF) with reinforcement learning, various methods fit within these three categories. Decentralized methods without communication include approaches such as IQL~\citep{tan1993iql}, VDN~\citep{sunehag2018vdn}, QMIX~\citep{rashid2020qmix}, QPLEX~\citep{wang2021qplex}, Follower~\citep{skrynnik2024learn}, and MATS-LP~\citep{skrynnik2024mats-lp}. These methods propose to implement the agent decision-making based only on local information. Notably, VDN, QMIX, and QPLEX adopt centralized training with a joint Q-function but operate in a decentralized manner during execution with individual Q-functions. In contrast, centralized methods such as LaCAM~\citep{okumura2023lacam} and RHCR~\citep{li2021rhcr} employ a centralized search-based planner. Finally, decentralized methods with communication, such as DCC~\citep{ma2021dcc}, MAMBA~\citep{egorov2022mamba}, and SCRIMP~\citep{wang2023scrimp}, allow agents to share information to enhance coordination and avoid collisions. These methods utilize various communication strategies, including selective information sharing (DCC), discrete communication protocols (MAMBA), and scalable communication mechanisms based on transformer architectures (SCRIMP), all aimed at improving agent cooperation in complex and dynamic environments. 
+%In the following paragraphs, we provide detailed descriptions of MAPF methods we used for evaluation to motivate their comparison with SRMT.
+
+MAMBA~\citep{egorov2022mamba} is a pure MARL approach that uses communication and centralized training within a Model-Based Reinforcement Learning framework, featuring discrete communication and decentralized execution. A 3-layer transformer serves as the communication block with its outputs used by the agents to update their world models and make action predictions. Each agent maintains its own version of the world model, which can be updated through the communication block.
+
+QPLEX~\citep{wang2021qplex} is a pure multi-agent reinforcement learning method that employs multi-agent Q-learning with centralized end-to-end training, providing inter-agent communication. QPLEX learns to factorize a joint action-value function to enable decentralized execution. The approach uses a duplex dueling mechanism that connects local and joint action-value functions, allowing agents to make independent decisions while benefiting from centralized training.
+
+Follower~\citep{skrynnik2024learn} is a learnable method for lifelong MAPF without communication that uses a centralized path planning with a modified A* heuristic search to reduce agents' collisions. MATS-LP~\citep{skrynnik2024mats-lp} is also a learnable method for lifelong MAPF without communication that uses a learnable policy combined with Monte Carlo Tree Search (MCTS) to reason about possible future states. 
+%Both Follower and MATS-LP demonstrate the best performance among decentralized methods without communication on the POGEMA benchmark. However, MATS-LP requires significantly more runtime than other approaches, as it performs MCTS for each agent at every step.
+
+RHCR~\citep{li2021rhcr} is a purely search-based centralized planner that does not require training. It decomposes the lifelong MAPF into a sequence of windowed MAPF instances, with re-planning occurring according to a predetermined schedule, resolving collisions within the current planning window only.
+%On the POGEMA benchmark, RHCR demonstrates strong performance in cooperation, out-of-distribution, and pathfinding, but faces challenges with congestion and scalability metrics. 
+
+The proposed \textit{shared recurrent memory} approach fits into a decentralized setting with networked agents. Unlike other methods, SRMT allows agents to communicate indirectly through a shared memory. Each agent uses a recurrently updated memory and learns to read and write its individual memory representations to a shared space. This allows agents to retain information over time steps in the episode and enables the effective individual and collective decision-making process in pathfinding tasks. Furthermore, unlike approaches that rely on a joint Q-function for centralized training, our method maintains decentralization throughout training and execution. The fully decentralized setting of the multi-agent system might be preferable over the centralized one in many real-world applications.
+
+\subsection{Shared memory and memory transformers}
+SRMT extends the memory transformers~\citep{burtsev2020memory,bulatov2022recurrentmemorytransformer,yang2022transformer,cherepanov2024recurrentactiontransformermemory} to multi-agent settings by pooling and globally broadcasting individual memories of each agent.
+
+Memory Transformer~\citep{burtsev2020memory} augments the standard Transformer architecture~\citep{vaswani2017attention} by introducing special memory tokens appended to the input sequence, providing the additional operational space for the model. These memory tokens are trainable and are used by the model as working memory. In the Recurrent Memory Transformer (RMT)~\citep{bulatov2022recurrentmemorytransformer},
+memory tokens transfer information between segments of a long input sequence. In this case, multiple memory tokens act as a recurrent state, effectively turning the transformer into a recurrent cell that processes each segment as input at each time step.
+
+Agent Transformer Memory (ATM)~\citep{yang2022transformer} introduces a transformer-based working memory into multi-agent reinforcement learning. Each ATM agent maintains a memory buffer of the last N memory states, sequentially updated by a transformer network. This approach is similar to the RMT, but instead of using only the latest memory state, ATM uses the several most recent memory states. Additionally, each memory state in ATM consists of a single vector, whereas in RMT, multiple memory vectors work together as a recurrent hidden state.
+
+Recurrent Action Transformer with Memory (RATE)~\citep{cherepanov2024recurrentactiontransformermemory} extends the Decision Transformer~\citep{2021decisiontransformer} by incorporating memory tokens and a dedicated memory update module, the Memory Retention Valve, which updates memory states to effectively handle long segmented trajectories.
+
+Relational Recurrent Neural Network (RRNN)~\citep{rrnn} utilizes the multi-head dot product attention to update the memory state given the new input data. Then it employs the modification of a standard LSTM~\citep{hochreiter1997long} treating the memory matrix as a matrix of recurrent cell states to predict the model outputs.
+
+Approaches such as ATM, RATE, and RRNN are focused on maintaining individual memory states for each agent. In contrast, SRMT extends recurrent memory to multi-agent RL and facilitates the \textit{shared} access to individual agents' memories, enabling coordination and joint decision-making among all agents in the environment.
+
+
+% Mamba https://arxiv.org/abs/2205.15023
+% QPLEX
+% IQL
+% VDN 
+% QMIX
+% follower: https://arxiv.org/abs/2310.01207
+% 
+
+% mapf-gpt: https://arxiv.org/abs/2409.00134
+
+% todo: add these two papers
+% mazero: https://arxiv.org/abs/2405.11778
+% Agent Transformer Memory: https://proceedings.neurips.cc/paper_files/paper/2022/hash/e1cf57f1e104c6c05e31894c15a65e99-Abstract-Conference.html
+
+
+%QMIX, MAMBA, MAPPO - pure MARL, do not involve search based modules
+
+% no communication: Follower, MATS-LP, Switchers, QPLEX, IQL, VDN, QMIX
+% decentralized with communication to resolve potential collisions: SCRIMP, DCC
+% centralized: LaCAM, RHCR
+
+% navigation?
+
+% POGEMA - fast and flexible environment for training,
+
+%In addition to the decentralization of the decision-making process, we focus on the partially observable environments that increase the degree of agents' autonomy and make the MAPF problem more challenging. 
+
+
+\section{Shared Recurrent Memory Transformer}
+\label{sec:srmt}
+
+Multi-agent pathfinding task is set as follows. The agents interact in the two-dimensional environment represented as graph $G = (V, E)$ with the vertices corresponding to the locations and the edges to the transitions between these locations. The timeline consists of discrete time steps. The predefined final step of the agent interaction episode is called the episode length. At the beginning of the episode, each agent $i$ is given a start location $s_i \in V$ and a goal location $g_i \in V$ to be reached until the end of the episode. At each time step, an agent performs an action to stay in its current location or move to an adjacent one. The task of multi-agent pathfinding is to make each agent reach its goal until the end of the episode without colliding with the other agents.
+
+In this study, we work with a decentralized Partially Observable Multi-agent Pathfinding (PO-MAPF)~\citep{stern2019multi}. Decentralization of MAPF means that the multi-agent system has no global controller, each agent performs actions and collects rewards independently of the others. Also, each agent observes the environment obstacles, other agents, and their goals only locally, from a squared window of fixed size centered at the agent's current location. Formally, the partially observable multi-agent Markov decision process $M$ is defined~\citep{bernstein2002complexity}:
+\[
+M = \langle S, U, A, P, R, O, \mathcal{O}, \gamma\rangle,
+\]
+where $S$ is the set of environment states, $U = \{ 1, \ldots, n \}$ represents the agents, $A$ is the set of possible actions with action of agent $u$ denoted as $a^{(u)}$. At each time step of the episode, agents form a joint action $a^{(U)} \in A^n$. Then, the environment state is updated with the transition function 
+\[
+P(s' \mid s, a^{(U)}) : S \times A^n \times S \rightarrow [0, 1].
+\]
+
+After all agents performed their actions, each of them receives the following scalar reward 
+\[
+R(s, u, a^{(U)}) : S \times U \times A^n \rightarrow \mathbb{R},
+\]
+reflecting the agent's performance during the previous step. The future rewards are discounted by a factor $0 \leq \gamma \leq 1$ defining their importance. Before the next step, each agent also receives its local observation $o^{(u)} \in O$ based on the following global observation function 
+\[
+\mathcal{O}(s, a) : S \times A \rightarrow O.
+\]
+The historical sequence of observations and respective actions $h^{(u)}$ is preserved for each agent to estimate a learnable stochastic policy 
+\[
+\pi^{(u)}(a^{(u)} \mid h^{(u)}) : T \times A \rightarrow [0, 1].
+\]
+To train the policy approximation model the expected cumulative reward is used as an objective function to maximize over time.
+
+We approximate the policy with a deep neural network depicted in Figure~\ref{fig:srmt}. The policy consists of the spatial encoder to process agent observation and the actor-critic network. The agents are assumed to be homogeneous, so the policy is shared between agents during training. The spatial encoder uses ResNet~\citep{he2016deep} with an additional Multi-Layer Perceptron (MLP) in the output layer. The Action Decoder and the Critic Head are Dense layers. The policy neural network is presented in Figure~\ref{fig:srmt}. We adopt the~\cite{skrynnik2024learn} approach for configuring the policy-approximating model and input-output data pipelines. The model input is the agent's local observation tensor of shape $3\times m\times m$ tensor, where $m$ is the observation range. The channels of the tensor encode the static obstacle locations combined with the current path, the other agents, and their targets.
+
+
+\begin{figure}[t]
+\centering
+ \includegraphics[width=\linewidth]{images/SRMT2.pdf}
+  \caption{\textbf{Shared Recurrent Memory Transformer architecture.} SRMT pools recurrent memories $mem_{i,t}$ of individual agents at a moment $t$ and provides global access to them via cross-attention.}
+  \label{fig:srmt} 
+\end{figure}
+
+SRMT is used as a core subnetwork of the actor-critic model. As the main mechanism in SRMT, we consider the attention block implemented in the Huggingface GPT-2\footnote{\url{https://huggingface.co/docs/transformers/model\_doc/gpt2}} model. In SRMT, the input sequence for each agent at each time step is constructed by combining three key components: the agent's personal memory vector; the historical sequence of the agent's observations from the past $\hat h=8$ time steps; and the current step observation. This sequence undergoes a full self-attention mechanism. Next, the output of the self-attention is passed through a cross-attention layer between current hidden representations and shared memory. The shared memory consists of a globally accessible, ordered sequence of all agents' memory vectors for the current time step. This interaction between personal and shared memory enables each agent to incorporate global context into the decision-making process. The resulting output is then passed through a memory head, which updates the agent’s personal memory vector for the next time step. Simultaneously, the model output is also fed into the decoder part of the policy model, which generates the agent's action.
+
+
+
+\section{Experiments and Results}
+
+
+\subsection{Classical MAPF on Bottlenecks}
+
+We use the POGEMA~\citep{skrynnik2024pogema} framework for our experiments. In POGEMA the two-dimensional environment is represented as a grid composed of obstacles and free cells. At each time step each agent can perform two types of actions: moving to an adjacent cell or remaining at their current position. Agents have limited observational capabilities, perceiving other agents only within a local $R\times R$ area centered on their current position. The episode ends when the predefined time step, episode length, is reached. The episode can also end before this time step if certain conditions are met, i.e. all agents reach their goal locations.
+
+As an initial test of our approach, we selected a simple two-agent coordination task where the agents must navigate through a narrow passage. The environment consists of two rooms connected by a one-cell-wide corridor, as illustrated in Fig.~\ref{fig:maps:bottleneck}. Each agent has a $5\times 5$ field of view and starts in one room, and their goal is located in the opposite room, requiring both agents to pass through the narrow corridor to complete the task. To train the model, we utilized 16 maps with corridor lengths uniformly selected between 3 and 30 cells. To evaluate the performance, we utilize three metrics: 
+
+\begin{itemize}
+    \item \textit{Cooperative Success Rate (CSR)}~--~a binary measure indicating whether all agents reached their goals before the episode's end;
+    \item \textit{Individual Success Rate (ISR)}~--~the fraction of the agents that achieved their goals during the episode;
+    \item \textit{Sum-of-Costs (SoC)}~--~the total number of time steps taken by all agents to reach their respective goals (the lower the value the better).
+\end{itemize}
+
+%\begin{wrapfigure}{r}{0.4\textwidth}
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.26\textwidth}
+    \centering
+    %\vspace{-20px}
+    \includegraphics[width=\textwidth]{images/env.pdf}
+    \caption{Bottleneck}
+    \label{fig:maps:bottleneck}
+    \end{subfigure}
+    \begin{subfigure}[b]{0.237\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/pogema_maps/maze.pdf}
+        \caption{Maze}
+        \label{fig:maps:maze}
+    \end{subfigure}
+    \begin{subfigure}[b]{0.25\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/pogema_maps/random.pdf}
+        \caption{Random}
+    \end{subfigure}
+    
+    \begin{subfigure}[b]{0.26\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/pogema_maps/puzzle.pdf}
+        \caption{Puzzle}
+    \end{subfigure}
+    \begin{subfigure}[b]{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/pogema_maps/warehouse.pdf}
+        \caption{Warehouse}
+    \end{subfigure}
+    \begin{subfigure}[b]{0.24\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/pogema_maps/movingai-fixed.pdf}
+        \caption{MovingAI}
+    \end{subfigure}
+    \caption{\textbf{Examples of environments.} (a) Bottleneck task. This is a toy task on coordination. Two agents start in rooms opposite their goals and should coordinate passing the corridor. Agents are shown as solid-colored circles, their goals are empty circles with the same border color. (b)-(f) Maps from POGEMA benchmark (images for POGEMA maps are from \citep{skrynnik2024pogema}). POGEMA allows testing the planning methods' generalization across different maps and problem sizes.}
+  \label{fig:env} 
+    %\vspace{-10px}
+%\end{wrapfigure}
+\end{figure}
+
+The policy function is approximated with a deep neural network (see Fig.~\ref{fig:srmt}, left). To benchmark the effectiveness of SRMT, we compared it against MAMBA, QPLEX, ATM, RATE, and RRNN models. As additional baselines that also serve as ablations of SRMT, we evaluate the following core subnetwork architectures: the recurrent memory transformer that allows agents to process individual memory representations without sharing them (RMT), the memoryless transformer (Attention), the empty core that uses the direct connection of spatial encoder to the actor-critic action decoder (Empty), and GRU RNN (RNN) to assess the difference between the attention-based and RNN-based observation processing. Additional details regarding the training procedure can be found in Appendix~\ref{appdx:train_details}. For the Bottleneck task, we apply no advanced heuristics or methods for path planning to test the impact of memory addition. Our path-planning strategy is simple: each agent aims to follow the shortest path to the goal at each time step. If according to the planned movements, the agents may collide, their final decision will be to retain their current positions until the next step. We hypothesize that a shared memory mechanism will help to solve such bottleneck problems.
+
+% \section{Results and Discussion}
+% \label{sec:results}
+
+We first evaluated SRMT against the baseline models using three variations of the reward function: \textit{Directional}, \textit{Moving Negative}, and \textit{Sparse}.\footnote{See Appendix \ref{sec:appendix} for details of rewards and extra results.} In the Directional setting, the agent was rewarded for reaching the goal and for every step that brought it closer to the goal. In the Moving Negative strategy movements are slightly penalized to minimize the path to the goal but no information about goal location is provided. In contrast, the Sparse reward function only gives a reward when the agent successfully achieves the goal cell, offering no intermediate rewards.
+
+The comparison of evaluation scores, shown in Figure~\ref{fig:bars}, demonstrates that SRMT successfully solves the task under considered reward functions. In particular, SRMT consistently performed well, even in the challenging Moving Negative and Sparse reward scenarios where other methods struggled. The ability to coordinate agents via shared memory proved critical, especially when feedback from the environment was minimal.
+
+Among the non-memory sharing methods, RMT achieved the best performance, outperforming ATM, RATE, RNN,  GRU-based RNN, and the Attention models. However, without the shared memory, RMT's performance in the Sparse reward setting was still limited compared to SRMT, highlighting the importance of the global information exchange.
+
+\begin{figure}[htbp]
+  \centering
+     \includegraphics[width=\linewidth]{images/bars_scores.pdf}
+    \caption{\textbf{SRMT effectively solves the Bottleneck Task with different reward functions.} Trained with Directional (positive when moved towards a goal and achieved it) reward, SRMT clearly outperforms the communication (MAMBA, QPLEX) and memory (ATM, RATE, RRNN) baselines. The RMT, Attention, and RNN ablations also solve the task. For the case with the negative reward for movement and no directional reward (Moving Negative) SRMT and RMT without shared memory demonstrate the clear advantage over the memory-less ablations of SRMT (Attention, Empty, RNN) and the communicative and memory baselines (MAMBA, QPLEX, ATM, RATE, RRNN).
+    With the Sparse (on-goal only) reward, SRMT maintains the score while other methods drop. Error bars indicate 95\% confidence intervals. For CSR and ISR higher values are better, for SoC~--~the lower the better.}
+  \label{fig:bars}
+\end{figure}
+
+To further assess the generalization capabilities of the trained policies, we evaluated them on bottleneck environments with corridor lengths significantly larger than those used during training, ranging from 5 to 1000 cells. The evaluation results\footnote{For these evaluations, we adjusted the episode length to $2 \cdot \textit{corridor\_len} + 100$ to ensure that both agents had sufficient time to reach their goals within each episode.} for the Sparse and Moving Negative reward functions are shown in Figure~\ref{fig:sparse_mov_neg_eval}. While implementing the RRNN, RATE, and ATM, we noticed the common feature of these architectures to initialize the memory state with some pre-defined values (unit vector or random vector sampled from the Normal distribution with zero mean and unit variance). In contrast, the SRMT memory state is initialized with the values generated on the first step of the episode. To further explain the drastic difference in CSR scores of baseline memory approaches (RRNN, RATE, ATM) and SRMT, in Figure~\ref{fig:sparse_mov_neg_eval} we provided the results of an additional experiment: we modified the initial state of the RATE memory to be generated from the initial observation of the agent similar to SRMT. The resulting performance with the Moving Negative rewarding scheme (RATE\_gen) significantly increased compared to the original RATE implementation showing the importance of the proper memory initialization procedure.
+
+\begin{figure}[ht]
+  \centering
+     \includegraphics[width=\linewidth]{images/sparse_mov_neg_scores.pdf}
+    \caption{\textbf{SRMT agents generalize on corridor lengths up to 1000.} After training on corridor sizes from 3 to 30 cells all methods were evaluated on longer passages up to 1000. All non-zero performing models show good scaling up to the corridor length of 100. For the Sparse reward, SRMT leads up to 400 and then drops below RMT for collective performance. For the Moving Negative reward, SRMT shows the top-1 performance on all three metrics. The shaded area indicates 95\% confidence intervals.}
+  \label{fig:sparse_mov_neg_eval}
+\end{figure}
+
+The results indicate that trained with the Sparse reward function, the SRMT-based policy consistently outperforms the baseline methods from the related works and the SRMT ablations regarding both the individual success rate (ISR) and the total time spent in the environment (SoC). Remarkably, SRMT scales effectively up to corridor lengths of 400 cells without any significant performance degradation. For corridor lengths beyond 400 steps, the Cooperative Success Rate (CSR) of SRMT drops from 1.0 to 0.8, which surpasses other models, except for RMT. For the Moving Negative reward function, resulting policies with SRMT show the top-1 scores for any corridor length up to 1000 (see Fig.~\ref{fig:sparse_mov_neg_eval}). Evaluation scores for the other reward functions and analysis of memory representations can be found in Appendix~\ref{sec:appendix}.
+
+
+
+\subsection{Lifelong MAPF}
+
+Lifelong multi-agent pathfinding (LMAPF) is an extension of MAPF, where agents receive new destinations upon completing their current goals. The main quality metric for this task setting is the \textit{average throughput} calculated as the average number of goals reached by all agents per episode step.
+
+To train SRMT in the LMAPF setting we use the set of 40 maze-like environments (Fig.~\ref{fig:maps:maze}) of size $65\times 65$ following the~\citep{skrynnik2024learn} training procedure. The same architecture as depicted in Fig.~\ref{fig:srmt} is used for the policy approximation model with a larger number of layers compared to the classical MAPF on bottleneck environments. The detailed listing of hyperparameters can be found in the Appendix~\ref{appdx:train_details} Table~\ref{tab:params}. We consider the following reward strategy for lifelong SRMT experiments: if the agent follows the planned path to the goal, it receives a small positive reward $r=0.01.$ Otherwise $r=0.$ To define the path from the current location to the goal, we consider the A* shortest path algorithm and more advanced Heuristic Path Decider method presented in the Follower~\citep{skrynnik2024learn}. A* plans the shortest individual path to the goal, while heuristic search finds evenly dispersed paths to alleviate the congestion problems in environments with large populations of agents.
+
+To assess the effectiveness of SRMT for LMAPF, we compare it with LMAPF baselines from the POGEMA benchmark (see Fig.~\ref{fig:avg_throughput}). 
+\begin{figure}[htbp]
+  \centering
+     \includegraphics[width=\linewidth]{images/avg_throughput_per_map.pdf}
+    \caption{\textbf{SRMT outperforms other MARL methods in different environments.} SRMT trained on Mazes shows robust generalization when evaluated on maps not seen during training. SRMT outperforms MARL baselines MAMBA and QPLEX on all maps except the Warehouse environment. Mixed training with 64 or 128 agents (SRMT 64-128) does not affect the generalization abilities of the method. In the Warehouse environment, the average throughput of SRMT with a reward function based on the Follower heuristic path search (SRMT-FlwrPlan) surpasses that of MAMBA, MATS-LP, QPLEX, and RHCR methods. Error bars indicate 95\% confidence intervals.}
+  \label{fig:avg_throughput}
+\end{figure}
+We trained the SRMT with 64 agents for 1B environment steps, SRMT (SRMT 64-128) with the mixture of 64 and 128 agents for 400M steps, and SRMT with planning algorithm from the Follower (SRMT-FlwrPlan) with 64 agents for 600M environment steps. 
+
+
+Figure~\ref{fig:avg_throughput} presents the average throughput of SRMT and the baseline methods across different types of environments. The results show that SRMT trained on Mazes generalizes robustly to unseen maps, outperforming MARL baselines MAMBA and QPLEX on all maps except the Warehouse environment. The mixed training with 64 and 128 agents (SRMT 64-128) did not significantly affect the generalization abilities of the method. In Appendix~\ref{appdx:eval_scores}
+Figure~\ref{fig:movai_eval}, we also provided detailed scores for evaluations of MovingAI task with increasing numbers of agents to show the scalability of SRMT.
+
+
+In the Warehouse environment, characterized by narrow corridors and high congestion, the average throughput of SRMT with a reward function based on the Follower's heuristic path search (SRMT-FlwrPlan) surpasses that of MAMBA, MATS-LP, QPLEX, and even the centralized planning method RHCR. This indicates that integrating heuristic planning into the SRMT framework enhances performance in highly congested settings.
+
+To further evaluate the performance of SRMT, we measured its effectiveness using high-level MAPF metrics from the POGEMA benchmark~\citep{skrynnik2024pogema}. These metrics provide an assessment of different aspects of multi-agent coordination and scalability:
+\begin{itemize}
+    \item \textit{Performance} shows the relation of the average throughput of each method to the best value among the considered methods. The metric is averaged over the results obtained on the Random  ($20\times 20$ grids with randomly placed obstacles) and Mazes (maze-like grids of size $21\times 21$) sets of maps
+    \item \textit{Pathfinding} is a binary value that demonstrates if the path of a single agent on a large map is optimal. To measure it, the methods were evaluated on $256\times 256$ city maps from the MovingAI~\citep{stern2019multi} benchmark.
+    \item \textit{Congestion} is calculated as the average density of the agents present in the observations of each agent compared to the overall density of the agents on the Warehouse map.
+    \item \textit{Cooperation} metric is dedicated to the ability of the method to resolve complex situations. It is obtained as the relative average throughput with respect to the best-performing classical LMAPF solvers measured on a small set of hand-crafted $5\times 5$ Puzzles maps. The maps were constructed to contain difficult patterns requiring agents' cooperation.
+    \item \textit{Out-of-Distribution} demonstrates the Performance metric values on the maps unseen during training. For evaluation, the MovingAI-tiles $64\times 64$ patches of MovingAI maps were used.
+    \item \textit{Scalability} describes how the runtime of each method changes with the growing number of agents on the Warehouse map. The metric is calculated as the ratio between the relative runtimes and relative numbers of agents.
+\end{itemize}
+
+Figure~\ref{fig:lmapf_metrics} presents the results of a comparison of SRMT and the other methods across these key metrics. The bar chart illustrates that SRMT and its variants demonstrate competitive performance, particularly in Scalability and Pathfinding. When integrated with the Follower planning, SRMT performs best in Congestion management. The centralized planning method RHCR leads in several metrics, notably Cooperation, Out-of-distribution, Performance, and Pathfinding, reaching nearly 100\% in these categories, but is performing worse in Scalability. MAMBA shows strong performance in Congestion management and Scalability.
+
+\begin{figure}[ht]
+  \centering
+     \includegraphics[width=\linewidth]{images/LMAPF_bars.pdf}
+    \caption{\textbf{Comparison of SRMT and other methods across key performance metrics in multi-agent pathfinding.} The bar chart compares the performance of SRMT and its variants (SRMT 64-128, SRMT-FlwrPlan) against other methods -- MAMBA, QPLEX, Follower, MATS-LP, and RHCR -- across six metrics: Performance, Pathfinding, Congestion, Cooperation, Out-of-Distribution, and Scalability. SRMT and its variants demonstrate competitive performance, particularly in Scalability and Pathfinding. When integrated with Follower planning, SRMT performs best in Congestion management. The centralized planning method RHCR leads in several metrics, notably Cooperation, Out-of-distribution, Performance, and Pathfinding, reaching nearly 100\%. MAMBA shows strong performance in Congestion management and Scalability.}
+  \label{fig:lmapf_metrics}
+\end{figure}
+
+In terms of \textit{Performance}, SRMT achieves high average throughput on Random, Mazes, and MovingAI environments, indicating effective goal-reaching behavior in diverse settings. For the \textit{Pathfinding} metric, SRMT and its variants perform exceptionally well, suggesting that the agents find near-optimal paths even on large-scale maps.
+
+Regarding \textit{Congestion}, MAMBA slightly outperforms SRMT, showcasing better handling of high-density agent scenarios on the Warehouse map. However, SRMT maintains competitive performance, demonstrating its ability to navigate congested areas effectively. Furthermore, SRMT performs best in Congestion management when integrated with Follower planning.
+
+The \textit{Cooperation} metric highlights the centralized method RHCR's superiority in resolving complex situations requiring intricate coordination. While SRMT does not reach RHCR's level in this aspect, it outperforms the other decentralized methods except MATS-LP with MCTS planning, indicating reasonable cooperative capabilities without centralized control.
+
+For \textit{Out-of-Distribution} generalization, SRMT variations exhibit strong performance, maintaining high throughput on unseen maps. This emphasizes SRMT's robustness and ability to generalize beyond the training environments.
+
+%In terms of \textbf{Scalability}, both SRMT and RHCR excel, with SRMT demonstrating efficient runtime scaling as the number of agents increases. This scalability is crucial for practical applications involving large numbers of agents.
+
+Our experiments demonstrate that incorporating shared memory into transformer-based architectures significantly enhances coordination in decentralized multi-agent systems. SRMT effectively enables agents to implicitly share information, enabling better decision-making and conflict avoidance. The results indicate that SRMT not only outperforms traditional MARL baselines in complex environments but also generalizes well to unseen maps and scales efficiently with an increasing number of agents.
+
+In highly congested environments like the Warehouse, integrating heuristic planning into the SRMT framework (SRMT-FlwrPlan) further improves performance, suggesting that combining learning-based approaches with planning algorithms can be beneficial in certain settings. The competitive performance of SRMT across various high-level metrics underscores its potential as a scalable and robust solution for complex multi-agent pathfinding problems in decentralized settings, where explicit communication or centralized control may not be feasible.
+
+%These findings highlight the advantages of shared recurrent memory in enhancing multi-agent coordination and pave the way for future research exploring more sophisticated memory-sharing strategies or extending the approach to other domains requiring decentralized coordination.
+
+
+
+\section{Conclusion}
+
+
+In this paper, we introduced a novel Shared Recurrent Memory Transformer (SRMT) architecture for enhancing coordination in multi-agent systems. SRMT enables agents to exchange information implicitly and coordinate actions without explicit communication protocols. Our experimental results on the bottleneck navigation task demonstrate that SRMT consistently outperforms baseline models, especially in challenging scenarios with sparse rewards and extended corridor lengths. The shared memory mechanism allows agents to generalize their learned policies to environments with significantly longer corridors than those seen during training, demonstrating the scalability and robustness of our approach. On POGEMA maps including Mazes, Random, Moving-AI, and Warehouse SRMT is competitive with various recent MARL, hybrid, and planning-based algorithms. These findings highlight the potential of incorporating shared memory structures in transformer-based architectures for multi-agent reinforcement learning.
+
+%In this study, we addressed the challenging problem of decentralized lifelong multi-agent pathfinding. We proposed a solution that leverages shared recurrent memory to improve the cooperative abilities of agents and share information to avoid collisions and deadlocks. The proposed method consistently outperforms the memory-less and personal memory-only baselines. Moreover, it successfully scales with the environment size. The memory analysis reveals that the distance between the memory vectors of different agents is aligned with the distance between agents on the map.
+
+\section*{Limitations}
+
+As in the majority of research related to Multi-Agent Pathfinding (MAPF), in this work, we assume that the agents have flawless localization and mapping abilities. Our primary focus is on the decision-making aspect of the problem. We also consider that the agents execute actions accurately and that their moves are synchronized. Additionally, we treat obstacles as fixed elements of the environment.
+
+Finally, it is important to note that our approach, like other prominent learnable methods designed for (PO)-MAPF~--~such as PRIMAL~\citep{sartoretti2019primal}, PRIMAL2~\citep{damani2021primal}, DHC~\citep{ma2021distributed}, and PICO~\citep{Li2022MultiAgentPF}~--~does not offer theoretical guarantees that agents will reach their destinations. However, extensive experimental evidence from our work and the referenced studies, demonstrates that these learnable methods are practically powerful and scalable solutions for complex MAPF problems.
+
+%\section*{Future Directions}
+%We plan to carry on a large-scale comparison of the proposed method with the existing state-of-the-art methods for PO-MAPF task.
+
+
+\bibliographystyle{conference}
+%\input{main.bbl}
+\bibliography{reference}
+
+
+%It is permissible to reduce the font size to \verb+small+ (9 point) when listing the references.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newpage
+
+\appendix
+
+\section{Appendix}
+\label{sec:appendix}
+
+\subsection{Training details}
+\label{appdx:train_details}
+The environments were created with POGEMA~\citet{skrynnik2024pogema} framework. 
+The Sample Factory codebase~\citep{petrenko2020sf} was used for policy model training.
+
+Training parameters for all tested methods are listed in Table~\ref{tab:params}. A single Tesla P100 was used for training policy models for approximately 1 hour each. The results for models trained with Sparse and Dense reward functions were averaged over 10 runs with different random seeds. The results of training policies with Directional and Directional Negative rewards were averaged over 5 runs with different random seeds as they showed less variation during training. Each run evaluation was first averaged over 10 different evaluation procedure random seeds. We carried out the grid search for the SRMT training entropy coefficient (range $[0.00001, 0.0003]$) and learning rate (range $[0.01, 0.05]$).
+
+\begin{table}[htbp]
+  \caption{Models configuration and training hyperparameters.}
+  \medskip
+  \label{tab:params}
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    Parameter & MAPF (all models) & SRMT LMAPF \\
+    \midrule
+    \midrule
+    Optimizer & Adam & Adam \\
+    Learning rate & $0.00013$ & $0.00022$ \\
+    LR Scheduler & Adaptive KL & Constant\\
+$\gamma$ (discount factor) & $0.9716$ & $0.9756$ \\
+Recurrence rollout & $8$ & - \\
+Clip ratio & $0.2$ & $0.2$ \\
+Batch size & $16384$ & $16384$ \\
+Optimization epochs & $1$ & $1$ \\
+Entropy coefficient & $0.0156$ & $ 0.023$\\
+Value loss coefficient & $0.5$ & $0.5$ \\
+GAE$_\lambda$  & $0.95$ & $0.95$ \\
+\midrule
+MLP hidden size & $16$ & $512$ \\
+ResNet residual blocks & $1$ & $8$ \\
+ResNet filters & $8$ & $64$ \\
+Attention hidden size & $16$ & $512$ \\
+Attention heads & $4$ & $8$ \\
+GRU hidden size & $16$ & - \\
+Activation function & ReLU & ReLU \\
+Network Initialization & orthogonal & orthogonal \\
+Rollout workers & $4$ & $8$ \\
+Envs per worker & $4$ & $4$ \\
+Training steps & $2 \times 10^7$ & $10^9$ \\
+\midrule
+Episode length & $512$ & $512$ \\
+Observation patch & $5\times 5$ & $11\times 11$ \\
+Number of agents & $2$ & $64$ \\
+    \bottomrule
+  \end{tabular}
+   
+\end{table}
+
+
+
+
+
+
+\subsection{Evaluation scores}
+\label{appdx:eval_scores}
+
+
+\begin{table}[htbp]
+  \caption{Tested reward functions. We list the reward values for achieving the goal, moving on the path toward the goal, or taking other actions (moving not in the direction of the goal and staying in the same position).}
+  \medskip
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Type & On goal & Move towards goal & Else \\
+    \midrule
+    Directional & +1 & +0.005 & 0  \\
+    Sparse& +1 & 0 & 0 \\
+    Dense & +1 & -0.01 & -0.01 \\
+    Directional Negative & +1 & -0.005 & -0.01 \\
+    \multirow{ 2}{*}{Moving Negative}& \multirow{ 2}{*}{+1} & \multirow{ 2}{*}{-0.01} & -0.01 for moving, \\
+    &&& -0.005 for holding \\
+    \bottomrule
+  \end{tabular}
+   \label{tab:rewards}
+\end{table}
+
+
+We provide the evaluation results for Dense, Directional, and Directional Negative reward functions tested for Bottleneck MAPF task. The Figures~\ref{fig:g1m-0.01h-0.01_eval},~\ref{fig:g1m0005h0_eval},~\ref{fig:reversed_reward_eval} show that SRMT has superior or comparable performance compared to the baselines.
+\begin{figure}[htbp]
+  \centering
+     \includegraphics[width=\linewidth]{images/g1m-0.01h-0.01_scores.pdf}
+    \caption{Trained with \textbf{Dense} reward, all models except empty core policy scale with enlarging corridor length. SRMT consistently outperforms baselines both in success rates and in the time needed to solve the task. The shaded area indicates 95\% confidence intervals.}
+  \label{fig:g1m-0.01h-0.01_eval}
+\end{figure}
+\begin{figure}[htbp]
+  \centering
+     \includegraphics[width=\linewidth]{images/g1m0005h0_scores.pdf}
+    \caption{\textbf{Directional} reward training leads to all the methods preserving the scores for all tested corridor lengths. The shaded area indicates 95\% confidence intervals.}
+  \label{fig:g1m0005h0_eval}
+\end{figure}
+\begin{figure}[htbp]
+  \centering
+     \includegraphics[width=\linewidth]{images/reversed_reward_scores.pdf}
+    \caption{Results of training with \textbf{Directional Negative} reward. Vanilla attention fails to scale at corridor lengths of more than 400, compared to the SRMT which preserves the highest scores. That proves the sufficiency of the proposed SRMT architecture. The shaded area indicates 95\% confidence intervals.}
+  \label{fig:reversed_reward_eval}
+\end{figure}
+
+Figure~\ref{fig:movai_eval} shows the evaluations of the methods from the POGEMA benchmark  compared to SRMT when evaluated on MovingAI maps with different numbers of agents equal to or greater than the ones used for training. SRMT was trained with 64 agents, SRMT\_64\_128 with a mixture of 64 and 128 agents. The results show that both SRMT models consistently outperform cooperative baselines (MAMBA and QPLEX). 
+\begin{figure}[htbp]
+  \centering
+\includegraphics[width=0.9\linewidth]{images/avg_throughput_per_agents_num.pdf}
+    \caption{The evaluation of scalability of SRMT on MovingAI maps from POGEMA benchmark.  The shaded area indicates 95\% confidence intervals.}
+  \label{fig:movai_eval}
+\end{figure}
+
+\subsection{Memory Analysis} 
+\label{appx:mem_analysis}
+We also explored the relations between the SRMT agents' memory representations and the spatial distances between agents on the map. Fig.~\ref{fig:mem_dist_vs_map_dist} shows that SRMT distances between memory representations are aligned with distances between agents for different corridor lengths. Starting the episode, the agents move closer to each other quickly, and the respective cosine distances decrease significantly.
+\begin{figure}[htbp]
+  \centering
+    \includegraphics[width=\textwidth]{images/mem_vs_spatial_dists_SRMT.pdf}
+    \caption{\textbf{SRMT memory distances are aligned with the distances between agents.} The figure shows how cosine distances between agents' memory vectors are related to the Euclidean distances between agents on the map for SRMT. The triangle marks the step when agents face each other in the environment, the star shows the episode step when the first goal was achieved. The color bar shows the step number.}
+  \label{fig:mem_dist_vs_map_dist}
+\end{figure}
+Then, agents face each other in the environment (marked with a triangle on Fig.~\ref{fig:mem_dist_vs_map_dist}) and move in the same direction, keeping the spatial distance between them constant. Next, after the moment when one of the agents reaches its goal and disappears from the environment (marked with a star), the other agent moves away to reach the goal. This part of the episode is depicted as increasing memory distance at the end of the episode.
+
+
+
+\end{document}
