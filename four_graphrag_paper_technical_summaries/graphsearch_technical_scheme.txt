@@ -1,0 +1,333 @@
+论文标题:
+GraphSearch: An Agentic Deep Searching Workflow for Graph Retrieval-Augmented Generation
+
+本地 TeX 来源:
+arxiv_tex/adaptive_exploration_context_completion/2509.22009/
+
+一句话讲清楚:
+GraphSearch 不是重新发明一种图索引，而是在已有 GraphRAG 图知识库上加一个“深度搜索工作流”。它把复杂问题拆成小问题，同时从文本块和图关系两条通道查证据；如果证据不够，就反思哪里缺，再生成新查询继续查。
+
+一、它要解决什么问题
+
+已有 GraphRAG 往往是:
+1. 先从文档建图；
+2. 对用户问题做一次检索；
+3. 把检索到的节点、边、文本塞给 LLM；
+4. 让 LLM 直接回答。
+
+这种做法对简单问题可以，但对多跳问题容易断。比如问题需要四个证据点，只查一次可能漏掉中间实体，后面的逻辑链就断了。
+
+GraphSearch 的判断是: 问题不在于“有没有图”，而在于“怎么搜索图”。图知识库已经有了，但检索流程太浅，LLM 没有机会发现缺证据并补查。
+
+二、输入和输出
+
+输入:
+1. 文档集合 D。
+2. 由已有 GraphRAG 方法构建的图知识库 G = {E, R, K}。
+   - E: 实体集合。
+   - R: 关系集合。
+   - K: chunk 级文本上下文。
+3. 用户复杂问题 Q。
+
+输出:
+1. 最终答案。
+2. 一组被组织过的证据，包括实体、关系、文本块、中间子问题答案、逻辑草稿和补充查询结果。
+
+三、离线部分: 先建一个普通 GraphRAG 图知识库
+
+GraphSearch 自己不强调新的建图算法，而是建立在已有 GraphRAG 检索器上。论文实验里把它接到 LightRAG、PathRAG、HyperGraphRAG 等方法上。
+
+复刻时可以这样做:
+
+1. 把文档切成 chunk。
+   论文实现细节中，GraphSearch 实验使用 400 token chunk size。
+
+2. 用图构建模型抽实体和关系。
+   论文实验的图构建模型是 Qwen2.5-32B-Instruct。
+
+3. 对每个 chunk 抽实体:
+   entity = {entity_name, entity_property, entity_description}
+
+4. 对 chunk 内实体对抽关系:
+   relation = {head_entity, tail_entity, relation_property, relation_description}
+
+5. 得到图知识库:
+   G = {E, R, K}
+
+6. 配好检索器 psi，使它能对任意 query 返回:
+   C_q = {E_q, R_q, K_q}
+   也就是相关实体、相关关系和相关文本块。
+
+实验实现细节:
+1. embedding model: jinaai/jina-embeddings-v3。
+2. 检索模式: Hybrid retrieval。
+3. Top-K: 30。
+4. 生成模型: Qwen2.5-7B/32B-Instruct。
+5. LLM-as-a-Judge: Qwen-Plus。
+6. 硬件: 8 张 A100-SXM4-40GB。
+
+四、在线部分: 六个模块组成深度搜索
+
+GraphSearch 的主流程有六个模块:
+
+1. Query Decomposition，问题拆解，QD。
+2. Context Refinement，上下文精炼，CR。
+3. Query Grounding，查询落地，QG。
+4. Logic Drafting，逻辑草稿，LD。
+5. Evidence Verification，证据验证，EV。
+6. Query Expansion，查询扩展，QE。
+
+可以把它实现成一个循环:
+先拆问题并查一轮，再整理证据。如果证据够，就回答；如果不够，就扩展新查询并补查。
+
+五、模块逐一说明
+
+1. Query Decomposition
+
+输入是复杂问题 Q。LLM 把它拆成有顺序的小问题:
+{q1, q2, ..., qm}
+
+每个 qi 应该只解决一个实体、一个关系或一个上下文依赖。
+
+例子:
+原问题: “某画作的创作者死在哪里，那个地方发生过多少次瘟疫？”
+
+可以拆成:
+q1: 这幅画的创作者是谁？
+q2: 这个创作者死在哪里？
+q3: 这个地方发生过多少次瘟疫？
+
+实现要点:
+拆出来的子问题不应只是关键词列表，而应是可以直接提交给检索器的自然语言问题。
+
+2. Context Refinement
+
+每个子问题 qi 先调用图检索器:
+C_qi = psi(qi | G) = {E_qi, R_qi, K_qi}
+
+原始检索结果可能太多、重复或跑偏。CR 用 LLM 对这些结果做过滤，只保留回答 qi 最可能需要的实体、关系和文本块。
+
+实现时建议输出结构:
+{
+  "useful_entities": [...],
+  "useful_relations": [...],
+  "useful_chunks": [...],
+  "discarded_reason": [...]
+}
+
+3. Query Grounding
+
+多跳问题常有“这个人”“这个地方”“Entity#1”这种依赖前一步答案的引用。QG 的作用是把后续子问题里的占位信息补全。
+
+做法:
+1. 对 qi 用已有 context 生成中间答案 a_i。
+2. 对后续 q_{i+1}，输入前面的问题、上下文和答案。
+3. 让 LLM 把 q_{i+1} 改写成已经落地的查询 q_tilde。
+
+形式上:
+q_tilde_i = P_QG(q_i, {q_<i, C_q_<i, a_q_<i})
+
+例子:
+q2 原来是“这个创作者死在哪里？”
+如果 q1 答案是 Titian，那么 q2 应改写成“Titian died in which place?”
+
+这样检索器不会拿着“这个创作者”这种空引用去查。
+
+4. Logic Drafting
+
+LD 把所有子问题、精炼后的上下文和中间答案串成一条逻辑草稿 L。
+
+它不只是总结，还要暴露问题:
+1. 哪一步证据充分；
+2. 哪一步缺实体；
+3. 哪两个中间答案互相冲突；
+4. 最终答案还差哪条证据。
+
+实现时建议让 LLM 输出:
+{
+  "reasoning_chain": [...],
+  "supported_steps": [...],
+  "missing_evidence": [...],
+  "contradictions": [...],
+  "candidate_final_answer": "..."
+}
+
+5. Evidence Verification
+
+EV 检查逻辑草稿 L 是否足以支持最终答案。
+
+输入:
+1. 已落地的子问题；
+2. 检索上下文；
+3. 中间答案；
+4. 逻辑草稿。
+
+输出:
+Accept 或 Reject。
+
+Accept 表示证据足够、逻辑一致，可以进入最终生成。
+Reject 表示缺证据、证据冲突或链条断了。
+
+6. Query Expansion
+
+如果 EV 返回 Reject，QE 根据 missing_evidence 生成补充查询:
+{q1+, q2+, ..., qn+}
+
+这些查询专门瞄准缺口，而不是重新问原问题。每个补充查询再交给图检索器:
+C_q+ = psi(q+ | G)
+
+补充证据加入证据池后，再回到 LD/EV，直到证据足够或达到系统设定的循环上限。
+
+六、双通道检索怎么做
+
+GraphSearch 的另一个关键点是 dual-channel retrieval。它把同一个复杂问题拆成两类查询。
+
+第一类: semantic channel，语义通道。
+
+目标是查文本块 K。它适合找描述性信息，例如人物介绍、事件描述、背景句子。
+
+做法:
+1. 把问题拆成自然语言子问题。
+2. 每个子问题去文本 chunk 检索。
+3. 返回 K_q，也就是相关文本块。
+
+第二类: relational channel，关系通道。
+
+目标是查图结构 E 和 R。它适合找明确路径，例如:
+画作 -> 创作者 -> 死亡地点 -> 瘟疫发生次数
+
+做法:
+1. 把问题拆成 subject-predicate-object 风格的关系子查询。
+2. 对每个关系子查询检索实体和边。
+3. 上游查出的实体用于实例化下游占位符。
+
+例子:
+q1_r: The Worship of Venus -- creator --> Entity#1
+q2_r: Entity#1 -- place of death --> Entity#2
+q3_r: Entity#2 -- plague occurrences --> answer
+
+最终上下文应该把两条通道都保留:
+1. semantic evidence: 文本证据。
+2. relational evidence: 实体和边证据。
+
+不要简单把二者混成一大段文本。更好的实现是按通道分块给 LLM，并保留 source id，方便后续验证和引用。
+
+七、论文 prompt 的可复刻骨架
+
+我用 pdftotext 读取了 prompt_1.pdf 和 prompt_2.pdf。GraphSearch 的 prompt 设计非常适合直接做成结构化接口。
+
+1. 文本通道 Query Decomposition。
+   输入 main query，输出 JSON。每个 key 是 Sub-query 1、Sub-query 2 等，每个 value 是自然语言子问题。子问题之间允许用 #1、#2 指代前面子问题的答案。
+
+2. 图通道 Query Decomposition。
+   输入 main query，输出 JSON。每个 value 是一组 subject-predicate-object 三元组。未知实体用 Entity#1、Entity#2 这类占位符。这个输出直接服务于图检索。
+
+3. 文本通道 Context Refinement。
+   输入 user query 和 retrieved context，输出一段只基于 context 的证据摘要。要求不引入外部知识。
+
+4. 图通道 Context Refinement。
+   输入 user query 和 retrieved graph data，输出相关三元组列表，格式接近:
+   [("entity1", "relationship", "entity2"), ...]
+
+5. 文本通道 Query Grounding。
+   输入带 #1、#2 的子问题，以及前面子问题的检索结果和答案。输出一个完整、可独立检索的问题。如果占位符无法解析，就保持原样。
+
+6. 图通道 Query Grounding。
+   输入带 Entity#1、Entity#2 的三元组查询，以及上下文。输出替换后的三元组查询。如果实体无法解析，就保留占位符。
+
+7. Logic Drafting。
+   输入复杂问题和上下文，输出按步骤组织的推理链。每一步必须显式依赖上下文证据。
+
+8. Evidence Verification。
+   输入用户问题、检索上下文和模型草稿。判断推理链是否闭合、证据是否充分、有没有跳步或猜测。最后输出 Yes 或 No。
+
+9. Query Expansion。
+   输入主问题、检索上下文、模型草稿和验证分析。若证据不够，输出 Python 风格字符串列表，每个字符串是一个新的补充查询。要求避免重复已有子查询。
+
+八、完整运行伪流程
+
+1. 输入用户问题 Q。
+2. QD 拆成文本通道子问题和关系通道子问题。
+3. 对每个子问题调用底层 GraphRAG 检索器。
+4. CR 精炼初始检索结果。
+5. 对每个需要前置答案的子问题，先生成中间答案，再用 QG 改写成落地查询。
+6. 对落地查询再次检索。
+7. 汇总两条通道证据。
+8. LD 生成逻辑草稿。
+9. EV 判断证据是否足够:
+   - Accept: 生成最终答案。
+   - Reject: QE 生成补充查询，继续检索。
+10. 达到循环上限时，用当前最可靠证据回答，或返回无法回答。
+
+九、为什么它能改进 GraphRAG
+
+GraphSearch 改进的不是图表示本身，而是搜索策略。
+
+1. QD 降低单次检索难度。
+   原问题太复杂时，检索器可能只命中表面实体。拆成小问题后，每次检索目标更清楚。
+
+2. QG 解决代词和占位符。
+   多跳问题后半段依赖前半段答案。QG 把“这个人”“那个地方”换成具体实体。
+
+3. 双通道避免只靠一种证据。
+   文本块有描述细节，图关系有路径结构。两者合起来更稳。
+
+4. EV/QE 让系统能补证据。
+   传统 GraphRAG 查漏了就结束。GraphSearch 会显式发现缺口，再补查。
+
+十、实验结果和评测
+
+数据集:
+1. HotpotQA。
+2. MuSiQue。
+3. 2WikiMultiHopQA。
+4. Medicine。
+5. Agriculture。
+6. Legal。
+
+Wikipedia 三个数据集各抽 300 个问题；Medicine、Agriculture、Legal 直接采用 HyperGraphRAG 相关数据。
+
+指标:
+1. SubEM: 最终回答是否包含标准答案字符串。
+2. A-Score: 回答质量，包括正确性、逻辑连贯性、完整性。
+3. E-Score: 证据质量，包括相关性、知识性、事实性。
+
+论文报告 GraphSearch 接到 LightRAG、PathRAG、HyperGraphRAG 后都能提升。消融实验显示:
+1. 只有 QD+CR 比原始 GraphRAG 好。
+2. 加上 QG 后继续提升。
+3. 加上 LD 后能组织链条。
+4. full setting 加上 EV 和 QE 效果最好。
+5. 双通道比任一单通道更好，尤其 Legal 这类领域数据更明显。
+
+十一、复刻实现清单
+
+1. 先选一个底层 GraphRAG 框架，例如 LightRAG、PathRAG 或 HyperGraphRAG。
+2. 统一底层检索器接口:
+   retrieve(query, mode) -> {entities, relations, chunks}
+3. 实现六个 LLM 模块:
+   - decompose_query
+   - refine_context
+   - ground_query
+   - draft_logic
+   - verify_evidence
+   - expand_query
+4. 同时实现 semantic_query_builder 和 relational_query_builder。
+5. 每条检索结果都保留 provenance:
+   - source chunk id
+   - entity id
+   - relation id
+   - retriever score
+   - channel: semantic 或 relational
+6. 设定循环上限，避免 EV 一直 Reject。
+7. 最终回答 prompt 中明确要求:
+   - 只用给定证据回答；
+   - 如果证据不足，说明无法确定；
+   - 标出使用了哪些证据。
+
+十二、局限和注意事项
+
+1. GraphSearch 没有训练模型，本质是 agentic workflow 和 prompt orchestration。
+2. 论文的具体 prompt 模板主要放在 PDF 图中。我已用 pdftotext 读出核心模板。工程复刻时仍建议把输出统一成 JSON，减少自然语言解析失败。
+3. 循环次数、Accept/Reject 标准、最终融合策略没有像算法库那样完全形式化，工程实现需要自己设上限和容错。
+4. 它依赖底层 GraphRAG 检索器质量。如果底层图建得很差，GraphSearch 只能部分补救。
+5. 多模块 LLM 调用会增加延迟和成本，需要缓存 QD、CR、QG 等中间结果。

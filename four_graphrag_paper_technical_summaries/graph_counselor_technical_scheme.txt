@@ -1,0 +1,328 @@
+论文标题:
+Graph Counselor: Adaptive Graph Exploration via Multi-Agent Synergy to Enhance LLM Reasoning
+
+本地 TeX 来源:
+arxiv_tex/multi_agent_context_synchronization/2506.03939/acl_latex.tex
+
+一句话讲清楚:
+Graph Counselor 把 LLM 包装成一个会使用图工具的多角色系统。它每轮先规划，再思考需要哪些图信息，再调用 Retrieve、Feature、Neighbor、Degree 等图函数。如果最终答案被评估为不对，它会反思哪里理解错、哪里图信息选错，然后带着反思重新跑一遍。
+
+一、它要解决什么问题
+
+很多 GraphRAG 方法会把图检索结果线性化成文本，再交给 LLM。这样有两个问题:
+
+1. 图结构被压平成文本后，结构信息容易丢。
+   比如“某节点有多少个某类型邻居”这种问题，如果只给一堆文本，模型不一定会正确计数。
+
+2. 固定检索深度不适合所有问题。
+   简单问题查 1-hop 就够；复杂问题可能要多步；但查太多又会引入噪声。
+
+Graph Counselor 的思路是: 不要一次性把图塞给 LLM，而是给 LLM 几个明确的图操作函数，让它按步骤调用。它更像“LLM + 图数据库工具调用”的 KGQA 框架。
+
+二、输入和输出
+
+输入:
+1. 问题 q。
+2. 图 G = (V, E)。
+3. 节点特征定义和边类型定义。
+4. 最大内层推理步数 T。
+5. 最大反思次数 N。
+
+输出:
+1. final answer y_final。
+2. 一条推理过程，包括 Plan、Thought、Action、Observation、Reflection。
+
+三、图的形式
+
+论文假设图已经存在，不重点讨论如何从文档建图。
+
+图结构:
+1. 每个节点 v 有唯一 ID I_v。
+2. 每个节点有若干 feature。
+   例:
+   "1047566": {
+     "features": {
+       "title": "Hand in Glove",
+       "description": "",
+       "price": "",
+       "category": "books"
+     }
+   }
+3. 每条边有 label。
+   例: also-bought-item。
+
+因此 Graph Counselor 更接近 KGQA，不是文档 chunk RAG。它适合已经有结构化图的场景。
+
+四、四个图函数
+
+Execution Agent 只能通过图函数拿信息。论文定义了四类基础函数:
+
+1. Retrieve(t) -> I_v
+   输入文本 t，用语义检索在图里找到最相关节点 ID。
+   实现上论文用 Mpnet-v2 加 FAISS。
+
+2. Feature(I_v, feature_type) -> feature_value
+   输入节点 ID 和特征名，返回该节点的属性值。
+   例: Feature(1047566, category) -> books。
+
+3. Neighbor(I_v, relation_type) -> [I_v']
+   输入节点 ID 和边类型，返回沿该边连接的邻居节点 ID。
+   例: Neighbor(203088, also-bought-item) -> [203010, ...]。
+
+4. Degree(I_v, relation_type) -> number
+   输入节点 ID 和边类型，返回这种邻居的数量。
+   例: Degree(203088, also-bought-item) -> 1。
+
+函数可以组合:
+Feature(Retrieve("Hand in Glove"), category)
+
+反思提示里要求每一步最多组合两个函数，工程实现时也建议限制组合深度，避免 LLM 生成很难解析的嵌套表达式。
+
+五、AGIEM: 三个角色怎样配合
+
+AGIEM 是 Adaptive Graph Information Extraction Module。它包含三个 agent 角色:
+
+1. Planning Agent
+
+作用:
+理解问题，给出接下来的推理路径。
+
+它回答的是:
+“为了回答这个问题，接下来应该先找什么、再找什么？”
+
+例:
+问题是“什么疾病位于 cranial nerve II，并且可以被 Methimazole 治疗？”
+Planning Agent 应该规划:
+先找到 Methimazole 能治疗的疾病，再找位于 cranial nerve II 的疾病，最后取交集。
+
+2. Thought Agent
+
+作用:
+把规划转成当前这一步需要的图信息。
+
+它回答的是:
+“为了执行刚才的计划，现在需要调用什么类型的图信息？”
+
+例:
+它可能判断:
+现在先定位 Methimazole 和 cranial nerve II 对应的节点。
+
+3. Execution Agent
+
+作用:
+真正选择图函数并执行。
+
+它可以调用:
+Retrieve、Feature、Neighbor、Degree，以及有限的函数组合。
+
+例:
+Retrieve["Methimazole"]
+Neighbor[Retrieve["Methimazole"], treats]
+Feature[Neighbor[...], name]
+
+六、内层推理流程
+
+每轮推理遵循严格顺序:
+
+1. Plan。
+   如果上一条是 Observation，或者当前还没有 Plan，模型只输出一个 Plan。
+
+2. Thought。
+   如果上一条是 Plan，模型只输出一个 Thought。
+
+3. Action。
+   如果上一条是 Thought，模型只输出一个图函数调用，或输出 Finish。
+
+4. Observation。
+   系统执行 Action，把图数据库返回结果写入上下文。
+
+5. 重复。
+   直到模型输出 Finish，或达到最大步数 T。
+
+提示词明确要求:
+1. 交替输出 Thought、Interaction with Graph、Feedback from Graph。
+2. 如果要结束，用 Finish。
+3. Finish 后不要再生成 Observation。
+4. 最终答案应提供节点主要特征，比如名称，而不是只给节点 ID。
+
+七、外层反思流程
+
+Graph Counselor 不只跑一次 AGIEM。它还有 Self-Reflection with Multiple Perspectives，简称 SR。
+
+完整外层伪流程:
+
+1. 初始化上下文 C = 空。
+2. correct = False。
+3. n = 0。
+4. 当 n <= N 且 correct = False:
+   1. 重置内层步数 t = 1。
+   2. 运行 AGIEM:
+      - Planning Agent 生成 P_t。
+      - Thought Agent 生成 T_t。
+      - Execution Agent 生成 A_t。
+      - 如果 A_t 是 Finish，就抽取最终答案 y_final。
+      - 否则执行图函数 GKE(A_t)，得到观察 O_t，并更新上下文 C。
+   3. Finish 后，Evaluation Agent 检查答案是否正确，输出 yes/no。
+   4. 如果不正确且还没超过反思次数:
+      - Reflection Agent 根据问题和完整推理过程生成反思 F_n。
+      - 把反思写回上下文。
+      - 重新运行 AGIEM。
+5. 返回 y_final。
+
+论文实验中反思次数增加会提升效果，但两次反思后收益变慢，所以主要实验采用 2 次反思。
+
+八、反思模块具体反思什么
+
+SR 不是简单说“再试一次”。它要求模型从多角度复盘:
+
+1. Recap and Understanding。
+   - 原问题真正要问什么？
+   - 当前尝试是否误解了问题？
+   - 是否漏掉了关键条件？
+
+2. Analysis and Adjustment。
+   - 已选图信息是否相关？
+   - 是否拿了多余关系？
+   - 是否漏了必要边或必要属性？
+   - 图结构信息和语义理解是否对齐？
+
+3. Refinement and Update。
+   - 更新后的问题理解是什么？
+   - 下一次应该选哪些图函数？
+   - 如何避免刚才的错误？
+
+反思结果会加入下一轮 AGIEM 的上下文，让模型改变后续图操作策略。
+
+九、评估模型怎么判断对错
+
+Graph Counselor 还有一个 evaluation prompt。它输入:
+1. 原问题。
+2. Plan、Thought、Action、Observation 全过程。
+3. 最终答案。
+
+它检查:
+1. 答案是否直接来自图中检索到的数据。
+2. 是否满足问题要求。
+3. 是否包含无关或错误内容。
+4. 推理是否由 observations 支撑。
+
+最后必须输出 [yes] 或 [no]。
+
+工程实现时建议把这个判断做成结构化 JSON:
+{
+  "correct": true/false,
+  "reason": "...",
+  "unsupported_claims": [...]
+}
+
+十、复刻实现清单
+
+1. 准备图数据库。
+   每个节点至少要有:
+   - node_id
+   - main_feature，例如 name/title
+   - feature dict
+   每条边至少要有:
+   - source_id
+   - target_id
+   - relation_label
+
+2. 建语义检索索引。
+   - 用 Mpnet-v2 编码节点名称、描述和主要属性。
+   - 用 FAISS 建 ANN 索引。
+   - Retrieve(keyword) 返回最相似节点 ID。
+
+3. 实现四个函数 API:
+   - Retrieve[text]
+   - Feature[node, feature]
+   - Neighbor[node, relation]
+   - Degree[node, relation]
+
+4. 实现函数解析器。
+   LLM 会输出类似:
+   Feature[Retrieve[Alice B. Cooper], name]
+   解析器要能识别嵌套函数，执行内层，再执行外层。
+
+5. 限制函数组合深度。
+   建议最多 2 层，和论文反思提示一致。
+
+6. 实现 AGIEM prompt。
+   prompt 必须约束:
+   - 没有 Plan 或上一条是 Observation 时，只输出 Plan。
+   - 上一条是 Plan 时，只输出 Thought。
+   - 上一条是 Thought 时，只输出 Action。
+   - 结束时输出 Finish。
+   - 回答要给名称等主特征，不要只给 ID。
+
+7. 实现外层 reflection prompt。
+   输入完整 scratchpad，让模型输出:
+   - Recap of Trial。
+   - Guided Reflection。
+   - Updated Understanding。
+   - Revised Graph Selection。
+   - Avoiding Past Issues。
+
+8. 实现 evaluation prompt。
+   输出 yes/no，作为是否再次反思的开关。
+
+9. 设置参数:
+   - 推理温度 temperature = 0.7。
+   - top-p = 0.9。
+   - 反思模型用 Qwen2.5-7B-Instruct。
+   - 最大反思次数设为 2。
+   - T 论文伪代码只写最大迭代次数，案例和提示里提到超过 10 steps 是失败类型；复刻时可先设 T = 10。
+
+十一、实验设置和结果
+
+主数据集:
+GRBENCH。它包含 10 个真实图，覆盖 5 个领域:
+1. Academic。
+2. E-commerce。
+3. Literature。
+4. Healthcare。
+5. Legal。
+
+共 1740 个问题:
+1. simple: 700 个，单跳推理。
+2. medium: 910 个，多跳推理。
+3. hard: 130 个，归纳推理。
+
+补充数据集:
+WebQSP。
+
+对比方法:
+1. Base LLM。
+2. Text RAG。
+3. GraphRAG 1-hop。
+4. GraphRAG 2-hop。
+5. Graph-CoT。
+
+使用的 LLM backbone:
+1. Mixtral-8x7B-Instruct-v0.1。
+2. Mistral-NeMo-Instruct-2407。
+3. Qwen2.5-7B-Instruct。
+4. Qwen2.5-72B-Instruct。
+5. Llama-3.1-70B-Instruct。
+6. Gemma-2-9b-it。
+
+指标:
+1. Rouge-L。
+2. QwenScore，由 Qwen2.5-72B-Instruct 判断正确率。
+3. LlamaScore，由 Llama3.1-70B-Instruct 判断正确率。
+
+论文报告:
+1. Graph Counselor 在 GRBENCH 上超过其他方法，Rouge-L 相比已有 GraphRAG SOTA 最高提升 24.2%。
+2. 2-hop GraphRAG 不一定比 1-hop 好，因为多取一跳会引入很多噪声。
+3. 去掉 Planning Agent，在中高难问题上准确率最多下降 6.1%。
+4. 限制 Execution Agent 每次只能用单一组件，中高难问题最多下降 3.6%。
+5. 去掉 Reflection，整体准确率最多下降 7.26%。
+6. 大反思模型不一定显著好于小反思模型，所以论文用 Qwen2.5-7B-Instruct 做反思模型以省成本。
+
+十二、局限和注意事项
+
+1. 它要求图结构已经存在，论文不解决从非结构化文档高质量建图的问题。
+2. 它适合节点、属性、边类型明确的 KGQA；如果只有松散文本 chunk，不能直接使用。
+3. Retrieve 依赖节点文本向量相似度。如果节点名称或描述太差，第一步定位就会错。
+4. LLM 生成的函数调用必须被严格解析和校验，否则容易调用不存在的 feature 或 relation。
+5. 多轮反思会增加延迟。论文说相对性能成本划算，但绝对推理时间仍比直接回答更长。
+6. 文中伪代码的 UpdateContext 里出现 E_t 符号，但上文动作变量是 A_t。按上下文应理解为把本轮 Plan、Thought、Action、Observation 都写回上下文。

@@ -1,0 +1,379 @@
+论文标题:
+PersonalAI 2.0: Enhancing knowledge graph traversal/retrieval with planning mechanism for Personalized LLM Agents
+
+本地 TeX 来源:
+arxiv_tex/adaptive_exploration_context_completion/2605.13481/
+
+一句话讲清楚:
+PersonalAI 2.0 把用户或文档知识存成“记忆图”，回答问题时不是一次性检索，而是先制定搜索计划，再把计划中的实体映射到图节点，围绕这些节点生成 clue-query，执行多路图遍历，过滤三元组，逐步判断信息是否够回答；不够就改写后续搜索计划继续查。
+
+一、它要解决什么问题
+
+传统 GraphRAG 常见做法是: 问题进来后，直接按相似度找节点、边或文本，然后让 LLM 回答。PersonalAI 2.0 认为这对个性化记忆和复杂问题不够，因为:
+
+1. 用户问题常常不是一个简单事实，而是多个子问题组合。
+2. 同一个实体在记忆图里可能有多个相似节点。
+3. 同一知识可能因表述不同分散在多个不连通子图里。
+4. 直接检索容易只拿到局部证据，导致回答缺信息。
+
+PAI-2 的核心做法是加一个动态搜索计划。系统不是“查一次就答”，而是“计划一步，查一步，总结一步，再决定下一步怎么查”。
+
+二、系统输入和输出
+
+输入:
+1. 用户自然语言问题 Q。
+2. 已构建好的 memory graph。
+3. 图节点和三元组的向量索引。
+
+输出:
+1. 对用户问题的最终答案 A。
+2. 如果问题被拆成多个子问题，则先得到每个子问题答案，再聚合成最终答案。
+
+三、记忆图怎么存
+
+论文的实现把 memory graph 分成两部分:
+
+1. 图数据库部分。
+   使用 Neo4j，保存:
+   - object vertices，对象节点，通常是实体或对象。
+   - thesis vertices，论文中称 thesis，可理解为从文本中抽出的命题/知识点节点。
+   - episodic vertices，情节/片段节点，通常对应原始文档片段或记忆片段。
+   - simple edges，对象之间的普通边。
+   - hyper edges，连接对象、thesis、episodic 等节点的超边式结构。
+
+2. 向量和稀疏检索部分。
+   - Qdrant 保存 dense embeddings。
+   - OpenSearch 保存 BM25 sparse embeddings。
+   - embedding 使用 intfloat/multilingual-e5-large 加 BM25 的组合。
+
+3. 缓存部分。
+   - Redis 和 MongoDB 用来保存中间结果，减少重复 LLM 调用和重复检索。
+
+实验环境:
+1. 所有数据库跑在一台机器的 Docker 容器里。
+2. 中等规模 LLM 通过本地 Ollama Docker 容器运行。
+3. 主要 LLM 是 Qwen2.5 7B。
+4. 推理和建图使用单张 NVIDIA TITAN RTX 24GB。
+
+注意:
+论文没有在 methods 里完整展开 Memorize 建图算法的每个抽取 prompt，但说明它把普通文本解析进 memory graph，并在 MINE-1 上评测信息保留率。复刻 QA pipeline 时，可以把“已有 PAI memory graph”作为前提。
+
+四、完整 QA pipeline，总共 13 个阶段
+
+PAI-2 的 QA pipeline 可以分成三层:
+
+第一层: 问题预处理。
+第二层: 对每个子问题做 memory graph exploration。
+第三层: 聚合所有子答案。
+
+论文方法中包含问题预处理，但实验设置里说明主实验禁用了 query preprocessing，因为它没有带来足够收益且 prompt 还需调优。复刻“论文实验”时可以禁用；复刻“完整设计”时应实现。
+
+五、阶段 1: 问题预处理
+
+输入用户问题 Q。
+
+预处理包含三类操作:
+
+1. Denoise，去噪。
+   - 检查语法和标点错误。
+   - 去掉停用词和无关信息。
+
+2. Enhance，增强。
+   - 按语法规则改写问题。
+   - 用更常见、更精确的术语重述问题。
+   - 扩展问题，让含义更清楚。
+
+3. Decompose，拆分。
+   - 先让 LLM 判断问题是否由多个独立问题组成。
+   - 如果是，就拆成 {q1, q2, ..., qN}。
+   - 每个子问题应能独立回答。
+
+形式上:
+SubQuestions = Preprocess(Q) = Decompose(Enhance(Denoise(Q)))
+
+六、阶段 2 到 12: 对每个子问题做图探索
+
+下面以一个子问题 q 为例。
+
+阶段 2: 生成初始搜索计划
+
+LLM 根据 q 生成搜索计划 P:
+P = [s1, s2, ..., sM]
+
+每个 sj 是自然语言 search step，不是数据库查询语句。它描述“下一步要找什么信息”。
+
+例子:
+用户问“某人在哪个城市出生，该城市属于哪个国家？”
+搜索计划可能是:
+s1: 找到这个人的出生城市。
+s2: 找到该城市所属国家。
+
+但论文的初始 plan prompt 有一个重要限制: search step 必须彼此独立。如果第二步必须知道第一步答案才能问，就不能拆成两步，而应保留为一个整体问题。它举的反例是: “谁演了 Terminator，然后这个人担任过什么政府职位？”第二问依赖第一问演员名字，所以初始 plan 不应拆成两个独立 step。
+
+阶段 3: 从当前搜索步骤抽实体
+
+对当前 step sj，LLM 做 NER:
+E_j = {e1, e2, ..., eU}
+
+这里抽的不是最终答案，而是后续要在图里定位的实体。
+
+NER prompt 的输出很简单: 用竖线分隔实体，例如:
+entity1 | entity2 | entity3
+
+复刻时建议改成 JSON 数组，避免实体名里出现竖线或格式污染。
+
+阶段 4: 实体匹配到图节点
+
+对每个实体 e，用 dense retrieval 和/或 BM25 在 memory graph 的 object vertices 中找候选节点。
+
+输出是一个矩阵:
+MatchedVertices =
+[
+  [v11, v12, ..., v1Vm],
+  ...
+  [vU1, vU2, ..., vUVm]
+]
+
+Vm 是超参，表示每个实体最多保留多少个候选 object vertex。
+
+为什么保留多个候选?
+因为记忆图里同一个现实实体可能被不同文本抽成多个近似节点。只保留 top1 可能选错或漏掉分散子图。
+
+阶段 5: 组合候选节点并生成 clue-query
+
+如果当前搜索步骤有多个实体，每个实体又有多个候选节点，就需要组合。
+
+LinearCombination(MatchedVertices, Cm) 会选出最多 Cm 组候选节点:
+AcceptedVerticesLists = V_{Cm x U}
+
+每一组代表一种可能的实体落点组合。
+
+然后 LLM 根据:
+1. 当前搜索步骤 sj；
+2. 一组 object vertices；
+
+生成一个 clue-query cq。
+
+clue-query 可以理解为“带着这几个图节点出发时，应该围绕什么线索查”。它比原始 search step 更贴近图里的具体节点。
+
+clue-query prompt 的核心规则是:
+1. 只使用原问题和匹配实体，不用外部知识。
+2. 保持原问题语言和风格。
+3. 用第二组更具体的实体值替换第一组抽象实体。
+4. 如果替换后没有帮助，或者会引入噪声，就不要替换。
+5. 只输出一个更具体的问题。
+
+阶段 6: 对每个 clue-query 做图遍历
+
+每个 clue-query 独立执行，可以并行。
+
+输入:
+1. clue-query cq_j。
+2. 该 clue-query 对应的一组起点 object vertices。
+
+输出:
+RetrievedTriples = {t1, t2, ..., tY}
+
+论文实验使用 PAI-1 中的图遍历算法组合:
+1. BS + WC，也就是 BeamSearch + WaterCircles。
+2. BS + NR，也就是 BeamSearch + NaiveRetriever。
+
+阶段 7: 按相关性过滤三元组
+
+原始遍历会拿到很多三元组。PAI-2 再用 dense embeddings 过滤，只保留和 clue-query 最相关的 Fm 条。
+
+FilteredTriples = {t1, t2, ..., tFm}
+
+实验设置里还提到: 图遍历时不限制 vertex type，但 filtering 阶段会丢弃 episodic triples，以减少噪声和 lost-in-the-middle 问题。
+
+阶段 8: clue-answer 生成和步骤总结
+
+对每个 clue-query:
+1. 输入 clue-query 和 FilteredTriples。
+2. LLM 生成一个 clue-answer ca_j。
+
+然后把同一个 search step 下的所有 clue-answer 汇总:
+sa_j = SummarizeClueAnswers(sj, ClueQueries, ClueAnswers)
+
+sa_j 是当前搜索步骤从 memory graph 中得到的知识摘要。
+
+clue-answer prompt 的关键规则:
+1. 只使用 Found Information。
+2. 只抽取与问题相关的事实、日期、数量、条件。
+3. 没有相关信息时输出 `<|NoRelevantInfo|>`。
+4. 保留原问题语言、数字、单位、日期。
+5. 不做来源之外的推断。
+
+clue-answer 汇总 prompt 的关键规则:
+1. 输入原 question、一组 search queries，以及每个 query 找到的信息。
+2. 先输出简短依据，再输出 Answer。
+3. 如果证据不足，在 Answer 块输出 `<|NotEnoughtInfo|>`。注意论文 prompt 里单词写作 NotEnoughtInfo，复刻时如果要兼容论文，应保留这个拼写。
+
+阶段 9: 判断当前信息是否足够回答子问题
+
+系统保存已经完成的步骤摘要:
+SA = [sa1, sa2, ..., saj]
+
+LLM 判断:
+Sufficient(q, P, SA) -> True/False
+
+True 表示当前证据已经够回答子问题 q。
+False 表示还要继续搜索。
+
+Sufficient prompt 的关键规则:
+1. 只使用 Search info。
+2. 检查问题的关键部分是否都被覆盖。
+3. 检查事实之间是否矛盾。
+4. 如果关键部分缺失、矛盾，或出现 `<|NotEnoughtInfo|>`，输出 False。
+5. Answer 块只能是 True 或 False。
+
+阶段 10: 如果不够，就增强搜索计划
+
+如果 Sufficient 返回 False，LLM 会判断未完成的搜索计划是否需要修改。
+
+如果需要修改:
+P_new = SearchPlanEnhance(q, P, SA)
+
+也就是说，后续 search step 会根据已经找到的信息重新规划，而不是死板执行最开始的计划。
+
+SearchPlanEnhance prompt 的关键规则:
+1. 输入原问题、已经完成的 search-plan queries 和当前还没做的 next queries。
+2. 根据已找到的信息改写后续查询，让它们更容易找到精确信息。
+3. 不用外部知识。
+4. 保留原语言、数字、单位和日期。
+5. 输出 numbered list。
+
+阶段 11: 继续下一步
+
+StepNum 加一，执行新的 search step。循环直到:
+1. 找到足够证据；
+2. 达到最大搜索步数 Sm；
+3. 搜索计划没有更多步骤。
+
+阶段 12: 生成子问题答案或 No Answer
+
+如果 SubAnswerFound = True:
+a_i = FinalizeSubAnswer(q_i, SearchPlan, StepsAnswers)
+
+如果达到上限还不够:
+a_i = NoAnswerStubGeneration(q_i)
+
+七、阶段 13: 聚合子答案
+
+如果原始问题 Q 被拆成多个子问题:
+SubQ = [q1, q2, ..., qN]
+SubA = [a1, a2, ..., aN]
+
+最后 LLM 聚合:
+A = AggregateSubAnswers(Q, SubQ, SubA)
+
+聚合 prompt 的规则和子答案生成类似:
+1. 只能使用 Search info。
+2. 先给简短依据，再给 Answer。
+3. 证据不足时输出 `<|NotEnoughtInfo|>`。
+4. 不添加外部假设。
+
+八、关键检索和遍历超参
+
+BeamSearch:
+1. max_depth = 5。
+2. max_paths = 10。
+3. same_path_intersection_by_node = False。
+4. diff_paths_intersection_by_node = False。
+5. diff_paths_intersection_by_rel = False。
+6. mean_alpha = 0.75。
+7. final_sorting_mode = "mixed"。
+8. reranker_method = "single_step"。
+9. reranker vdb_name = "dense_triplets"。
+10. reranker threshold = 0.5。
+11. reranker fetch_n = 25。
+
+WaterCircles:
+1. strict_filter = True。
+2. hyper_num = 15。
+3. episodic_num = 15。
+4. chain_triplets_num = 25。
+5. other_triplets_num = 6。
+6. do_text_pruning = False。
+
+NaiveRetriever:
+1. max_k = 50。
+2. reranker_method = "single_step"。
+3. reranker vdb_name = "dense_triplets"。
+4. reranker threshold = 0.5。
+5. reranker fetch_n = 50。
+
+九、为什么 clue-query 数量有用
+
+论文做了 clue-query 数量消融，把每个搜索步骤最多生成的 clue-query 从 1 提到 8，LLM-as-a-Judge 平均提升约 4%。
+
+原因很工程化:
+PAI 的记忆图在新增文档时，用三元组文本属性的精确匹配做去重。可是同一知识可能被不同句子以不同说法表达，精确匹配发现不了它们是同一个东西。于是图里会出现多个不连通的小子图，它们各自有一部分信息。
+
+多生成几个 clue-query，相当于从同一实体的多个候选节点组合出发，多路探索这些碎片子图，更容易把分散信息找全。
+
+十、复刻实现清单
+
+1. 搭图存储:
+   - Neo4j 保存 object、thesis、episodic 节点和边。
+   - Qdrant 保存 dense vectors。
+   - OpenSearch 保存 BM25。
+   - Redis/MongoDB 做缓存。
+
+2. 准备 graph memory:
+   - 文档切成合适片段。
+   - LLM 抽实体、命题和三元组。
+   - 写入 Neo4j。
+   - 为节点和三元组建立 dense/sparse 索引。
+
+3. 实现 QA pipeline:
+   - Preprocess，可选。
+   - InitialPlanGen。
+   - NER。
+   - Entities2VerticesMatching。
+   - LinearCombination。
+   - ClueQueriesGen。
+   - KGraphTraverse。
+   - FilterByRelevance。
+   - ClueAnswerGen。
+   - SummarizeClueAnswers。
+   - Sufficient。
+   - SearchPlanEnhance。
+   - FinalizeSubAnswer。
+   - AggregateSubAnswers。
+
+4. 每个 LLM 模块都要强制结构化输出，建议 JSON。
+   例如 plan 输出 steps 数组，NER 输出 entity 字符串数组，Sufficient 输出 boolean 和 reason。
+
+5. 所有 clue-query 的遍历和 clue-answer 生成可以并行。
+
+6. 设置硬限制:
+   - Sm: 最大搜索计划步骤数。
+   - Cm: 每步最大 clue-query 数。
+   - Vm: 每个实体最大候选节点数。
+   - Fm: 每个 clue-query 过滤后最大三元组数。
+
+7. 对大图必须缓存:
+   - 实体匹配结果。
+   - clue-query。
+   - 遍历结果。
+   - LLM 生成的 clue-answer。
+
+十一、实验结论
+
+PAI-2 在 Natural Questions、TriviaQA、HotpotQA、2WikiMultihopQA、MuSiQue 和 DiaASQ 上评测。论文报告:
+
+1. 相比 PAI-1，PAI-2 的 Context Relevance、Faithfulness、LLM-as-a-Judge 平均分别提升约 27%、26%、10%。
+2. 图遍历算法相比 naive flattened retriever 平均约有 5% 到 6% 提升。
+3. 启用 search plan enhancement 相比禁用时提升明显，摘要中报告约 18%。
+4. PAI-2 每个问题平均耗时约 1.51 分钟，约为 PAI-1 的两倍。
+5. 主要瓶颈是 LLM 推理、向量搜索和图遍历。
+
+十二、局限和注意事项
+
+1. 方法很重，LLM 调用次数多，工程复杂度高。
+2. 多个 prompt 在 TeX 中以 PDF 图片形式出现。我已用 pdftotext 读出关键 prompt 文本，但生产实现仍建议统一改成严格 JSON。
+3. 主实验禁用了 query preprocessing，说明这部分还不稳定。
+4. 记忆图去重依赖文本精确匹配，会导致同义知识分裂成多个子图，这是它需要多 clue-query 的原因。
+5. 如果实体到节点匹配做得差，后面的图遍历会从错误起点出发。
+6. 如果不过滤三元组，LLM 很容易被长上下文里的噪声影响。

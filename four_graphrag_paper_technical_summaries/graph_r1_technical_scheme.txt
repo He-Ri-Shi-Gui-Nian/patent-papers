@@ -1,0 +1,253 @@
+论文标题:
+Graph-R1: Towards Agentic GraphRAG Framework via End-to-end Reinforcement Learning
+
+本地 TeX 来源:
+arxiv_tex/adaptive_exploration_context_completion/2507.21892/example_paper.tex
+
+一句话讲清楚:
+Graph-R1 把文档先整理成“知识超图”，再把 LLM 做成一个会反复查询图的智能体。模型每轮先想一想缺什么信息，再向图发查询，拿到若干条结构化事实后继续想，直到能回答。这个“什么时候查、查什么、什么时候停”的策略用 GRPO 强化学习训练。
+
+一、它要解决什么问题
+
+普通 RAG 通常只检索文本块。文本块里有事实，但事实之间的关系不清楚。早期 GraphRAG 会把文本抽成图，再检索子图或路径，但常见问题是:
+
+1. 建图贵。很多方法让 LLM 抽大量实体、关系、社区摘要或路径，成本高。
+2. 检索是固定的一次性流程。系统查一次就把结果塞给模型，模型不能发现缺证据后再查。
+3. 依赖长上下文和提示词。图查出来后通常被线性化成很长文本，最后还是靠 LLM 在长上下文里自己找线索。
+
+Graph-R1 的核心观点是: 图不应该只是被动上下文，而应该变成一个可交互环境。LLM 不应该一次拿完所有证据，而应该像代理一样多轮探索。
+
+二、输入和输出
+
+输入:
+1. 知识语料 K = {d1, d2, ..., dN}，也就是用于回答问题的一批文档。
+2. 用户问题 q。
+3. 训练时还需要标准答案 y*，用来计算奖励。
+
+输出:
+1. 最终答案 yq。
+2. 运行过程中会产生一条轨迹 tau: 每一轮包含思考、查询、图返回的知识或最终答案。
+
+三、离线建索引: 从文档到知识超图
+
+Graph-R1 不把文档只切成普通 chunk 来做向量检索，而是构建一个知识超图 G_H = (V, E_H, phi)。
+
+复刻步骤如下:
+
+1. 文档切块。
+   论文附录给出的实现是: 每篇文档按 1200 token 窗口切块，相邻窗口重叠 50 token。这样做是为了让每个块足够完整，又减少跨句信息被切断。
+
+2. 对每个文本块做 n 元关系抽取。
+   用 GPT-4o-mini 作为抽取器 pi_ext。对每个 chunk，抽出若干条 n-ary relational facts。每条事实写成:
+   (h_i, V_h_i)
+   其中 h_i 是一段语义事实描述，V_h_i 是参与这条事实的实体集合。例如普通二元关系只能表达“导演 - 执导 - 电影”，而 n 元关系可以表达“某电影、导演、出生日期、奖项、地点”等多个实体共同组成的一条事实。
+
+3. 把实体做成节点，把事实做成超边。
+   V 是实体节点集合。每条 h_i 是一条超边 E_H，它连接 V_h_i 里的多个实体。普通图的一条边通常只连两个节点，超边可以连多个节点，所以它更适合表达一句话里多个实体共同参与的事实。
+
+4. 给实体和超边都做向量。
+   使用 bge-large-en-v1.5 编码:
+   phi(v) = Enc(v)
+   phi(h_i) = Enc(h_i)
+   实现时至少需要两个向量库: 一个存实体向量，一个存超边/事实向量。
+
+5. 保存结构和文本。
+   每条超边至少保存:
+   - fact_id
+   - fact_text，也就是 h_i
+   - entity_ids，也就是它连接的实体列表
+   - embedding
+   - source chunk/document id，方便追溯
+
+注意:
+论文前文说为了降低成本，Graph-R1 相比 HyperGraphRAG 跳过了一些置信度计算；但附录的建图细节又提到 coherence score。复刻时不要把 coherence score 作为必要模块。核心检索公式没有用这个分数，可以先不实现，或只作为可选字段保存。
+
+建图 prompt 的可复刻骨架:
+
+我用 pdftotext 读取了 Prompt1.pdf。它要求抽取器对输入文本做两类输出:
+
+1. knowledge segment。
+   每个 segment 是一个完整知识片段，输出成 hyper-relation 记录。它本质上就是后续超边 h_i 的文本。
+
+2. entity。
+   对每个知识片段里的实体，输出 entity_name、entity_type、entity_description。实体名要保持输入语言；如果是英文，则用大写开头。
+
+3. 输出格式。
+   prompt 使用 tuple_delimiter、record_delimiter、completion_delimiter 这类占位符来约束格式。工程复刻时建议不要照搬分隔符文本，而是直接让模型输出 JSONL，例如:
+   {"type":"hyper-relation","knowledge_segment":"..."}
+   {"type":"entity","entity_name":"...","entity_type":"...","entity_description":"..."}
+
+这样更容易解析，也能减少分隔符被模型漏写的问题。
+
+四、在线推理: LLM 和超图多轮交互
+
+Graph-R1 的提示词要求模型用固定标签输出:
+
+1. 先在 <think>...</think> 里写当前推理。
+2. 如果还缺知识，就在 <query>...</query> 里写要查询知识库的问题。
+3. 如果已经能回答，就在 <answer>...</answer> 里输出最终答案。
+
+系统运行时可以这样实现:
+
+1. 初始化状态 s1 = 用户问题 q。
+2. 把 q 放入提示词，让 LLM 生成一轮动作。
+3. 如果输出是 <answer>，停止，取答案。
+4. 如果输出是 <query>，把 query 发给超图检索器。
+5. 检索器返回 top-k 条 n 元事实，系统把它们插入 <knowledge>...</knowledge> 或等价上下文块。
+6. 把历史的 think、query、knowledge 一起放回下一轮提示词。
+7. 重复直到模型给出 answer，或达到最大轮数 T。
+
+论文统计中 Graph-R1 平均交互约 2.3 到 2.5 轮，生成长度约 1200 到 1500 token。实验超参表中 Graph-R1 每轮 top-k 是 5。
+
+推理 prompt 的可复刻骨架:
+
+我用 pdftotext 读取了 Prompt2.pdf。它的示例说明了几个实现细节:
+
+1. system 很简单，只说模型是 helpful assistant。
+2. user prompt 明确说可以多次查询 knowledge base。
+3. 模型必须先输出 think，再决定 query 或 answer。
+4. query 标签内不是裸字符串，而是一个 JSON 对象，形如:
+   {"query": "Director of film In Memory Of Sergo Ordzhonikidze"}
+5. 系统返回的 knowledge 也是结构化列表，每条结果含 knowledge 文本和 coherence 分数。
+6. 模型看到返回证据后继续下一轮 query，直到 answer。
+
+所以复刻时推荐把一次交互实现成:
+
+assistant:
+<think>说明当前缺什么</think>
+<query>{"query":"要查的具体问题"}</query>
+
+environment:
+<knowledge>{"results":[{"knowledge":"事实文本","coherence":分数}, ...]}</knowledge>
+
+assistant:
+<think>基于新证据判断还缺什么</think>
+<answer>最终短答案</answer>
+
+五、图检索器怎么做
+
+Graph-R1 的检索不是单一路径，而是两条路同时查，再融合。
+
+第一路: 实体检索。
+
+1. 从 LLM 生成的 query 里抽取实体集合 V_query。
+2. 把这些实体编码成向量，可以用平均池化或拼接后编码，论文写成 phi(V_query)。
+3. 在实体向量库 V 中找 top-k_V 个最相似实体。
+4. 收集所有包含这些实体的超边。也就是说，只要某条事实连接了命中的实体，就把它作为候选事实。
+
+第二路: 超边直接检索。
+
+1. 把 query 本身编码成向量 phi(query)。
+2. 在超边向量库 E_H 中找 top-k_H 个最相似的事实超边。
+3. 取这些超边对应的 fact_text 和实体集合。
+
+第三步: reciprocal rank fusion 融合。
+
+对每个候选事实 f 计算:
+score(f) = 1 / r_V(f) + 1 / r_H(f)
+
+r_V 是它在实体检索候选里的排名，r_H 是它在超边直接检索里的排名。如果某个事实没有出现在某一路结果中，该路排名按无穷大处理，贡献为 0。
+
+最后按 score 排序，返回 top-k 条事实给 LLM。
+
+这样做的直觉很简单:
+实体检索擅长抓“和问题里的名字相关的事实”；超边检索擅长抓“语义上整体相似的事实”。两路融合可以避免只看实体名或只看句子相似度。
+
+六、强化学习训练怎么做
+
+Graph-R1 不只是 prompt 工程。它用 GRPO 训练 LLM 的多轮图探索策略。
+
+训练单位是一道问题 q。模型对同一道问题采样 N 条完整轨迹 tau_i。每条轨迹里有若干轮:
+think -> query -> retrieve -> ... -> answer
+
+奖励由两部分组成:
+
+1. 格式奖励 R_format。
+   如果每轮输出符合预期结构，比如先 think，再 query 或 answer，就给奖励。论文写法是每个有效步骤给 0.5，整体最多 1.0。
+
+2. 答案奖励 R_answer。
+   最终答案和标准答案 y* 做 token-level F1。注意答案奖励只有在格式完全有效时才生效。
+
+总奖励:
+R(tau) = -1.0 + R_format(tau) + I{R_format = 1.0} * R_answer
+
+这个设计有两个作用:
+1. 先逼模型学会按“思考、查询、回答”的协议行动。
+2. 再奖励真正回答正确的轨迹。
+
+GRPO 更新方式:
+1. 对同一问题采样一组轨迹。
+2. 计算每条轨迹的奖励。
+3. 用组内均值和标准差归一化得到 advantage。
+4. 用 clipped ratio 更新当前策略，避免策略一步变化太大。
+5. 加 KL 项，让策略不要偏离 reference model 太远。
+
+复刻时可以用现有 GRPO/RLHF 训练框架。关键不是公式本身，而是要把“查询图环境”接进采样循环里: 模型生成 query 后，环境必须真的返回图事实，然后模型继续生成后续动作。
+
+七、实验设置里可直接复用的参数
+
+1. 建图 LLM: GPT-4o-mini。
+2. 实体和超边 embedding: bge-large-en-v1.5。
+3. 推理/训练模型: Qwen2.5-Instruct，规模 1.5B、3B、7B。
+4. Graph-R1 训练 batch size: 128。
+5. 最大长度: 4096。
+6. 每轮检索 top-k: 5。
+7. RL 算法: GRPO。
+8. 训练 epoch: 1。
+9. 硬件: 4 张 NVIDIA A100 80GB。
+10. 评测数据: 2WikiMultiHopQA、HotpotQA、MuSiQue、Natural Questions、PopQA、TriviaQA。
+11. 指标: EM、F1、Retrieval Similarity、Generation Evaluation。
+
+八、复刻实现清单
+
+1. 实现 chunker: 1200 token window，50 token overlap。
+2. 写 n 元关系抽取 prompt，让 GPT-4o-mini 对每个 chunk 返回 JSON 格式事实:
+   - fact_text
+   - entities
+   - source_chunk_id
+3. 做实体规范化，至少大小写、空格、别名要尽量合并，否则同一实体会变成多个节点。
+4. 建三个存储:
+   - entity table
+   - hyperedge/fact table
+   - entity_to_hyperedge 倒排表
+5. 分别构建 entity embedding index 和 hyperedge embedding index。
+6. 实现 graph_retrieve(query):
+   - entity extraction
+   - entity ANN search
+   - incident hyperedge lookup
+   - hyperedge ANN search
+   - reciprocal rank fusion
+   - 返回 top-k fact_text，带 source id
+7. 实现多轮 agent loop:
+   - prompt 中加入历史 reasoning 和 retrieved knowledge
+   - 解析 <think>、<query>、<answer>
+   - query 时调用 graph_retrieve
+   - answer 时停止
+8. 实现训练环境:
+   - rollout 时让模型真的和 graph_retrieve 交互
+   - 保存每个 token/action 的 logprob
+   - 计算 format reward 和 answer F1 reward
+   - 用 GRPO 更新
+9. 做对照实验:
+   - 无图，直接回答
+   - 普通 chunk RAG
+   - chunk RAG + RL
+   - hypergraph + 无 RL
+   - full Graph-R1
+
+九、论文结果说明
+
+论文报告 Graph-R1 在多个数据集上明显超过 StandardRAG、GraphRAG、LightRAG、PathRAG、HippoRAG2、HyperGraphRAG、Search-R1 和 R1-Searcher。一个关键结论是: 单纯有图不够，单纯有 RL 也不够。图结构和多轮 RL 结合后效果最好。
+
+消融实验显示:
+1. 去掉知识构建会降。
+2. 去掉多轮交互会降。
+3. 去掉 RL 降得最明显。
+
+十、局限和实现风险
+
+1. 建图仍然要调用 LLM，不适合频繁实时更新的大语料。
+2. 检索主要靠向量相似度和 rank fusion，并没有真正做图神经网络消息传递。
+3. prompt 细节主要在 PDF 图里。我已用 pdftotext 读取到核心文本，但实际生产中仍建议改成严格 JSON 输出，减少分隔符和标签解析错误。
+4. 如果实体规范化做得差，超图会碎成很多重复节点，检索效果会明显下降。
+5. 强化学习成本高，尤其 rollout 时每条轨迹都要多轮访问图环境。
