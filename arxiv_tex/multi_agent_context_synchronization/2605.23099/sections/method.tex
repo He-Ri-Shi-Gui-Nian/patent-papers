@@ -1,0 +1,82 @@
+\section{\sysname design}
+
+\begin{algorithm}
+\caption{\label{alg:sysname}\sysname}
+\begin{algorithmic}[1]
+\Statex \textbf{Input:} (1) Agents $\mathcal{A}_{1}\dots\mathcal{A}_{N}$, (2) Pre-debate answers $y_1\dots y_N$, (3) Communications per round $S$, (4) Budget $B_{max}$, (5) Acceptance threshold $\tau$
+\Statex \textbf{Output:} Final answer $\hat{y}$
+
+\State \textbf{Initialize} correctness scores
+
+    $Corr[\mathcal{A}_i]=\text{Prior}(\mathcal{A}_i)$ for $1 \leq i \leq N$
+
+\State \textbf{Initialize} $B=B_{max}$
+
+\While{$B > 0$}
+    \State $\mathcal{A}_{r} = \arg\max_{\mathcal{A}} \; Corr[\mathcal{A}]$
+    \State $\text{Disagree} = \{\mathcal{A}_j : y_j \neq y_{r}\}$
+    \State $\mathcal{P} = \text{top-}S \text{ of } \text{Disagree} \text{ ranked by } Corr$
+    \ForAll{$\mathcal{A}_s \in \mathcal{P}$}
+        \State $Outcome = Debate(\mathcal{A}_s \rightarrow \mathcal{A}_{r})$
+        \State $Corr[\mathcal{A}_{r}] \mathrel{+}= \ell(Outcome)$
+    \EndFor
+    \If{$Corr[\mathcal{A}_{r}] \geq \tau$}
+        \State \Return $\hat{y} = y_{r}$
+    \EndIf
+    \State $B \mathrel{-}= S$
+\EndWhile
+
+\State \Return Fallback majority-voting
+\end{algorithmic}
+\end{algorithm}
+
+Algorithm~\ref{alg:sysname} presents \sysname's workflow. The inputs are the pre-debate states of all agents, including prior signals, reasoning tokens, and initial answers. \sysname has the following steps:
+
+\noindent\textbf{Prior-based correctness score initialization} (line 1): We initialize each agent's correctness score using pre-debate prior signals, which provide an initial estimate of whether $A_i$ holds a correct answer. These scores are updated as debate outcomes become available.
+
+\noindent\textbf{Incremental graph construction} (line 3-15): \sysname operates iteratively by selecting one agent ($A_{r}$) as the receiver at a time. It then pairs the receiver with $S$ peers and performs $S$ pairwise debates. The outcomes (i.e., whether $A_{r}$ retained or revised its belief after debate) are used to update $A_{r}$'s correctness score.
+
+\noindent\textbf{Sender and receiver selection} (line 4-6): In each iteration, \sysname selects the agent with the highest correctness score as the receiver. This greedy strategy prioritizes agents most likely to hold correct answers, helping \sysname confirm reliable solutions and terminate with fewer communications. Among peers that disagree with the receiver $\mathcal{A}_{r}$, \sysname selects up to $S$ strongest challengers based on their correctness scores.
+
+\noindent\textbf{Posterior-style score update} (line 7-9): \sysname updates each receiver's correctness score after every debate. For receiver $\mathcal{A}_{r}$, let $D$, $r$, and $c$ denote the running counts of observed debates, retentions, and changes, respectively. After each debate, we increment $D \mathrel{+}= 1$ and either $r \mathrel{+}= 1$ or $c \mathrel{+}= 1$ based on debate outcome. We then apply a posterior-dominant rule:
+
+$Corr[A_r] =
+\begin{cases}
+SVR(D,r,c), & \text{if } D > 0,\\
+Prior(A_r), & \text{otherwise.}
+\end{cases}
+$
+
+Thus, prior signals guide selection only before debate evidence is available; once observed, SVR dominates and is refreshed after each debate.
+
+\noindent\textbf{Early termination} (line 11-13): After each debate, \sysname checks whether the receiver's updated correctness score exceeds the acceptance threshold. If so, \sysname terminates the debate early and returns that agent's answer as the final solution to reduce overall communication cost.
+
+\noindent\textbf{Fallback majority-voting} (line 16): If no agent commits within budget, each agent contributes one vote: the majority of its observed post-debate answers, with its pre-debate answer $y_i$ as tiebreaker. \sysname returns the majority over the $N$ votes, tie-breaking by the pre-debate majority among $y_1, \ldots, y_N$.
+
+\begin{comment}
+
+\subsection{\label{sec:dynamic-comm-budget}Dynamic budget allocation}
+
+\begin{algorithm}
+\caption{\label{alg:commbudget}$CommBudget$}
+\begin{algorithmic}[1]
+\Statex \textbf{Input:}
+    Agents $\mathcal{A}_{1}\dots\mathcal{A}_{N}$
+
+\Statex \textbf{Output:} Communication budget $B$
+
+\If{mean reasoning tokens per agent $>= \mathcal{T}$}
+    \State \Return $B = $Uncapped
+\Else
+    \State \Return $B = \mathcal{K} \cdot UniqueCount(y_1\dots y_N)$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+Algorithm~\ref{alg:commbudget} presents our method for determining a communication budget that is adaptive to problem difficulty and the disagreement levels among agents.
+
+\noindent\textbf{Difficulty by reasoning token counts} (line 1-2): We use the mean number of pre-debate reasoning tokens as a lightweight estimate of problem difficulty. A sufficiently large threshold $\mathcal{T}$ identifies cases where agents produce unusually long reasoning traces, often due to repeated self-verification, uncertainty, or looping behavior. In practice, we recommend setting $\mathcal{T}$ at the thousand-token scale, e.g., $4{,}096$, when typical responses contain only a few hundred reasoning tokens.
+
+\noindent\textbf{Disagreement-adaptive budget} (line 3-4): For remaining problems, \sysname sets the budget based on the number of unique pre-debate answers. This naturally allocates higher communication budgets to problems that require more debate to compare answers/reasoning among disagreeing agents.
+
+\end{comment}

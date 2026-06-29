@@ -1,0 +1,315 @@
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig_main.pdf}
+    \vspace{-15pt}
+    \caption{
+    \textbf{Overview of \methodname{}.} 
+    The same vote share can reflect different reliability depending on how agreement is formed. 
+    \methodname{} constructs matched observed and IID counterfactual dependency graphs, encodes pairwise and group-level dependencies, and uses the counterfactual shift to estimate calibrated panel confidence. 
+    The resulting confidence can also guide topology selection.
+    }
+    \vspace{-15pt}
+    \label{fig:main}
+\end{figure*}
+
+\section{\methodname{}: A Counterfactual Graph Calibration Framework} %   Counterfactual Agent Graph Calibration}
+\label{sec:method}
+\subsection{Motivation and Approach Overview}
+Based on the analysis in Section~\ref{sec:failure_modes}, we find that the same vote pattern can imply opposite reliability. 
+Benign diversity disperses wrong votes and makes reliable panels appear uncertain, while communication can concentrate agents on the same wrong answer and create false confidence. 
+This motivates \methodname{}, which calibrates confidence by modeling the dependency structure behind agent agreement. 
+Figure~\ref{fig:main} (A) illustrates the two motivating failure modes.
+% also found effective multi-agent confidence calibration requires going beyond the final answer distribution.
+% % The same level of agreement can correspond to different reliability: diversity-induced disagreement can make a reliable panel appear uncertain, whereas communication-induced agreement can make an unreliable panel appear confident. 
+% % Thus, the calibrator must model the dependency structure that gives rise to agreement or disagreement, rather than relying only on vote share or entropy.
+% % \paragraph{Motivation.}
+
+ 
+
+% To address this limitation, we propose \methodname{}. 
+
+Figure~\ref{fig:main} (B-C) provides an overview of the \methodname{} framework, which consists of three components. 
+First, \textit{Agent Dependency Graph Construction} builds two instance-level graphs: a counterfactual IID graph \(G_x^0\), which captures dependencies that would exist without communication, and a post-communication graph \(G_x^T\), which captures dependencies after agents interact under topology \(T\). 
+Second, \textit{Counterfactual Shift Calibration}, which includes  1) \textit{Calibration Agent Graph Encoder} and 2) \textit{Counterfactual Shift Calibration Learning}, uses the difference between these two graphs as a calibration signal to determine whether agreement reflects independent evidence or correlated failure. 
+Finally, we introduce \textsc{CAGE-Select} (D), which uses the calibrated confidence from \methodname{} to select the most reliable topology for each query and improve final panel accuracy.
+
+% \paragraph{Motivating the Counterfactual Graph Pair}
+% This split directly motivates the graph pair used by \textsc{CAGE-CAL}. 
+% To do the mulati agent calibtion, 
+% A counterfactual iid graph $G_x^0$ captures the dependence that would exist without communication. 
+% It represents population-side structure, including shared model families, shared biases, and shared prompting conventions. 
+% A post-communication graph $G_x^T$ captures the same matched agents after topology $T$ has reshaped their outputs. 
+% It contains both population-side dependence and communication-induced dependence.  
+
+
+
+% Their difference captures communication-
+% induced dependence, enabling the calibrator to
+% down-calibrate COC cases where high agreement
+% reflects agent coupling rather than independent ev
+% dence.
+
+
+
+
+
+% %%%
+% Because $G_x^0$ and $G_x^T$ are built over the same agent identities, their contrast gives a query-specific view of how communication changes the panel. 
+% This is the information that scalar disagreement scores discard. 
+% Section~\ref{sec:method} turns this counterfactual graph pair into the input representation for CAGE-CAL.
+
+
+
+
+
+% CAGE-CAL calibrates how agreement is formed, not only how many agents agree. 
+% Sections~\ref{sec:correlation}--\ref{sec:failure_modes} show that the same vote share can arise from different mechanisms. 
+% In one case, several agents independently support the same answer. 
+% In another case, communication pulls dependent agents toward the same answer. 
+% These cases can look identical to scalar disagreement scores, but they require different confidence estimates.
+
+% CAGE-CAL turns this distinction into a counterfactual dependence shift. 
+% For the same query $x$ and the same matched agent panel, we compare two relational states:
+% \[
+% G_x^0 \rightarrow G_x^T .
+% \]
+% The iid counterfactual graph $G_x^0$ represents the panel before communication. 
+% It captures background dependence from shared model families, shared prompting conventions, and local failure correlations. 
+% The observed graph $G_x^T$ represents the same panel after topology $T$ has shaped the agents' final answers. 
+% The transition from $G_x^0$ to $G_x^T$ is the calibration signal. 
+% It lets the model ask a concrete question: did the winning answer cluster already exist as independent support, or was it amplified by communication?
+
+\subsection{Agent Dependency Graph Construction}
+
+For each query $x$ and communication topology $T$, \methodname{} constructs two graphs over matched agent identities. 
+The observed graph $G_x^T$ is built from the completed panel under topology $T$. 
+The counterfactual graph $G_x^0$ is built from the cached iid run of the same query and rollout, where the same agents answer without communication. 
+We keep the shared agent identities between the two runs, so that the two graphs describe the same panel under two relational states. 
+This matching makes the contrast between $G_x^T$ and $G_x^0$ reflect communication induced changes rather than changes in the agent population.
+
+
+% Because the nodes are matched, differences between the two graphs reflect communication induced changes rather than changes in the agent population.
+\paragraph{Node.}
+Each node represents one agent. 
+For both $G_x^T$ and $G_x^0$, we use the same 23-dimensional node feature schema:
+\begin{equation}
+v_i(x)
+=
+[
+s_i,\,
+p_i,\,
+r_i,\,
+\mu_i,\,
+\sigma_i^2,\,
+m_i,\,
+n^{-1},\,
+a_i
+],
+\end{equation}
+where $s_i$ is the agent confidence score.  $p_i$ indicates whether the agent supports the panel plurality answer, $r_i$ is the normalized vote rank of the agent's answer, $(\mu_i,\sigma_i^2,m_i)$ are local correlation summaries from the corresponding row of the instance conditional correlation matrix, $n^{-1}$ is the inverse panel size, and $a_i$ is a low dimensional answer embedding.  Further details on node feature construction are provided in Appendix~\ref{con:details_of_node_feature}.
+
+% The confidence score $s_i$ is computed from the agent's mean answer log probability. 
+% We clip the mean log probability to $[-10,0]$ and linearly map it to a normalized score. 
+% The plurality indicator $p_i$ is one when the agent's normalized answer matches the panel plurality answer. 
+% The vote rank $r_i$ is normalized by the number of distinct answer clusters in the panel. 
+% The correlation summaries $(\mu_i,\sigma_i^2,m_i)$ are the row mean, row variance, and row maximum of $|W_{ij}(x)|$ over other agents. 
+% For the observed tower, these summaries are computed from the post communication correlation matrix. 
+% For the iid counterfactual tower, they are computed from the iid correlation matrix. 
+% Finally, the answer embedding $a_i$ is obtained by encoding the agent's answer with Sentence-BERT and reducing the embedding to 16 dimensions by PCA. 
+% Thus, each node records both the agent's individual contribution to the vote and its local dependence pattern with the rest of the panel.
+
+\paragraph{Pairwise dependency edges.}
+Pairwise edges describe local dependence between agents. 
+For agents $i$ and $j$, the edge feature in the observed graph is
+$
+e_{ij}^T(x)
+=
+[
+W_{c,T}^{ij},\,
+W_T^{ij}(x)
+]
+$
+, where $W^{ij}_{c,T}$ is the binary communication adjacency under topology $T$ and records who could directly observe or influence whom under the topology. $W_T^{ij}(x)$ is the instance-conditional correctness correlation estimated from nearby training queries, indicating whether agents $i$ and $j$ tend to succeed or fail together on queries similar to $x$.  Further details about this correlation estimation are provided in Appendix~\ref{con:corrlation_extimtion}. 
+In the IID counterfactual graph, the communication-adjacency feature is set to zero, since no communication occurs among agents.
+% The iid counterfactual graph uses
+% \[
+% e_{ij}^0(x)
+% =
+% [
+% 0,\,
+% W_0^{ij}(x)
+% ],
+% \]
+% because no agent communicates in the counterfactual iid run.
+
+% The two edge dimensions play different roles. 
+% The communication adjacency records who could directly observe or influence whom under the topology. 
+% The local correlation term records which agents tend to succeed or fail together on queries similar to $x$. 
+
+
+\paragraph{Group level hyperedges.}
+Pairwise edges capture only dyadic dependence, while many sources of dependence act at the group level. 
+We therefore augment each graph with a hyperedge set
+\begin{equation}
+   \mathcal{H}_x^T
+=
+\mathcal{H}_{\mathrm{fam}}
+\cup
+\mathcal{H}_{\mathrm{role}}
+\cup
+\mathcal{H}_{\mathrm{ans}}(x)
+\cup
+\mathcal{H}_{\mathrm{topo}}^T.
+\end{equation}
+Here, $\mathcal{H}_{\mathrm{fam}}$ connects agents sharing the same backbone family, 
+$\mathcal{H}_{\mathrm{role}}$ connects agents using the same prompting role, 
+$\mathcal{H}_{\mathrm{ans}}(x)$ connects agents that emit the same normalized answer for query $x$, 
+and $\mathcal{H}_{\mathrm{topo}}^T$ connects agents exposed through topology $T$.
+The IID counterfactual graph does not include this communication exposure hyperedge.
+% Pairwise edges alone do not capture all sources of dependence. 
+% Many dependencies act on groups of agents. 
+% For this reason, each graph also includes hyperedges over four types of groups.
+% First, model family hyperedges connect agents that share the same backbone family. 
+% In our agent pool, these families include Qwen, Llama, Gemma, and Phi variants. 
+% Second, prompting role hyperedges connect agents that use the same prompting role. 
+% Third, answer cluster hyperedges connect agents that emit the same normalized answer within the panel. 
+% The answer normalization lowercases the answer and removes surrounding punctuation and whitespace before exact string matching. 
+% Fourth, for non-iid observed graphs, we add a topology exposure hyperedge over the agents that participate in the communication topology. 
+We create a hyperedge only when it contains at least two agents. 
+These hyperedges are dependence units rather than auxiliary metadata. 
+A shared backbone can induce shared blind spots. 
+A shared prompting role can induce similar reasoning patterns. 
+An answer cluster can become a consensus unit. 
+A communication exposure group can reflect shared influence from the topology. 
+This design follows the empirical analysis in Appendix~\ref{con:analysis_progress}: multi-agent reliability is shaped by both population side structure and topology induced coupling~\cite{li2026graph}.
+% \subsection{Counterfactual Shift Calibration}
+\subsection{Calibration Agent Graph Encoder}
+% \subsection{Encoding the Counterfactual Shift}
+Given the matched graphs \(G_x^T\) and \(G_x^0\), \methodname{}
+uses the calibration agent graph encoder \(f_\theta\) to obtain:
+\begin{equation}
+    h^T = \mathrm{Pool}\!\left(f_\theta(G_x^T)\right),
+    \qquad
+    h^0 = \mathrm{Pool}\!\left(f_\theta(G_x^0)\right).
+\end{equation}
+For each graph, the encoder updates every agent representation with two
+relational signals. The pairwise update aggregates over agent-agent edges:
+\begin{equation}
+    p_i^{(\ell)}
+    =
+    \sigma\!\left(
+    \sum_{j\in\mathcal{N}(i)}
+    \alpha_{ij}^{(\ell)}
+    W_p^{(\ell)} z_j^{(\ell)}
+    \right),
+\end{equation}
+where \(\alpha_{ij}^{(\ell)}\) is the attention weight from agent \(j\) to
+agent \(i\) at layer \(\ell\). It determines how much information agent
+\(i\) receives from agent \(j\). The weight is computed using the two agent representations and their edge feature
+\(e_{ij}(x)=[W_c^{ij}, W_{ij}(x)]\), allowing communication exposure and query-specific failure correlation to condition message passing. Here, \(z_i^{(\ell)}\) denotes the layer-\(\ell\)
+representation of agent \(i\), \(W_p^{(\ell)}\) is a learnable projection matrix.
+The group-level update aggregates over hyperedges:
+\begin{equation}
+    q_i^{(\ell)}
+    =
+    \sigma\!\left(
+    \sum_{e\in\mathcal{H}(i)}
+    \frac{1}{d_i}
+    \frac{1}{|e|}
+    \sum_{j\in \mathcal{V}(e)}
+    W_q^{(\ell)} z_j^{(\ell)}
+    \right),
+\end{equation}
+where \(\mathcal{H}(i)\) is the set of hyperedges containing agent \(i\), 
+\(d_i = |\mathcal{H}(i)|\) is the hyperedge degree of agent \(i\), and 
+\(|e|\) is the number of agents in hyperedge \(e\). 
+This is equivalent to an unweighted degree-normalized hypergraph convolution using the node--hyperedge incidence matrix \(H\).
+The operation first aggregates node representations into group representations and then broadcasts the group information back to member agents. 
+Here, $W_q^{(\ell)}$ is a learnable projection matrix.
+The two updates are then fused by concatenation:
+\begin{equation}
+    z_i^{(\ell+1)}
+    =
+    \phi\left(
+    p_i^{(\ell)} \Vert q_i^{(\ell)}
+    \right),
+\end{equation}
+where \(\phi\) denotes dropout applied after concatenation.
+% After two layers, we apply mean and max pooling over the final node
+% representations, giving
+% \begin{equation}
+%     h^T, h^0 \in \mathbb{R}^{256}.
+% \end{equation}
+Because the same encoder is used for both graphs, \(h^T\) and \(h^0\)
+lie in the same representation space. We define the communication-induced shift and the final calibration representation as
+\begin{equation}
+    \Delta h_x^T = h^T - h^0, 
+    \qquad 
+    z_x = [h^T \Vert h^0 \Vert \Delta h_x^T \Vert b_x].
+\end{equation}
+Here \(b_x\) is a benchmark one-hot vector.
+% Since $h^T$ and $h^0$ are both 256-dimensional and $b_x$ has five dimensions, $z_x$ has dimension
+% \[
+% 256 \times 3 + 5 = 773.
+% \]
+The three graph terms serve different roles. 
+The observed representation $h^T$ describes the panel that produced the final answer. 
+The counterfactual representation $h^0$ describes the background dependence of the same agents when they answer independently. 
+The difference $h^T-h^0$ captures the topology-induced shift from independent answering to communication.
+
+% \subsection{Graph-Centric Calibration Learning}
+\subsection{Counterfactual Shift Calibration Learning}
+% \textsc{CAGE-CAL} predicts a panel-level correctness probability
+We train with a calibration-aware objective combining smoothed binary
+cross-entropy and a Brier penalty: 
+
+\begin{equation}
+\small
+\mathcal{L}
+=
+\mathrm{BCE}\!\left(\hat{p}(x),\widetilde{C}(x)\right)
++
+\lambda_{\mathrm{Brier}}
+\left(\hat{p}(x)-C(x)\right)^2
+\end{equation}
+where $\hat{p}(x)=\sigma(\mathrm{MLP}(z_x))$ is the predicted probability that the panel answer is correct.
+The binary target is $C(x)=\mathbf{1}[\hat{y}(x)=y^\star(x)]$, where $\hat{y}(x)$ denotes the panel prediction and $y^\star(x)$ denotes the gold answer.
+To regularize the binary objective, we use the smoothed target
+$\widetilde{C}(x)=C(x)(1-2\alpha)+\alpha$.
+The BCE term encourages discrimination between correct and incorrect panel predictions, while the Brier term directly penalizes miscalibrated probability estimates.
+
+
+% We set $\lambda_{\mathrm{Brier}}=0.4$ in the main experiments. with $\alpha=0.05$
+
+% We select checkpoints using a validation criterion that balances discrimination and calibration:
+% \[
+% \mathrm{Score}_{\mathrm{val}}
+% =
+% \mathrm{AUROC}_{\mathrm{val}}
+% -
+% 0.5 \cdot \mathrm{ECE}_{\mathrm{val}}.
+% \]
+% Both AUROC and ECE are computed per benchmark and then averaged across benchmarks. 
+% This criterion avoids selecting a model that ranks examples well but produces poorly scaled probabilities.
+
+% After training, we ensemble predictions across random seeds. 
+% For each seed, the model outputs a probability on validation and test examples. 
+% We average the seed-level probabilities to obtain an ensemble confidence score. 
+% We then apply the same validation-set post-hoc calibration protocol used for all trained calibrators. 
+% Specifically, we fit calibration maps separately for each benchmark and combine beta calibration with scaling-binning calibration. 
+% The final calibrated confidence is the average of the two calibrated probabilities when both are available. 
+% This post-hoc step is used only to map the learned score to a better probability scale; it does not change the panel answer or use test labels.
+
+% \subsection{Inference}
+
+% At inference time, the multi-agent system first runs normally under topology $T$ and produces a plurality answer $\hat{y}(x)$. 
+% \textsc{CAGE-CAL} then constructs $G_x^T$ and pairs it with the cached iid graph $G_x^0$ using the matched graph construction in Section~\ref{sec:graph_construction}. 
+% The two graphs are passed through the shared encoder, and the readout representation $z_x=[h^T,h^0,h^T-h^0,b_x]$ is scored by the MLP head. 
+% After seed ensembling and benchmark-specific post-hoc calibration, the model outputs
+% \[
+% \hat{p}(x)\in[0,1],
+% \]
+% the calibrated probability that the panel's plurality answer is correct.
+
+% This confidence can be used without changing the underlying multi-agent system. 
+% In Section~\ref{sec:experiments}, we evaluate it as a confidence estimator and then use it in \textsc{CAGE-Select} to choose which topology output to trust for each query.

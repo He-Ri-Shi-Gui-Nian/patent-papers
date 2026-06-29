@@ -1,0 +1,177 @@
+%!TEX root = main.tex
+\label{com_coo_scheme}
+
+
+
+This section delineates the model architecture for mmWave IAB networks and scrutinizes the significant challenges encountered during the training process. To effectively tackle these challenges, we introduce a training cycle synchronization scheme, which facilitates the scheduling of multi-agent training procedures, considering practical aspects highlighted by challenges.
+And we present in detail the training process, including message exchanges, for the central entity and agents.
+
+\vspace{-10pt}
+\subsection{Model Deployment in IAB Networks}
+
+\textbf{Model Architecture}
+The centralized critics are computed at a central entity located at the IAB-donor, while local policies are distributed at agents associated to Tx antenna panels at both IAB-donor and IAB-nodes. The centralized critics (i.e., the DNN in the green circle in Fig.~\ref{fig:com_coop_combined}(a)) act as a bridge among local policies and implicitly capture the agents' cooperation during training phase. The training of such a semi-distributed architecture relies on message exchanges between the IAB-donor and IAB-nodes, which can be carried out through direct control-plane links working at FR1 frequencies. As we will show later, only a limited amount of information has to be exchanged to achieve good results.
+And since agents no longer need central critics once training is concluded, leaving the operation phase with fully distributed and independently policies, message exchanges are required only during the training phase. The key components of model updates and message exchanges are shown in Fig.~\ref{fig:com_coop_combined}(b).
+
+\textbf{Training Challenges}
+Several issues will arise when mmWave IAB networks perform training procedures practically, because message exchanges between the IAB-donor and IAB-nodes are required during training.
+The message exchanges are unavoidably affected by non-negligible latencies, which can deteriorate the training process in the following two ways. First, the latencies can slow down the learning process. Second, different IAB-nodes can experience distinct latencies due to their different distances from the IAB-donor and thus incur coordination issues and other inconvenience for the central entity and distributed agents. A typical case is that the messages from different agents can arrive at the central entity at different moments. This forces the central entity to wait for messages from remote agents to guarantee consistent experience trajectories to be stored in the replay buffer. This will greatly slow down the training process. In turn, agents can receive messages from the central entity at different moments, causing coordination issues among agents. We address the above issues in the following sections.
+
+\vspace{-10pt}
+\subsection{Training Cycle Synchronization}
+A basic training cycle consists of the following steps, as shown in Fig.~\ref{fig:late_updates}(a). The agents collect experience data by performing network operations under the existing policies, and send these data together with some local policy information to the central entity. The central entity puts the received data in the replay buffer, samples the training data, and updates the centralized critics. Subsequently, the data required in policy updates is sent to the agents, which update their policies and generate new experience data with the latest updated policies. The above steps repeat to form the basic training cycle.
+However, such a training cycle is characterized by the information exchange latency (as indicated by $T_l^A$ and $T_l^C$ in Fig.~\ref{fig:late_updates}(a)), which can significantly decrease the training efficiency and deteriorate the coordination of the whole system.
+
+Therefore, we present a synchronized training cycle, as shown in Fig.~\ref{fig:late_updates}(b), which can be summarized in following two aspects.
+First, the updates at both the central entity and distributed agents are performed periodically, based on pacing timers.
+The timers are appropriately configured to take into account the central entity and agents and coordinate the model updates and message exchanges of all the entities at the same pace.
+Second, central critic updates are performed with the data sampled from the most recent available content of the replay buffer, while distributed agents' policies are updated with the latest available data received from the central entity.
+This idea is illustrated by the corresponding DNN updates and information transmissions with matching colors.
+
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=0.49\textwidth]{figures/TON_revision/late_updates_final.pdf}
+    \caption{\small An illustrative example of system coordination solutions.}
+    \label{fig:late_updates}
+    \vspace{-3pt}
+\end{figure}
+
+\vspace{-10pt}
+\subsection{Overview of the Training Process}
+
+The training process consists of a sequence of update instants, in each of which, multiple DNN updates are performed by sampling $K$ random mini-batches from the replay buffer and updating DNNs' weights accordingly. Moreover, an initial transient period is needed to reach a steady state (i.e., stationary buffer levels and link behaviors), therefore a warm-up period (e.g., the first $T_{wup}$ steps) is considered, during which, no update is performed.
+
+Algorithm \ref{learning_alg_central} details the learning procedure for the central entity. 
+(1) [Lines 3-6] Every time the central entity detects the arrival of the new experience information from agents, the tuples contained in the message are merged into the replay buffer. 
+(2) [Lines 8-12] When the timer expires (and the warm-up period is concluded), $K$ random mini-batches are sampled and used to update the Q-value function. 
+(3) [Lines 13-16] The updated Q-value function is used to compute new policy-update information, which is sent to each agent. 
+
+Algorithm \ref{learning_alg_each_agent} presents the learning procedure for each agent $i$. 
+(1) [Lines 3-5] Every time the agent $i$ receives new information from the central entity, it collects information for $K$ consecutive updates.
+(2) [Lines 7-10] When the timer expires (and the warm-up period is concluded), $K$ consecutive policy function updates are performed.
+(3) [Lines 11-12] Using the updated policy, the agent $i$ interacts with the environment to collect the experience trajectory data and computes the values of associated variables.  
+(4) [Line 13] Agent $i$ sends experience tuples and other related information to the central entity.
+
+The time between two updates (i.e., update-timer interval) directly impacts the convergence speed, but it is potentially arbitrary. Indeed, it can be set according to the length of an arbitrary episode, the time to process an update, or the replay-buffer sampling factor to generate a mini-batch. However, to strike a balance between model training efficiency and message exchange costs, a proper update interval is needed.
+
+Once the convergence is reached (f.i., after a maximum number of steps or when minimal NN weight updates are performed), the training procedure stops and distributed agents continue the interaction with the environment based on local observations and fixed local policies. However, the training procedures can be re-activated at any point in time during the system operation, f.i., periodically or when a substantial performance decrease is detected. Indeed, new information collected at the agents can be accumulated and sent to the central entity at any time. Likewise, critic updates and policy updates can be performed at any time, when a sufficient number of new tuples have been inserted in the replay buffer.
+
+\vspace{-10pt}
+\subsection{Training Details for Central Entity}
+
+The whole training phase is based on the update of the central action-value functions $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ ($i\in\mathcal{I}_p$) in Algorithm \ref{learning_alg_central} [Line 11], which plays an essential role in enabling cooperation among distributed agents. 
+This task requires the central entity to have a centralized replay buffer $H$ storing the past experiences of every agent.
+	
+During network operations, agent $i$ plays action $a^{(i)}_t$ at each step $t$, which is selected by using its own policy $\pi_{\theta^{(i)}}$ on the basis of its observation $o^{(i)}_t$. This leads to a reward $r^{(i)}_t$ and a new observation $o^{(i)}_{t+1}$. New tuples $(o^{(i)}_t, a^{(i)}_t, r^{(i)}_t, o^{(i)}_{t+1})$ are temporarily and locally accumulated at each agent $i$, which periodically sends a tuple batch $Tup^{(i)}=\{(o^{(i)}_t, a^{(i)}_t, r^{(i)}_t, o^{(i)}_{t+1})\}_{T_{upd}}$ to the central entity considering the last $T_{upd}$ steps. The central entity merges received per-agent tuples into agent-indexed vector tuples $\{(\mathbf{o}_t,\mathbf{a}_t,\mathbf{r}_t,\mathbf{o}_{t+1})\}_{T_{upd}}$ and inserts them into $H$.
+
+In each of the $K$ iterations of a periodic update, the central entity samples a random mini-batch $h$ from $H$ consisting of a number $h_{size}$ of vector tuples (i.e., $h=\{(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{o}_{t+1})\}_{h_{size}}$) and uses it in the minimization of the joint regression loss to update $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ ($i\in\mathcal{I}_p$). Namely, for each vector tuple in $h$, the central entity updates $\psi$ according to the following equations:
+\begin{align}
+    & \mathcal{L}_Q(\psi) = \sum_{i \in \mathcal{I}_p}[(Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)-y^{(i)}_t)^2], \label{critic_loss_alg}\\
+    & y^{(i)}_t = r^{(i)}_t + \gamma[Q^{\bar{\psi},(i)}(\mathbf{o}_{t+1}, \mathbf{\bar{a}}_{t+1}) - \tau\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}_{t+1}^{(i)}|o_{t+1}^{(i)}))].\label{y_i_alg}
+\end{align}
+Note that, while mini-batch $h$ is generated at the central entity, $\bar{a}_{t+1}^{(i)}$ and the value of $\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}_{t+1}^{(i)}|o_{t+1}^{(i)}))$ are received from remote agents together with the tuple in $h$.
+After the update of $Q^{\psi,(i)}$ ($i\in\mathcal{I}_p$), target action-value functions $Q^{\bar{\psi},(i)}$ ($i\in\mathcal{I}_p$) are updated using a moving average with an update rate $\kappa$.
+
+\begin{algorithm}[t]
+    \small
+    \caption{\small\textit{Learning Procedures for Central Entity}}
+    \label{learning_alg_central}
+    Parameters: $T_{train}$, $T_{upd}$, $T_{wup}$, $K$, $h_{size}$, $\kappa$.
+    \begin{algorithmic}[1]
+        \State Initialize $\psi$, $H$;
+        \For{$t_{train}=1, \dots, T_{train}$}
+            \vspace{6pt}
+            \State \underline{\textbf{\textit{Data Arrival Detection:}}}
+            \For{$i \in \mathcal{I}_p$} \Comment{Arrive at different time due to latency.}
+                \State \textbf{\textit{Read}} the set of tuples $\{(o^{(i)}_t,a^{(i)}_t,r^{(i)}_t,o^{(i)}_{t+1})\}_{T_{upd}}$ and \Statex ~~~~~~~~~~~~~~corresponding values $\hat{a}^{(i)}_t$, $\bar{a}^{(i)}_{t+1}$ and 
+                \Statex ~~~~~~~~~~~~~~$\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}_{t+1}^{(i)}|o_{t+1}^{(i)}))$ from agent $i$;
+            \EndFor
+            \State $H \gets H \cup \{(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{o}_{t+1})\}_{T_{upd}}$;
+            \vspace{6pt}
+            \State \underline{\textbf{\textit{Q-Value Function Update \& Data Sending:}}}
+            \If{$t_{train} \geq T_{wup}$ \& the timer expires}
+                \For{$k = 1, \dots, K$}
+                    \State Sample mini-batch $h^{k}$ of size $h_{size}$ from $H$;
+                    \State Update $\psi$ using $h^{k}$ and corresponding $\mathbf{\bar{a}}^{(i)}_{t+1}$,\Statex ~~~~~~~~~~~~~~~~~~~~$\log(\pi_{\bar{\boldsymbol{\uptheta}}}(\mathbf{\bar{a}}_{t+1}|\mathbf{o}_{t+1}))$ according to Eq. \eqref{critic_loss_alg};
+                    \State Update target critic: $\bar{\psi} = \kappa\bar{\psi} + (1-\kappa)\psi$;
+                \EndFor
+                \For{$i \in \mathcal{I}_p$}\Comment{In parallel.}
+                    \For{$k = 1, \dots, K$}\Comment{All together.}
+                        \State \textbf{\textit{Compute}} $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$ and $b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)$ based
+                        \Statex ~~~~~~~~~~~~~~~~~~~~~~~~on $\mathbf{o}_t\in h^k$ and $\mathbf{\hat{a}}_t$; 
+                        \State \textbf{\textit{Send}} $o^{(i)}_t \in h^{k}$,
+                        and corresponding values
+                        \Statex ~~~~~~~~~~~~~~~~~~~~~~~ of $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$ and $b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)$ to agent $i$;
+                    \EndFor
+                \EndFor
+            \EndIf
+
+        \EndFor
+    \end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+    \small
+    \caption{\small\textit{Learning Procedures for Each Agent $i$}}
+    \label{learning_alg_each_agent}
+    Parameters: $T_{train}$, $T_{upd}$, $T_{wup}$, $K$, $\kappa$.
+    \begin{algorithmic}[1]
+        \State Initialize $\theta^{(i)}$;
+        \For{$t_{train}=1, \dots, T_{train}$}
+            \vspace{6pt}
+            \State \underline{\textbf{\textit{Data Arrival Detection:}}}
+            \For{$k = 1, \dots, K$}
+                \State \textbf{\textit{Read}} $o^{(i)}_t\in h^{k}$,
+                corresponding values of
+                \Statex ~~~~~~~~~~~~$Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$ and $b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)$ from central entity;
+            \EndFor
+            \vspace{6pt}
+            \State \underline{\textbf{\textit{Policy Update \& Data Sending:}}}
+            \If{$t_{train} \geq T_{wup}$ \& the timer expires}
+                \For{$k = 1, \dots, K$}
+                    \State Update $\theta^{(i)}$ using $o^{(i)}_t$, $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$, $b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)$ 
+                    \Statex ~~~~~~~~~~~~~~~~~according to Eq. \eqref{policy_gradient_alg};
+                    \State Update target policy: $\bar{\theta}_i = \kappa\bar{\theta}_i + (1-\kappa)\theta_i$;
+                \EndFor
+                \vspace{4pt}
+                \State Interact with the env. using newly updated policy;
+                \vspace{4pt}
+                \State \textbf{\textit{Compute}} $\hat{a}_t^{(i)}$ based on current policy $\pi_{\theta^{(i)}}$ and $\bar{a}_{t+1}^{(i)}$, \Statex ~~~~~~~~~~~~$\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}_{t+1}^{(i)}|o_{t+1}^{(i)}))$ based on target policy $\pi_{\bar{\theta}^{(i)}}$;
+                \State \textbf{\textit{Send}} latest $T_{upd}$ tuples
+                  $\{(o^{(i)}_t,a^{(i)}_t,r^{(i)}_t,o_{t+1}^{(i)})\}_{T_{upd}}$
+                  \Statex ~~~~~~~~~~~~and the corresponding values $\hat{a}_t^{(i)}$, $\bar{a}_{t+1}^{(i)}$, 
+                  \Statex ~~~~~~~~~~~~$\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}_{t+1}^{(i)}|o_{t+1}^{(i)}))$ to the central entity;
+            \EndIf
+        \EndFor
+    \end{algorithmic}
+\end{algorithm}
+
+The amount of information sent by each remote agent (IAB-node array panel) $i$ to the central entity (IAB-donor), shown by blue arrows \ding{172} in Fig.~\ref{fig:com_coop_combined}, is dominated by the set of tuples $Tup^{(i)}=\{(o^{(i)}_t, a^{(i)}_t, r^{(i)}_t, o^{(i)}_{t+1})\}_{T_{upd}}$. The size of each tuple is mainly determined by the size of an observation $o^{(i)}_t$, which consists of $N_s + N_s\cdot A + N^{ch}_{i}\cdot L$ bits for FD case and $N_s + N_s\cdot A + N^{ch}_{i}\cdot(L + B)$ bits for HD case, where $N_s$ is given by the UE presence ($I_{i,s}^{pres}$) bitmap, $A$ is the number of bits used to record the average attenuation ($A^{block}_{i,s}$) caused by obstacles in a sector, $L$ and $B$ are respectively the numbers of bits used to indicate the buffer level and the amount of data bits delivered by a child IAB-node, and $N^{ch}_i$ is the number of child IAB-nodes connected to $i$, which is typically small (e.g., $2$-$4$).
+In addition, each agent sends, together with each tuple $tup^{(i)}=(o^{(i)}_t, a^{(i)}_t, r^{(i)}_t, o^{(i)}_{t+1})\in Tup^{(i)}$, the following variables:
+\begin{itemize}
+    \item action $\hat{a}^{(i)}_t$ that it would play in front of current observation $o^{(i)}_t$ in $tup^{(i)}$, selected according to the current policy function $\pi_{\theta^{(i)}}(\hat{a}^{(i)}_t | o^{(i)}_t)$;
+    \item action $\bar{a}^{(i)}_{t+1}$ that it would play in front of the next observation $o^{(i)}_{t+1}$ in $tup^{(i)}$, selected according to its target policy function $\pi_{\bar{\theta}^{(i)}}(\bar{a}^{(i)}_{t+1} | o^{(i)}_{t+1})$; 
+    \item the value of $\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}^{(i)}_{t+1}|o^{(i)}_{t+1}))$, conditional to $o^{(i)}_{t+1}$ in $tup^{(i)}$ and according to the target policy function $\pi_{\bar{\theta}^{(i)}}(\bar{a}^{(i)}_{t+1}|o^{(i)}_{t+1})$. 
+\end{itemize}
+Actions $\bar{a}^{(i)}_{t+1}$ ($i\in\mathcal{I}_p$) and the values of $\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}^{(i)}_{t+1}|o^{(i)}_{t+1}))$ ($i\in\mathcal{I}_p$) are used in the centralized action-value function updates according to Eqs.~\eqref{critic_loss_alg} and \eqref{y_i_alg}, while $\hat{a}^{(i)}_t$ is used at the central entity to compute $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$ and $b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)$ that will be redistributed to all the agents to perform policy updates.
+
+\vspace{-10pt}
+\subsection{Training Details for Distributed Agents}
+Once the $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ ($i\in\mathcal{I}_p$) functions are updated, the central entity immediately sends to each agent $i$ the information necessary to update its policy (shown by green arrows \ding{173} in Fig.~\ref{fig:com_coop_combined}), which consists of:
+\begin{itemize}
+    \item observations $\{o^{(i)}_t\}_{h_{size}}$ extracted from tuples in $h$;
+    \item values of $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$ and $b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)$.
+\end{itemize}
+Based on this information, each agent $i$ performs gradient ascent to update $\theta^{(i)}$, as in Algorithm \ref{learning_alg_each_agent} [Line 9], and obtains a new $\pi_{\theta^{(i)}}(a^{(i)}_t|o^{(i)}_t)$, which will be locally used in the next steps until a new updated policy is generated.
+The parameters of the agent $i$'s policy are updated as follows:
+\begin{align}
+    &\nabla_{\theta^{(i)}}J(\pi_{\boldsymbol{\uptheta}}) = \nabla_{\theta^{(i)}} \log( \pi_{\theta^{(i)}}(\hat{a}^{(i)}_t|o^{(i)}_t) )\cdot\nonumber\\
+    &\left(-\tau\log( \pi_{\theta^{(i)}}(\hat{a}^{(i)}_t|o^{(i)}_t) )+
+    Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t) - b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t)\right).
+    \label{policy_gradient_alg}
+\end{align}
+Note that action $\hat{a}^{(i)}_t$ is the same as the one sent to the central entity. Indeed, it is generated by the agents to be sent to the central entity and then stored to be used for computing Eq.~\ref{policy_gradient_alg}. As a final task, each agent updates its target policy by using a moving average.
+
+It is worth mentioning that the policy updates can be performed in parallel to normal network operations. When a concurrent policy update takes place, the actions for normal network operations are selected according to the latest version of the policy function, which is being updated and will be improved at the end of the current policy update.
+Note that only the experience data collected when applying fresh new policies are sent to the central entity for the Q-value function updates, as illustrated by the orange dashed arrow in Fig. \ref{fig:com_coop_combined}(b), while the other interactions are used just to keep the IAB network continuously active.

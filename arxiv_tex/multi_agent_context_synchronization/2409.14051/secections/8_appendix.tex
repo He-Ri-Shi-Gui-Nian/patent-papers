@@ -1,0 +1,288 @@
+\appendix
+\section{GroupDebate Algorithm} \label{appendix:gd-al}
+% The detailed GroupDebate Algorithm is as follows:
+\begin{breakablealgorithm}
+    \caption{GroupDebate Methods}
+    \label{alg:GroupDebate}
+    \begin{algorithmic}[1]
+        \Require Number of groups $N$, number of agents  $M$, question $Q$, total rounds $T$, intra-group debate round $R$, total stages $S$, answer extracter $VOTE$ 
+        \Ensure $Answer$
+     
+        % \State $A \gets [A_1,A_2,\ldots,A_M]$  \quad \quad \quad \quad \quad \rotatebox[origin=c]{270}{$\triangle$} Initialize and shuffle the agents randomly
+        \State $A \gets [A_1,A_2,\ldots,A_M]$ 
+        \Statex \Comment{Initialize and shuffle the agents randomly}
+
+        \State $G \gets [G_1,G_2,\ldots,G_N]$  \Statex \Comment{Initialize each group} 
+
+        \State $H \gets [H_1,H_2,\ldots,H_M]$  \Statex \Comment{Initialize each agent with empty memory}
+        
+        \State $Summary \gets [Summary_1,$
+        \Statex $\qquad \qquad Summary_2,\ldots,Summary_N]$  
+        \Statex \Comment{Initialize summary pool with empty list}
+
+        \For{$i=1$ to $M$}
+            \State $H_i \gets [Q]$ \Comment{Initialize memory of each agent}
+        \EndFor
+        
+        \For{$s=1$ to $S$}
+            \For{$j=1$ to $N$}
+                \For{$t = (s-1)R+1$ to $\min(sR,T)$}
+                    \For{$A_i \in G_j$}
+                        \If{$s=1$ \textbf{and} $t=1$}
+                        % \If{$t=(s-1)R+1$}
+                            \State $h_i \gets A_i(H_i)$ 
+                            % \Comment{ Utilize agents to generate responses in the first round}
+                            \State $H_i \gets H_i + h_i$ 
+                            % \Comment{Append response to memory}
+                            \State $H_i \gets H_i + BUF$ 
+                            % \Comment{Append empty buffer to memory in order to unIform Format}
+                        \ElsIf{$s \neq 1$ \textbf{and} $t=(s-1)R+1$} 
+                            \State $h_i \gets A_i(H_i)$ 
+                            % \Comment{  Utilize agents to generate responses in the first round of each stage}
+                            \State $H_i[-2] \gets h_i$    
+                            % \Comment{update the previous output}
+                        \Else
+                        \For{$A_{i'} \in G_j$ \textbf{and} $A_{i'} \neq A_i$}
+                            \State $buf \gets [\quad]$ 
+                            \State $buf \gets buf + Replay_{i'}$  
+                            % \Comment{aggregate outputs of other agents in the same group}
+                        \EndFor
+                        \State $H_i[-1] \gets buf$ 
+                        % \Comment{Append outputs of other agents in the same group}
+                    
+                        \State $h_i \gets A_i(H_i)$  
+                        % \Comment{Utilize agents to generate responses using other agents' outputs}
+                        \State $H_i[-2] \gets h_i$   
+                        % \Comment{update the previous output}
+                        \EndIf
+                    \EndFor
+                    % \For{$A_i \in G_j$}
+                    %     \State $Replay_i \gets H_i[-2]$ \quad \quad \quad \quad \rotatebox[origin=c]{270}{$\triangle$}  update the replay pool
+                    % \EndFor
+                \EndFor
+                \If{$s \neq S$}
+                    \State $summary \gets [\;]$
+                    \For{$A_i \in G_j$}                       
+                        \State $summary \gets summary + H_i[-2]$             
+                    \EndFor
+                    \State $Summary_j \gets$
+                    \Statex $\qquad \qquad \qquad \qquad \qquad LLM(summary)$ 
+                    % \Comment{Utilize LLM to generate summary at the end of each stage}
+                    
+                \EndIf 
+            \EndFor
+            \For{$i=1$ to $M$}
+                \State $H_i[-1] \gets Summary $
+            \EndFor
+                
+            
+        \EndFor
+        \State $Answer \gets VOTE(H)$
+        
+    \State \Return $Answer$
+    \end{algorithmic}
+\end{breakablealgorithm}
+
+\section{Token Cost Analysis} \label{appendix:token-cost-analysis}
+In this appendix section, we aim to provide a theoretical analysis of the token cost For both MAD and GD. As LLMs' outputs typically are not too long and we can actually control the token length of LLMs' outputs in prompts to some extent, we assume that the upper bound on the number of tokens output by each agent participating in debate is $Output_{max}$ and the upper bound on the number of tokens in the generated summary is $Summary_{max}$. We define $C$ as the maximum of $Output_{max}$ and $Summary_{max}$.
+\subsection{Token Cost in MAD} \label{appendix:token-cost-mad}
+Here, we implement the MAD method, which summarizes the responses from other agents and inputs all previous summaries For each agent in each round. The token cost includes both input and output cost, and in each round $t$, it can be divided into two parts: summary generation $Token^{summary}_{t}$ and agents' responses $Token^t$. Thus, the total token cost $Token^{MAD}$ can be represented as:
+\begin{equation}
+\begin{aligned}
+Token^{MAD} = Token^{1} + \sum_{t=2}^{T} (Token^{summary}_{t-1}\\
++Token^{t})
+\end{aligned}
+\end{equation}
+SpecIfically, we provide a detailed description of the token cost For each part. (1) \textbf{summary generation}: The token cost For each agent includes the output from other agents and output summary. (2) \textbf{agents' responses}: If $t=1$, the token cost For each agent includes the initial question prompt and its own output. If $t>1$, the token cost For each agent includes the current summary, its own output, and the total token cost of all its previous inputs and outputs. The detailed computation process of the token cost in MAD can be found in Algorithm \ref{alg:token_cost_mad}.
+\begin{algorithm}[t]
+    \caption{Token Cost in MAD Methods}
+    \label{alg:token_cost_mad}
+    \begin{algorithmic}[1]
+        \Require Number of groups $N$, number of agents  $M$, question length $Q$ , total rounds $T$,  output length of each agent $A_i(i=1,2, \ldots,M)$ in each round $t(t=1,2,\ldots,T)$ $Output_i^t$, the summary of the output without $A_i$ in each round $t(t=1,2,\ldots,T-1)$ $Summary_i^t$
+        \Ensure Total token cost $Token^{MAD}$
+        
+        \State $Token^{1} \gets M \times Q + \sum_{i=1}^{M} Output_i^1$ 
+        \Statex \Comment{First round}
+        
+        \For{$t = 2$ to $T$}
+            \State $Token^{summary}_{t-1} \gets \sum_{i=1}^{M}(\sum_{i' \neq i}$ 
+            \Statex $\qquad \qquad Output_{i'}^{t-1} +  Summary_{i}^{t-1})$ 
+            \Statex \Comment{Summary stage}
+            
+            \State $Token^{t} \gets Token^{t-1}+\sum_{i=1}^{M}($
+            \Statex $\qquad \qquad Summary_{i}^{t-1} + Output_{i}^{t})$ 
+            % \Statex \Comment{Token cost in subsequent rounds in an iterative way}
+            
+            \State $Token^{t} \gets \sum_{i=1}^{M}(\sum_{t'=1}^{t-1} (Output_i^{t'}$
+            \Statex $\qquad\qquad  +Summary_i^{t'})+ Q + Output_{i}^{t})$ 
+            \Statex \Comment{Subsequent rounds}
+        \EndFor
+        \State $Token^{MAD} \gets Token^{1} + \sum_{t=2}^{T} ($
+        \Statex $ \qquad Token^{summary}_{t-1}+Token^{t})$
+        % = \sum_{t=1}^{T} \sum_{i=1}^{M}(Q+Output_i^t)+\sum_{i=1}^{M}\sum_{t=2}^{T}\left(\sum_{i' \neq i}Output_{i'}^{t-1}+Summary_i^{t-1}+\sum_{t'=1}^{t-1}(Output_i^{t'}+Summary_i^{t'})\right) 
+        \Statex \Comment{Total token cost in debate}
+        
+        \State \Return $Token^{MAD}$
+    \end{algorithmic}
+\end{algorithm}
+
+Following the line 7 in Algorithm \ref{alg:token_cost_mad}, with $Output_i^{t} \leq Output_{max}$ and $Summary_i^{t} \leq Summary_{max}$ For every $t$ and $i$, we can infer the following:
+\begin{equation}
+\begin{aligned} 
+    &Token^{MAD} = \\
+    &\quad MTQ + \sum_{t=1}^{T}\sum_{i=1}^{M}Output_i^t + \sum_{i=1}^{M}\sum_{t=2}^{T}(\sum_{i' \neq i} \\
+    & \quad Output_{i'}^{t-1} +Summary_i^{t-1})\\ 
+    & \quad + \sum_{i=1}^{M}\sum_{t=2}^{T}\sum_{t'=1}^{t-1}(Output_i^{t'}+Summary_i^{t'}) \\ 
+    % & \leq MTQ + (M^2T+\frac{1}{2}MT^2)\times Output_{max} \\ 
+    % & \quad +(M^2T+\frac{1}{2}MT^2-M^2-\frac{3}{2}MT+M)\times Summary_{max} \\ 
+    & < MTQ + (M^2T+\frac{1}{2}MT^2)\times Output_{max} \\
+    & \quad + (\frac{1}{2}MT^2+\frac{1}{2}MT)\times Summary_{max}
+\end{aligned}
+\end{equation}
+ThereFore, we can finally obtain $Token^{MAD} = \mathcal{O}\left(MTQ+(M^2T+MT^2)C\right)$.
+
+
+
+\subsection{Token Cost in GroupDebate} \label{appendix:token-cost-gd}
+As mentioned in Section \ref{multi-agent-group-debate}, our GroupDebate includes three types of processes and thus the total token cost $Token^{GD}$ can be further dividied into:
+\begin{equation}
+\begin{aligned} 
+    &Token^{GD} = \underbrace{Token_1^1}_\text{initial thinking} + \\ 
+    &\underbrace{\sum_{s=2}^{S}(Token^{summary}_{s-1}+Token_s^{(s-1)R+1})}_\text{inter-group debate} \\
+    &+ \underbrace{\sum_{s=1}^{S}\sum_{t=(s-1)R+2}^{min(sR,T)}Token_s^t}_\text{intra-group debate}
+\end{aligned}
+\end{equation}
+\label{eq:gd_divide}
+SpecIfically, For initial thinking, the token cost of each agent includes the initial question prompt and its own output. For intra-group debate, the token cost of each agent includes all responses from other agents within the same group in the previous round and its output. For inter-group debate, the token cost of each agent includes the summary generation cost, which comprises the responses from other groups and the output summary, as well as its own output. The detailed computation process of the token cost in GroupDebate can be found in Algorithm \ref{alg:token_cost_gd}.
+
+\begin{algorithm}[ht]
+    \caption{Tokens Cost in GroupDebate Methods}
+    \label{alg:token_cost_gd}
+    \begin{algorithmic}[1]
+        \Require Number of groups $N$, number of agents  $M$, question length $Q$, total rounds $T$, group debate round $R$, total stages $S$, summary of each group at the end of each stage $Summary = \{Summary_j^s|j=1,2, \ldots,N,s=1,2,\ldots,S\}$ , output length of each agent $A_i(i=1,2, \ldots,M)$ in each round $t(t=1,2,\ldots,T)$ $Output_i^t$,  each group agents set $G = \{G_j|j=1,2, \ldots,N\}$
+        \Ensure Total token cost $Token^{GD}$
+        
+        \State $Token_1^{1} \gets M \times Q + \sum_{i=1}^{M} Output_i^1$ 
+        \Statex \Comment{First round} 
+        
+        \For{$t = 2$ to $R$}
+            \State $Token_1^t \gets \sum_{j=1}^{N} \sum_{i \in G_j} (Q  + Output_i^{t}+$
+            \Statex $\qquad \qquad \sum_{i' \in G_j} Output_{i'}^{t-1})$ 
+            \Statex \Comment{Subsequent rounds of the first stage}
+        \EndFor
+        
+        \For{$s=2$ to $S$}
+            \State $Token_{s-1}^{summary} \gets \sum_{j=1}^{N} (\sum_{i \in G_j}$
+            \Statex $\qquad \qquad Output_i^{(s-1)R} + Summary_j^{s-1})$ 
+            \Statex \Comment{Summary at the end of stage $s-1$}
+        
+            \State $Token_s^{(s-1)R+1} \gets \sum_{i=1}^{M} (Q+$
+            \Statex $\qquad \quad Output_i^{(s-1)R}+ \sum_{j=1}^{N} Summary_j^{s-1}$
+            \Statex $\qquad \quad + Output_i^{(s-1)R+1})$ 
+            \Statex \Comment{First round of the stage $s$}
+        
+            \For{$t = (s-1)R+2$ to $\min(sR,T)$}
+                \State $Token_s^t \gets \sum_{j=1}^{N} \sum_{i \in G_j} (Q  + $
+                \Statex $\qquad \qquad Output_i^{t} + \sum_{i' \in G_j} Output_{i'}^{t-1})$ 
+                \Statex \Comment{Subsequent rounds of the stage $s$}
+            \EndFor
+        \EndFor
+        
+        \State $Token^{GD} \gets  \sum_{t=1}^{R}Token_1^t+$
+        \Statex $\qquad \qquad \sum_{s=2}^S(Token_{s-1}^{summary}+$
+        \Statex $\qquad \qquad \sum_{t=(s-1)R+1}^{\min(sR,T)}Token_s^t)$ 
+        \Statex \Comment{Total token cost in debate}
+        
+        \State \Return $Token^{GD}$
+    \end{algorithmic}
+\end{algorithm}
+
+Following Appendix~\ref{appendix:token-cost-mad} and Eq.~\ref{eq:gd_divide}, we have: 
+\begin{equation}
+\begin{aligned}
+    &Token^{GD}= \\
+    &\quad MQ + \sum_{i=1}^M Output_i^1 + \sum_{s=2}^S [\sum_{j=1}^N(\sum_{i\in G_j} \\ 
+    & \quad Output_i^{(s-1)R}+Summary_j^{s-1}) + \\
+    & \quad \sum_{i=1}^M(Q+Output_i^{(s-1)R}+\sum_{j=1}^N Summary_j^{s-1} +\\
+    & \quad Output_i^{(s-1)R+1})] + \sum_{s=1}^S \sum_{t=(s-1)R+2}^{min(sR,T)}\sum_{j=1}^N\sum_{i\in G_j}\\
+    &\quad (Q+Output_i^t+\sum_{i' \in G_j}Output_{i'}^{t-1}) \\
+    & \leq MTQ + [3MS-2M+(T-S)(K+1)M]\\
+    & \quad \times Output_{max} + (S-1)(M+1)N\\
+    & \quad \times Summary_{max} \\
+    & \leq MTQ+\frac{2M^2T}{N}\times Output_{max} + \\
+    & \qquad 2MSN\times Summary_{max} \\
+    & = \mathcal{O}\left(MTQ+(\frac{M^2T}{N}+MSN)C\right)
+\end{aligned}
+\end{equation}
+
+When we set $N \rightarrow \mathcal{O}\left(\sqrt{\frac{MT}{S}}\right)$, we can theoretically obtain $Token^{GD} \rightarrow \mathcal{O}\left(MTQ+\sqrt{M^3TS}C\right)$. Furthermore, If we consider setting $S$ to a very small positive integer, then $Token^{GD}$ can approach $\mathcal{O}\left(MTQ+\sqrt{M^3T}C\right)$. This complexity is signIficantly lower than that of MAD.
+
+
+\section{Prompts} \label{appendix:prompts}
+In this section, we present some examples of prompts. Table \ref{tab:input-prompts} displays the input prompts used in our GroupDebate across dIfferent datasets, which encompass five dIfferent types. Table \ref{tab:Requirements} outlines the prompts regarding output Format Requirements in our GroupDebate.
+
+\begin{table*}[t]
+% \small
+\setlength{\tabcolsep}{5.5pt}
+\centering
+\resizebox{\textwidth}{!}{
+% \scalebox{0.8}{
+\begin{tabular}{ccl}
+     {\bf Type} & Task & {\bf Prompt} \\
+      \midrule
+     \multirow{4}{*}{System}  & \multirow{4}{*}{All} & \emph{Welcome to the debate! You are a seasoned debater with expertise in succinctly and persuasively expressing your viewpoints. }\\
+     & & \emph{You will be assigned to debate groups, where you will engage in discussions with fellow participants. The outcomes of }\\
+     & & \emph{each group's deliberations will be shared among all members. It is crucial For you to leverage this inFormation effectively }\\
+     & & \emph{in order to critically analyze the question at hand and ultimately arrive at the correct answer. Best of luck!} \\
+     \midrule
+      \multirow{4}{*}{Starting}  & \multirow{1}{*}{Arithmetic} & \emph{What is the result of \{\}+\{\}*\{\}+\{\}-\{\}*\{\}? <Output Format>.}   \\
+      \cmidrule{2-3}
+      & \multirow{1}{*}{GSM8K} & \emph{Can you solve the following math problem? <Problem> Explain your reasoning. <Output Format>.}\\
+      \cmidrule{2-3}
+     & \multirow{1}{*}{MMLU} & \emph{Can you answer the following question as accurately as possible? {}: A) {}, B) {}, C) {}, D) {} Explain your answer, <Output Format>.} \\
+     \cmidrule{2-3}
+     & \multirow{1}{*}{MATH} & \emph{Can you solve the following math problem? <Problem> Explain your reasoning as concise as possible.<Output Format>. } \\
+     \midrule
+      \multirow{2}{*}{Intra-group Debate}  & \multirow{2}{*}{All} & \emph{These are the recent opinions from other agents: <other agent responses> Using the opinions} \\
+      & & \emph{carefully as additional advice, can you provide an updated answer?}\\
+      && \emph{Examine your solution and that other agents step by step. <Output Format>.} \\
+     \midrule
+     \multirow{3}{*}{Summary}  & \multirow{3}{*}{All} & \emph{These are the recent/updated opinions from all agents: <all agent responses>}\\
+     & & \emph{Summarize these opinions carefully and completly in no more than 80 words. }\\
+     & & \emph{Aggregate and put your final answers in parentheses at the end of your response. }\\
+     \midrule
+     \multirow{3}{*}{Inter-group Debate}  & \multirow{3}{*}{All} & \emph{These are the recent opinions from all groups: Your group response: < group summary>, Other group responses: } \\
+      & & \emph{<other group summary>. Using the reasoning from all groups as additional advice, can you give an updated answer?} \\
+      & & \emph{Examine your solution and that all groups step by step. <Output Format>.} \\
+    \bottomrule
+\end{tabular}
+
+}
+\caption{\textbf{Prompts in Each Stage.} List of prompts used in each task. }
+\label{tab:input-prompts}
+\end{table*}
+
+
+\begin{table*}[t]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{@{\extracolsep{2pt}}lc@{}}
+\multicolumn{1}{c}{Dataset} & \multicolumn{1}{c}{Output Format Requirements} \\
+\midrule
+\multirow{1}{*}{Arithmetic} & \emph{Make sure to State your answer at the end of the response.}\\
+\midrule
+\multirow{2}{*}{GSM8K} & \emph{Your final answer should be a single numerical number, in the Form \textbackslash boxed\{\{answer\}\},}\\
+& \emph{at the end of your response.}\\
+\midrule
+\multirow{1}{*}{MMLU} & \emph{Put your final choice in parentheses at the end of your response.}\\
+\midrule
+\multirow{1}{*}{MATH} & \emph{Put your final answer in the Form \textbackslash boxed\{\{answer\}\}, at the end of your response.}\\
+\bottomrule
+\end{tabular}
+}
+\caption{\textbf{Output Format Requirements in Each Dataset.}}
+\label{tab:Requirements}
+\end{table*}
+
+\newpage
+

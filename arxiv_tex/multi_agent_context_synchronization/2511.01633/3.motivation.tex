@@ -1,0 +1,199 @@
+\section{Motivation and Key Insights}
+
+% Although existing Graph-CoT methods guide LLMs through step-by-step reasoning over graphs by iteratively producing a \textit{thought}, \textit{action}, and \textit{observation}—leveraging KV cache sharing over a long, shared prefix—each output is appended as a suffix to the prompt for the next reasoning step, as illustrated in Figure~\ref{fig:example_comparison}. While this approach improves accuracy through chain-of-thought prompting, it suffers from two major limitations: low generation quality and poor inference efficiency due to high token overhead and increased latency, as detailed below.
+
+% \noindent\textbf{Low Accuracy.}
+% Current Graph-CoT works performs poorly on queries that involve many nodes. When the reasoning chain becomes long, we observe a decline in output quality in later steps—LLMs may produce incomplete, incorrect, or irrelevant content. This limits the reliability of Graph-CoT in complex graph scenarios where multi-hop reasoning over multiple nodes is required.
+
+% \noindent\textbf{High Token Cost.}
+% Graph-CoT is expensive in terms of token usage which is an important cost metric due to two design factors: (1) In Graph-CoT, each intermediate output—including thoughts, actions, and retrieved observations—is appended to the prompt for the next step, causing the input to grow linearly over time. However, not all of this information is necessary for future reasoning. This cumulative prompt design leads to significant token overhead, much of which may be redundant. (2) Graph-CoT uses the same long prefix—including graph definitions, examples, and function descriptions—for all reasoning steps, regardless of their type. However, different outputs (e.g., thoughts vs. actions) have different information needs. For instance, generating a \textit{thought} may not require access to examples at all. This uniform prefix design leads to unnecessary context repetition and further increases token cost. This accumulation leads to unnecessary prompt growth, wasting both computation and context window capacity.
+
+% \noindent\textbf{High Latency.}
+% Graph-CoT also suffers from high latency: (1) As previously discussed, the high token consumption in Graph-CoT leads to increased LLM inference time.
+% (2)In Graph-CoT, actions are restricted to predefined graph retrieval functions, and the LLM is expected to take as many steps as needed to complete the reasoning. This places the full burden of multi-step reasoning on the LLM, leading to a large number of inference calls. As shown in Figure~3, answering a single query can require up to 8 LLM calls. Together, these factors result in slow and inefficient reasoning that limits the scalability of Graph-CoT in real-world applications.
+
+\begin{figure}[t]
+    \centerline{\includegraphics[width=1\linewidth]{figures/step_accuracy.pdf}}
+    \caption{Sensitivity of accuracy on reason steps.}
+    \label{fig:step_accuracy}
+\end{figure}
+
+In this section, we first conclude the \textit{limitations of existing single-agent Graph-CoT frameworks} and then summarize the \textit{key insights that motivate our proposed system, \projectname}.
+
+\textbf{Limitations of Graph-CoT.}  
+Current frameworks struggle with queries requiring multi-hop reasoning for two reasons: (i) the limitations of the single-agent paradigm and (ii) inefficiencies in the LLM inference stack.  
+(1) \textbf{Single-agent limitations.} Existing Graph-CoT frameworks struggle with complex multi-hop reasoning under a single-agent architecture. As reasoning steps increase, input sequences grow longer and accumulate redundant context, causing information dilution and the “lost-in-the-middle” problem. Consequently, Graph-CoT accuracy drops sharply with increasing step depth, e.g., the GPTScore~\cite{fu2023gptscore} declines from 0.42 at 3 steps to 0.17 at 9 steps (Figure~\ref{fig:step_accuracy}). In contrast, our multi-agent design achieves comparable reasoning with fewer steps and greater accuracy. Moreover, existing Graph-CoT frameworks suffer from high token overhead due to repeated prefixes and growing context (e.g., \$1.9$\sim$\$3.6 per GPT-4.5 query; see Table~\ref{tab:cot-performance}).
+(2) \textbf{Inference inefficiencies.} Under concurrency, KV-cache hit rates are modest (e.g., 61\% with \textsc{vLLM} in our measurements), and naive LRU eviction, along with non-canonical ordering of entity facts, impedes prefix reuse; 
+retriever latency also increases with graph size. As a result, Graph-CoT exhibits end-to-end latencies of up to 39\,s per query (Table~\ref{tab:cot-performance}), which is far from sufficient for real-time or interactive applications.
+
+
+
+
+
+
+% -----------------------------------
+% \textbf{Limitations of Graph-CoT Framework Architecture: Low Accuracy and High Token Cost.}  
+% Existing Graph-CoT frameworks often struggle with queries that require multi-hop reasoning across multiple nodes. 
+% Such tasks demand iterative retrieval of relevant subgraphs and sequential reasoning over multiple intermediate steps to arrive at a final answer. 
+% As the number of reasoning steps increases, the input sequence length grows substantially, leading to information dilution and degraded coherence across steps. 
+% Empirically, outputs frequently deviate from the expected chain-of-thought (CoT) structure, producing incomplete or inconsistent reasoning traces. 
+% Consequently, the overall reasoning accuracy remains limited, i.e., typically between 31\% and 46\%, which falls below the 50\% threshold commonly regarded as acceptable for reliable LLM reasoning performance~\cite{chen2024benchmarking, vendrow2025largelanguagemodelbenchmarks}.
+
+% Beyond accuracy, current frameworks also exhibit significant inefficiencies in token utilization. 
+% Graph-CoT employs a single LLM-based agent whose input at each reasoning step comprises two components: (1) a lengthy shared prompt prefix that encodes the graph definition, example demonstrations, and function descriptions, and (2) an expanding step-specific reasoning context that accumulates intermediate outputs from previous steps. 
+% This design causes the input size to grow linearly (or even superlinearly), with the number of reasoning steps, resulting in substantial token overhead. 
+% As shown in Table~\ref{tab:cot-performance}, this inefficiency translates into prohibitive inference costs. 
+% For instance, queries processed by OpenAI GPT-4.5 can incur an average cost of approximately \$1.9–\$3.6 per query (assuming \$75 per million input tokens), making large-scale deployment economically impractical.
+
+
+
+% \textbf{Limitations of LLM Inference on Graph-CoT: High End-to-End Latency.}  
+% Another critical limitation of existing Graph-CoT approaches lies in their high end-to-end latency and low throughput, primarily dominated by two factors: (1) LLM inference overhead and (2) graph retrieval latency.
+
+% First, we observe that current Graph-CoT frameworks suffer from low KV cache utilization efficiency during LLM inference. 
+% Empirical measurements on serving systems, such as \textsc{vLLM} , show an average KV cache hit rate of only 61\%, which substantially diminishes the benefit of prefix caching. 
+% This inefficiency arises because the default Least Recently Used (LRU) eviction policy often removes graph-related KV entries that are temporarily inactive but are soon needed again. 
+% When the reasoning workflow advances to subsequent steps, these prematurely evicted entries cause cache misses and redundant recomputation. 
+% Moreover, when two queries reference similar graph entities but differ in the ordering of node facts, their token sequences no longer share identical prefixes, preventing KV reuse entirely. 
+% Such cache fragmentation significantly increases inference time and reduces overall throughput.
+
+% Second, the graph retrieval process itself introduces substantial latency. 
+% As the underlying graph-structured vector store scales in size and complexity, the costs of semantic search, neighbourhood expansion, and subgraph assembly increase rapidly. 
+% This results in slower retrieval operations that often dominate the overall pipeline runtime. 
+% As shown in Table~\ref{tab:cot-performance}, Graph-CoT exhibits an end-to-end latency ranging from 11~s to 39~s per query, which is an order of magnitude slower than what is acceptable for real-time or interactive applications, such as question answering or conversational agents, where sub-second responsiveness is typically required.
+% -----------------------------------
+
+% \textbf{Limitation 2: High End-to-End Latency and Low Throughput.}  
+% Another major limitation of existing {Graph-CoT} approaches lies in their high end-to-end latency and low throughput, which stem primarily from two core bottlenecks: (1) inefficient KV cache management during LLM inference, and (2) substantial retrieval overhead in Graph RAG. 
+% First, the retrieval granularity in existing Graph-CoT frameworks is poorly aligned with KV cache reuse mechanisms. Unlike text-based RAG, where prompts exhibit regular patterns that facilitate effective prefix sharing, Graph-CoT inputs typically comprise multiple isolated single-fact entries retrieved from diverse nodes in the graph. This structural irregularity severely limits opportunities for prefix reuse, resulting in prolonged prefill times during inference. Second, standard KV cache eviction strategies such as least recently used (LRU), perform suboptimally in Graph-CoT. These policies frequently evict contextually relevant cache entries, causing unnecessary recomputation and further degrading throughput. 
+
+% First , we find that current LLM serving system often discards KV caches shortly before their reuse in Graph-CoT, which leads to frequent cache misses and substantial recomputation or swapping overhead, undermining the effectiveness of prefix caching.
+
+%such as least recently used (LRU) eviction policies, are suboptimal in this context; they often discard contextually relevant entries that are likely to be reused, leading to unnecessary recomputation and redundant decoding overhead. Moreover, unlike traditional text-based retrieval-augmented generation (RAG) systems where chunking strategies benefit from natural linguistic structure, Graph RAG representations lack such regularity, posing challenges for cache reuse and complicating efforts to implement efficient memory management.
+
+
+%From the perspective of LLM inference,  On the retrieval side, the latency becomes increasingly pronounced as the size and complexity of the graph-structured vector store grow. Retrieval time scales poorly with data volume, adding significant delay to the overall response time. 
+
+Based on the limitations and observations of existing approaches, we derive the following key insights and core design principles:
+
+% \begin{table}[t]\
+%     \centering 
+%     \caption{Summary of Current Graph-CoT Performance.}\label{tab:cot-performance}
+%     \scalebox{0.8}{\begin{tabular}{@{}ccc c@{}}
+%     \toprule
+%         ~ & Cost (\$) & Accuracy (R-L) & Latency (S) \\\midrule
+%         Academic  & 1.9 & 0.31 & 27.2 \\\midrule
+%         E-commerce & 1.9 & 0.39 & 17.8 \\\midrule
+%         Literature  & 1.7 & 0.42 & 11.3 \\\midrule
+%         Healthcare  & 3.6 & 0.33 & 38.6 \\\midrule
+%         Legal & 2.8 & 0.46 & 22.8 \\\bottomrule
+%     \end{tabular}}
+% \end{table}
+
+% \begin{table}[t]
+% \centering
+% \caption{Summary of Current Graph-CoT and GLM Performance.}
+% \label{tab:cot-vs-glm}
+% \scalebox{0.85}{
+% \begin{tabular}{@{}lccc ccc@{}}
+% \toprule
+%  & \multicolumn{3}{c}{Graph-CoT} & \multicolumn{3}{c}{GLM} \\
+% \cmidrule(lr){2-4}\cmidrule(lr){5-7}
+% 领域 & Cost (\$) & Accuracy (R-L) & Latency (S) & Cost (\$) & Accuracy (R-L) & Latency (S) \\
+% \midrule
+% Academic    & 1.9 & 0.31 & 27.2 & 0 & 0 & 0 \\
+% E-commerce  & 1.9 & 0.39 & 17.8 & 0 & 0 & 0 \\
+% Literature  & 1.7 & 0.42 & 11.3 & 0 & 0 & 0 \\
+% Healthcare  & 3.6 & 0.33 & 38.6 & 0 & 0 & 0 \\
+% Legal       & 2.8 & 0.46 & 22.8 & 0 & 0 & 0 \\
+% \bottomrule
+% \end{tabular}}
+% \end{table}
+
+
+
+
+
+
+\textbf{Key Insights.}
+Based on the above limitations, we make two key insights: 
+(i) a \emph{multi-agent framework} that separates retrieval from reasoning, routes deterministic queries to skip steps, and replaces long CoT chains with single-pass code, thereby reducing redundant context and token cost while improving accuracy; and 
+(ii) a \emph{co-designed LLM optimization} stack that maximizes KV-prefix reuse (via coarse node-fact chunks and reuse-aware priority eviction) and pipelines retrieval with decoding to hide retrieval latency, thereby reducing end-to-end latency and increasing throughput.
+
+
+\textbf{Key Objective.}
+Guided by the key insights, we build \projectname to make Graph-CoT both accurate and efficient. \projectname provides a multi-agent planning and runtime substrate for Graph-CoT (Section~\ref{sec:framework}) and a Graph-CoT–aware inference stack (Section~\ref{sec: optimization}). We specify the plan abstraction and cost model, cache and scheduling policies, 
+a pipelined execution engine, and evaluate it on large graphs to demonstrate higher accuracy, lower token usage, lower end-to-end latency, and higher throughput than prior Graph-CoT systems.
+
+
+
+
+%\textbf{Our Objective.}
+%Guided by the key insights, we build \projectname to make Graph-CoT both accurate and efficient.
+%Algorithmically (\textbf{Section~\ref{sec:framework}}), we use a multi-agent pipeline that separates retrieval from reasoning, gives each agent only the task-relevant context, routes deterministic queries to skip steps, and replaces long chains with single-pass code generation.
+%System-wise (\textbf{Section~\ref{sec: optimization}}), we co-design Graph-CoT–aware inference that improve KV-prefix reuse (coarse node-fact chunks, priority-based eviction) and pipelines retrieval with decoding to hide latency.
+%Together, these choices reduce token costs and end-to-end latency while improving accuracy and throughput over prior Graph-CoT systems.
+
+% \textbf{Our Objective.}
+% Rather than restating the insights, our goal here is to turn them into a coherent plan and to clarify how the next two sections fit together.
+% Section~\ref{sec:framework} specifies the algorithmic structure—agents, inputs/outputs, and routing—so that each step exposes a minimal, cacheable information flow.
+% Building on this structure, Section~\ref{sec:optimization} implements serving and scheduling mechanisms that capitalize on the exposed structure to reduce recomputation and hide retrieval latency.
+% This strategy–system coupling is what ultimately yields end-to-end gains in accuracy, cost, and latency that we validate later.
+
+
+
+
+%\textbf{Our Objective.}  Boased on above key insights To reduce high token costs and improve accuracy, we propose a \textbf{multi-agent design} that separates retrieval and reasoning into specialized agents (\textbf{Section~\ref{sec:framework}}). Each agent works with only the necessary context for its task, minimizing token usage by shortening the shared prompt prefix and reducing redundant context. We also categorize queries as deterministic or non-deterministic to dynamically select the most efficient reasoning strategy, skipping unnecessary steps for deterministic queries. Additionally, we replace multi-step reasoning with single-pass code generation, optimizing graph operations in a single inference pass. To further enhance system efficiency, we focus on developing \textbf{Graph-CoT-aware LLM inference optimizations} (\textbf{Section~\ref{sec: optimization}}). We use coarse-grained node facts to improve KV cache reuse across similar queries. We replace the default LRU eviction with a priority-based strategy that preserves reusable tokens, boosting cache efficiency. Lastly, we pipeline graph retrieval and LLM decoding to overlap processes, hiding retrieval latency and improving throughput. These optimizations form the basis of \projectname, which offers higher accuracy, lower costs, and faster inference than existing Graph-CoT systems.
+
+%In summary, \projectname is an efficient multi-agent framework that integrates optimized KV cache management and pipelined execution. It improves generation quality, reduces token consumption, and enhances computational efficiency, offering significant advantages over traditional Graph-CoT frameworks.
+
+
+
+
+
+%we find that we can use multi-agent which decouples reasoning and retrieval into specialized agents to solve it. Specifically, we can decompose the reansong process into two specialized agents: a \textit{Thought Agent}, which identifies what information is required but missing, and an \textit{Action Agent}, which is responsible for retrieving or computing that information. Each agent operates on a more narrowly scoped subtask that would be difficult to resolve within a single monolithic prompt. Because each agent is exposed only to the minimal context necessary for its task, prompt lengths are substantially shorter, reducing token usage and eliminating redundant information flow.
+
+%limitations of {Graph-CoT} identified above, we propose a multi-agent-based framework that explicitly decouples reasoning and retrieval into specialized agents. This design aims to improve response accuracy and lower computational cost.
+
+%\textbf{Decoupling Thought and Action Reduces Redundancy.} Traditional approaches rely on a single agent to handle both reasoning and retrieval in sequence, often leading to long, repetitive prompts and inefficient context accumulation. In contrast, we decompose the process into two specialized agents: a \textit{Thought Agent}, which identifies what information is required but missing, and an \textit{Action Agent}, which is responsible for retrieving or computing that information. Each agent operates on a more narrowly scoped subtask that would be difficult to resolve within a single monolithic prompt. Because each agent is exposed only to the minimal context necessary for its task, prompt lengths are substantially shorter, reducing token usage and eliminating redundant information flow.
+
+%\textbf{Adapting Reasoning Structure to Question Type.} Not all queries require the same depth or form of reasoning. We categorize questions into \textit{deterministic} and \textit{non-deterministic} types, and dynamically select reasoning strategies accordingly. Deterministic questions can often be resolved through direct retrieval or computation, without invoking multi-step chain-of-thought reasoning. For such cases, we bypass unnecessary intermediate steps, reducing both token consumption and end-to-end latency. This adaptive control structure allows our system to remain lightweight for simple queries while retaining expressiveness for complex ones.
+
+%\textbf{Allowing Complex Code Execution in the Action Agent.} Recent advances show that LLMs, when provided with well-structured prompts, are capable of generating executable and semantically rich code. Leveraging this capability, our Action Agent is designed not only to perform predefined retrieval operations, but also to synthesize and execute arbitrary Python code when appropriate. This allows it to directly answer complex analytical questions in a single step, thereby reducing reliance on multiple rounds of iterative reasoning. By offloading part of the cognitive load to code execution, we significantly enhance both computational efficiency and latency performance.
+
+% Another significant limitation of Graph-CoT lies in its high end-to-end latency. The overall runtime includes both large language model (LLM) inference and graph retrieval, yet the system does not implement any explicit optimization for these two components. We observe that it requires about 15 to 30s to process each query. For LLM inference, 
+
+
+
+
+% 是否要详细展开?
+% Based on this insight, we propose a multi-agent Graph-CoT framework composed of four collaborative agents, including a Graph RAG retriever and three specialized LLM-based agents : \textit{classification agent}, \textit{reasoning agent}, and \textit{action agent}, designed to significantly reduce token overhead and improve reasoning accuracy. The Graph RAG retriever serves as the interface between the LLM agents and the underlying graph, enabling efficient knowledge retrieval. The \textit{classification agent} analyzes the input question and dynamically selects the appropriate reasoning strategy by determining whether the question is deterministic or non-deterministic. The \textit{reasoning agent} evaluates whether the current knowledge is sufficient to answer the question and, if not, identifies the missing information. The \textit{action agent} then generates a code snippet that retrieves the required data from the graph. For example, as shown in Figure~\ref{fig:example_comparison}, traditional Graph-CoT requires eight separate LLM invocations to complete a multi-step reasoning process for a single query. In contrast, our framework replaces the entire reasoning chain with a single code snippet that performs the equivalent logic. This enables the system to answer the query using only one LLM invocation, substantially reducing both token usage and inference overhead. Moreover, we design a KV cache management scheme that includes a \textit{vertex-centric KV cache reuse model} and a \textit{priority-based KV cache eviction policy} to reduce LLM inference time. Finally, we introduce a pipelining strategy that overlaps the execution of the action agent with the Graph RAG retriever, effectively masking retrieval delays. Together, these techniques allow LLM inference to significantly reduce end-to-end latency while preserving retrieval accuracy and reasoning effectiveness in complex graph-based tasks.
+
+
+
+%To mitigate these performance bottlenecks, \projectname introduces a series of system-level optimizations targeting both LLM inference and graph retrieval. First, we propose a pipelined execution framework that enables the \textit{Retriever Agent} and the \textit{LLM-based Thought or Action Agents} to operate concurrently. This design overlaps retrieval with LLM decoding, effectively hiding retrieval latency within the longer inference window and improving overall throughput. Second, we implement a \textit{priority-based KV caching policy} tailored for structured reasoning tasks. Unlike general-purpose strategies such as LRU, our policy considers semantic recency and predicted future usage of prompt tokens, reducing unnecessary recomputation and improving inference efficiency. Third, to address the lack of reusable structure in graph-based knowledge stores, we introduce the concept of a \textit{vertex chunk}—a localized, cacheable unit that encapsulates a target node along with its 1-hop neighbours. This abstraction allows for fine-grained KV reuse in sparse, relational topologies, and bridges the gap between graph-centric data structures and LLM-accelerated reasoning.Together, these techniques enable \projectname to achieve significantly lower latency while maintaining retrieval precision and reasoning accuracy in complex graph domains.
+
+
+
+
+
+
+% \subsection{Core Idea.} 
+
+% To reduce the overall token consumption and latency for each query and improve the LLM genewration quality, we make the core idea of this paper are as following:
+
+    %   \item \textbf{Decoupling Thought and Action as Independent Agents.} Instead of treating thought and action as sequential steps within a single prompt, we decouple them into two specialized agents with distinct roles. As illustrated in Figure~\ref{fig:agent_prompt}, the \textit{Thought Agent} is responsible for identifying what additional information is needed to answer the question, based on the current notebook content. Its prompt excludes graph function definitions and does not retain previous thoughts or actions. In contrast, the \textit{Action Agent} generates operations to retrieve the missing information specified by the Thought Agent. Its prompt does not include the notebook or previous history. The identified missing information is used only once in the Action Agent and is not stored thereafter. This design significantly reduces token overhead by eliminating unnecessary repetition and memory of intermediate steps.
+
+% \textbf{Decoupling Thought and Action Reduces Redundancy.} Traditional approaches rely on a single agent to handle both reasoning and retrieval in sequence, often leading to long and repetitive prompts. In contrast, we split the process into two specialized agents: a \textit{Thought Agent} that identifies what information is missing, and an \textit{Action Agent} that retrieves it. Each agent handles a separate, more focused subtask that would be harder to solve within a monolithic prompt. At the same time, because each agent only sees the minimal context it needs, their prompts are significantly shorter than in the single-agent setting.
+
+% \textbf{Allowing Complex Code Execution in Action Agent.} We observe that modern LLMs are increasingly capable of generating complex and functional code when guided by well-designed prompts. Based on this, we allow the Action Agent to go beyond predefined graph retrieval functions and instead generate and execute arbitrary Python code. This design gives the agent greater flexibility to handle complex queries in a single step, reducing the need for multiple CoT iterations. By offloading part of the reasoning to code execution, we improve both efficiency and latency.
+
+    %   \item \textbf{Designing Different Logic Structures for Different Question Types.} Rather than using a single unified framework for all queries, \projectname classifies questions into two categories—deterministic and non-deterministic—and applies tailored reasoning structures accordingly. Deterministic questions can be answered directly through retrieval and computation, while non-deterministic questions require step-by-step reasoning. This separation allows us to avoid unnecessary CoT reasoning for simple cases, further reducing both token usage and latency.
+    
+% \textbf{Adapting Reasoning Structure to Question Type.} We find that not all queries require the same level of reasoning. We classify questions into deterministic and non-deterministic types, and apply different logic structures accordingly. Deterministic questions can be answered directly via retrieval and computation, without step-by-step reasoning. This adaptive design avoids unnecessary CoT overhead for simple cases, reducing both token usage and latency.
+
+    %   \item \textbf{Optimizing LLM and Retriever for Graph-CoT Execution.} While prior methods do not specifically optimize the interaction between LLM and retriever, we introduce tailored strategies for each. On the LLM side, we observe that standard inference engines such as vLLM and SGLang are not well-suited for CoT's multi-turn, structured prompt format. To address this, we design a CoT-specific prefix KV cache strategy that reuses context efficiently across steps without redundant re-encoding. On the Retriever side, as datasets grow larger, retrieval latency begins to dominate the end-to-end execution time. To mitigate this, we introduce a pipelined execution model with streaming outputs to hide retrieval delay. Furthermore, to exploit the structure of graph data, we propose a vertex-centric KV reuse mechanism that enables localized retrieval cache reuse, significantly reducing repeated computation in dense graph queries.
+    
+
+
+

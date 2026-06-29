@@ -1,0 +1,112 @@
+\section{Causal Question Answering with Reinforcement Learning}
+\label{sec:approach}
+
+In the following, we formulate the question-answering task as a sequential decision problem on a causality graph and define the environment of the reinforcement learning agent. Afterward, we present our reinforcement learning agent, including its network architecture, training procedure, search strategy, and bootstrapping approach via supervised learning. 
+
+
+\subsection{Problem Definition}
+\label{subsec:problem-def-env}
+
+\input{figures/graph-example}
+
+We are given a binary causal question $q$ in natural language that contains a cause, an effect, and is to be answered with ``yes'' or ``no''. An example is \textit{``Can X cause Y?''} where \textit{X} and \textit{Y} represent a cause and effect, respectively. Moreover, we are given a causality graph  $\mathcal{K} = \{ \triple{h}{r}{t} \} \subseteq \mathcal{E} \times \mathcal{R} \times \mathcal{E}$, where $h,t \in \mathcal{E}$ denote entities and $r \in \mathcal{R}$ denotes a relation. In this paper, we assume that (1) entities are noun phrases, (2) edges are all of the same type ($\mathcal{R} = \{cause\}$), and (3)~for each edge, we have the sentence the edge was originally extracted from. The task of the agent is to walk over the graph to answer the question.
+
+In the following, we elucidate the binary causal question answering task on the knowledge graph $\mathcal{K}$ on the basis of the example in Figure~\ref{fig:graph-example}. The example shows an excerpt of a causal knowledge graph (CauseNet) and the  binary causal question \textit{``Does pneumonia cause anemia?''}. In this question, \textit{pneumonia} takes the role of the cause, and \textit{anemia} the role of the effect. First, the cause and effect are linked to the graph. Therefore, we find entities $e_c, e_e \in \mathcal{E}$ such that \textit{pneumonia} maps to $e_c$ and \textit{anemia} to $e_e$. Currently, we link them via exact string matching. However, more sophisticated strategies can be considered in future work~\cite{Kaiser2021Reinforcement}. Consequently, starting from $e_c$, the agent has to find a path $(e_c, e_1, e_2, \dots, e_e)$ with $e_i \in \mathcal{E}$, where the agent arrives at the effect $e_e$.\footnote{The path only shows the entities, because the graph contains only one relation type.} If the agent finds such a path, the question is answered with ``yes'' and otherwise with ``no''. For the example, a possible path is \textit{(pneumonia, sepsis, kidney failure, anemia)}. Afterward, we can inspect the path to get further insights into the relationship between cause and effect.
+
+
+
+\subsection{Environment}
+\label{subsec:env}
+As done by related work~\cite{Xiong2017DeePpath, Das2018Minerva, Qiu2020Stepwise}, we formulate the causal question answering task as a sequential decision problem on the knowledge graph $\mathcal{K}$. The agent walks over the graph and decides which edge to take at each entity. Therefore, we define a Markov Decision Process (MDP) as a 4-tuple $(\mathcal{S}, \mathcal{A}, \delta, \mathcal{R})$. The MDP consists of the state space~$\mathcal{S}$, the action space $\mathcal{A}$, the transition function $\delta : \mathcal{S} \times \mathcal{A} \rightarrow \mathcal{S}$, and the reward function $\mathcal{R} : \mathcal{S} \times \mathcal{A} \rightarrow \mathbb{R}$. Hence, at each state $s_t \in \mathcal{S}$ the agent selects an action $a_t \in \mathcal{A}$, which changes the current state via $\delta(s_t, a_t)$ to $s_{t+1}$. Additionally, the agent receives a reward $\mathcal{R}(s_{t}, a_t) = r_t$. Note that the transition function $\delta$ is known and deterministic because the graph entirely defines $\delta$. So, for each action $a_t$ in state $s_t$, the next state $s_{t+1}$ is known.
+
+\paragraph{Agent} Our agent consists of a policy network $\pi_{\theta} (a_t | s_t)$ (Actor) parameterized with $\theta$ and a value network $V_{\psi}(s_t)$ (Critic) parameterized with $\psi$. The policy network $\pi_{\theta} (a_t | s_t)$ generates
+ a distribution over actions $a_t$ at the current state $s_t$. The value network
+$V_{\psi}(s_t)$ generates a scalar to estimate the value of the state $s_t$.
+Specifically, the value network should predict the future reward from $s_t$ onwards.
+
+\paragraph{States} At each time step t, we define state $s_t = (\mathbf{q}, e_t, \mathbf{e_t}, \mathbf{h_t}, e_e) \in \mathcal{S}$,
+where $\mathbf{q}$ represents the embedding of the question $q$, $e_t \in \mathcal{E}$ the current entity, and $\mathbf{e_t}$ its embedding. 
+The entity $e_t$ is needed to define the action space, and its embedding $\mathbf{e_t}$ is used as input to the agent's networks.
+Additionally, $\mathbf{h_t}$ represents the path history of the agent and $e_e$ the entity corresponding to the effect found in the question $q$.
+Moreover, $e_0 = e_c$ and $\mathbf{h_0} = \mathbf{0}$, where $e_c$ is the entity 
+corresponding to the cause of the question (e.g., \textit{pneumonia} in the example in 
+Figure~\ref{fig:graph-example}). The path history is represented by the hidden states of an LSTM. 
+
+\paragraph{Actions} The action space at each time step $t$ consists of all neighboring entities of the current entity in state $s_t$. Therefore, the set of possible actions in state $s_t = (\mathbf{q}, e_t, \mathbf{e_t}, \mathbf{h_t}, e_e)$ is defined as $A(s_t) = \{e | (e_t, r, e) \in \mathcal{K}\}$ where $r = cause$. So only the current entity $e_t$ is needed to define the action space $A(s_t)$. Note that while the additional components inside the state are not needed to define the action space, they are needed for other parts of the learning algorithm, as described below in Sections~\ref{subsec:network} and \ref{subsec:approach-description}.
+
+Our causality graph contains additional meta-information for each edge $(e_t, r, e)$, e.g., the original sentence~$s$ the edge was extracted from. When computing the embedding $\mathbf{a_t}$ for an action $a_t$, we concatenate the sentence embedding $\mathbf{s}$ with the embedding of the entity $\textbf{e}$, yielding the action embedding $\mathbf{a_t} = [\mathbf{s};\mathbf{e}]$. 
+
+As done by prior works~\cite{Das2018Minerva, Lin2020RewardShaping, Qiu2020Stepwise}, we add a special \textit{STAY} action at each step, so the action space becomes $A(s_t) = A(s_t) \cup \{STAY\}$. When selecting this action, the agent stays at the current entity. This way, we can keep all episodes to the same length, even though different questions might require a different number of hops. Another option would be to add a stop action. However, in that case, we would have episodes of different lengths.%
+\footnote{In principle, episodes of different lengths are not a problem. However, keeping them to the same length simplifies the implementation. We chose this simplification because it worked well in prior works~\cite{Das2018Minerva, Qiu2020Stepwise}.}
+Moreover, we add inverse edges to the graph because our experiments showed that their addition increases the performance. In general, inverse edges allow the agent to undo wrong decisions and to reach nodes that could otherwise not be reached under a given episode length. We discuss some implications and tradeoffs of inverse edges in Section~\ref{sec:discussion}.
+
+\paragraph{Transitions}
+As described above, the transition function is deterministic, so the next state is fixed after the agent selects an action. Let $s_t=(\mathbf{q}, e_t, \mathbf{e_t}, \mathbf{h_t}, e_e)$ be the current state and $a_t \in A(s_t)$ be the selected action in $s_t$. Subsequently, the environment evolves via $\delta(s_t, a_t)$ to $s_{t+1}=(\mathbf{q}, e_{t+1}, \mathbf{e_{t+1}}, \mathbf{h_{t+1}}, e_e)$,
+where $e_{t+1}=a_t$.
+
+\paragraph{Rewards}
+The agent only receives a terminal reward at the final time step $T-1$. 
+Specifically, the agent receives a reward of $\mathcal{R}(s_{T-1}, a_{T-1}) = 1$ if $s_T = (\mathbf{q}, e_T, \mathbf{e_T}, \mathbf{h_T}, e_e)$ with 
+$e_T = e_e$. Conversely,
+the agent receives a reward of $\mathcal{R}(s_{T-1}, a_{T-1}) =0$ if $e_T \neq e_e$. Similarly, for all other 
+time steps $t < T -1$ the reward is $0$ as well. 
+
+\paragraph{Path Rollouts --- Episodes}
+We define a path rollout or episode as a sequence of triples containing a state, action, and reward. Assuming a path rollout length of $T$, an example path rollout is: $((s_0, a_0, r_0),\dots, (s_{T-1}, a_{T-1}, r_{T-1}))$. For brevity, the triples $(s_t, a_t, r_t)$ might be written as pairs $(s_t, a_t)$ omitting the rewards $r_t$.
+
+
+\subsection{Network Architecture}
+\label{subsec:network}
+We use a Long Short-Term Memory (LSTM)~\cite{Hochreiter1997LSTM} to parametrize our agent. Additionally, we experimented with a simple feedforward architecture but found that incorporating the path history is crucial for our needs. This aligns with previous research, where approaches such as MINERVA~\cite{Das2018Minerva} and SRN~\cite{Qiu2020Stepwise} also used LSTMs and GRUs. Just CONQUER~\cite{Kaiser2021Reinforcement} used a feedforward architecture, but they only considered paths of length one.
+
+Let $\mathbf{q} \in \mathbb{R}^d$ be the embedding of the question $q$ and $\mathbf{E} \in \mathbb{R}^{|\mathcal{E}| \times d}$ the embedding matrix containing the embeddings for each entity $e \in \mathcal{E}$ of the knowledge graph $\mathcal{K}$. The parameter $d$ specifies the dimension of the embeddings. The LSTM is then applied as 
+\begin{equation}
+	\mathbf{h_t}=
+    \begin{cases}
+      LSTM(\mathbf{0}; [\mathbf{q}, \mathbf{e_c}]), & \text{if}\ t=0 \\
+      LSTM(\mathbf{h_{t-1}}, [\mathbf{q}; \mathbf{e_t}]), & \text{otherwise}
+    \end{cases}
+\end{equation}
+where $\mathbf{h_t} \in \mathbb{R}^{2d}$ represents the hidden state vector (history) of the LSTM, and $[;]$ is the vector concatenation operator. At each time step, the LSTM takes the previous history $\mathbf{h_{t-1}}$ and the concatenation of the question embedding $\mathbf{q}$ and the current node embedding $\mathbf{e_t} \in \mathbb{R}^{d}$ to produce $\mathbf{h_t}$. In the first time step, $\mathbf{h_0}$ is initialized with the zero vector and $\mathbf{e_0} = \mathbf{e_c}$, where $\mathbf{e_c}$ is the embedding of the entity corresponding to the cause found in the current question.
+
+On top of the LSTM, we stack two feedforward networks: one for the policy network $\pi_\theta(a_t | s_t)$ and one for the value network $V_\psi(s_t)$. In Section ~\ref{subsec:env}, we defined the action space $\mathcal{A}(s_t)$ at time step $t$ and state $s_t = (\mathbf{q}, e_t, \mathbf{e_t}, \mathbf{h_t}, e_e)$ to contain all neighbors of the entity $e_t$. Therefore, we introduce an embedding matrix $\mathbf{A_t} \in \mathbb{R}^{|A(s_t)| \times 2d}$, where the rows contain the embeddings of the actions $a_t \in \mathcal{A}(s_t)$. The output of the policy network $\pi_{\theta}(a_t|s_t)$ is computed as
+\begin{equation}
+	\begin{split}
+	\pi_\theta(a_t | s_t) = \sigma(\mathbf{A_t} \times W_2 \times ReLU(W_1 \times \mathbf{h_t})) \\
+	a_t \sim Categorical(\pi_\theta(a_t | s_t))
+	\end{split}
+\end{equation}
+where $W_1 \in \mathbb{R}^{h \times 2d}$ and $W_2 \in \mathbb{R}^{2d \times h}$ are weight matrices with hidden dimension $h$ and $\sigma$ is the softmax operator. The final output of the policy network is a categorical probability distribution over all actions $a_t \in \mathbb{A}(s_t)$. Similarly, the output of the value network $V_{\psi}(s_t)$ is computed with the feedforward network
+\begin{equation}
+	V_{\psi}(s_t) = W_4 \times ReLU(W_3 \times \mathbf{h_t})
+\end{equation}
+where $W_3\in \mathbb{R}^{h \times 2d}$ and $W_4\in \mathbb{R}^{1 \times h}$ are weight matrices with hidden dimension $h$, and the output is a scalar that estimates the future reward from state $s_t$ onwards. Overall, the weights of the LSTM are shared between the policy and value network, while each network has its own weights in the form of its feedforward head.
+
+\subsection{Training the Reinforcement Learning Agent}
+\label{subsec:approach-description}
+
+The training process involves pre-processing questions and linking them to entities of the causality graph. As causality graphs such as CauseNet~\cite{Heindorf2020Causenet} do not contain negative information (see Section~\ref{sec:causenet} in appendix), we only train the agent on positive causal questions, i.e., questions whose answer is ``yes''. We remove all questions where the cause, effect, or both cannot be found in the causality graph. Then we obtain embeddings for the entities from their textual representation, initialize agent weights, and sample path rollouts with the policy network. The training utilizes the Synchronous Advantage Actor-Critic (A2C) algorithm, with the policy network acting as the actor and the value network as the critic. The policy network update rule includes the generalized advantage estimate (GAE). As commonly done, we add an entropy regularization term to help the agent with the exploitation vs. exploration tradeoff. Simultaneously, the value network is updated. Further details on our training procedure for the policy network including the pseudocode can be found in Section~\ref{sec:pseudocode-training} in the appendix.
+
+
+\subsection{Search Strategy}
+\label{subsec:search}
+At inference time, the agent receives both positive and negative questions. To answer a given question, we sample multiple paths~$p$ of length $T$ from the agent. If any path contains the entity $e_e$, the agent answers the question with ``yes'', otherwise with ``no''. In case the cause, effect, or both cannot be found in the causality graph, the question is answered with ``no'' per default.
+
+For each path rollout $((s_0, a_0),(s_1, a_1), \dots, (s_{T-1}, a_{T-1}))$, the path that was taken on the graph consists of the entity $e_0$ in $s_0$ and the actions taken at each time step $t$, i.e., $p = (e_0, e_1,\dots, e_T)$ where $a_{t-1} = e_t \in \mathcal{E}$ for $t > 0$. The probability of path $p$ is the product
+\begin{equation}
+  \mathbb{P}(p) = \prod_{t=0}^{T-1} \pi_{\theta}(a_t |s_t)
+  \label{eq:decoding}
+\end{equation}
+of the probabilities of taking action $a_t$ at state $s_t$ under the current policy $\pi_{\theta}(a_t | s_t)$ for $t \in \{0,\dots,T-1\}$. Figure~\ref{fig:graph-example} shows an excerpt from CauseNet where each edge is annotated with the probability of taking this edge under the current policy.
+
+To sample paths from the agent, we apply greedy decoding or beam search. \emph{Greedy decoding} takes the action with the highest probability at each time step, i.e., $arg\,max_{a_t \in \mathcal{A}(s_t)} \ \pi_{\theta}(a_t | s_t)$. In Figure~\ref{fig:graph-example}, the agent would select \textit{sepsis} in the first time step, \textit{kidney failure} in the second time step, and \textit{anemia} in the third time step. However, one disadvantage of greedy decoding is its myopic behavior, i.e., it might miss high-probability actions in later time steps. \emph{Beam search} tries to alleviate this problem by always keeping a set of the best partial solutions up to the current timestep. 
+In our case, partial solutions are paths of length $t$, where $t$ is the current timestep. Furthermore, the paths are ranked by their probability, as defined in Equation~\ref{eq:decoding}. Assuming a beam width of two, Figure~\ref{fig:graph-example} shows the two paths that are found by beam search for the example. After obtaining these paths, the agent examines each one to determine whether it includes the effect. If that is the case, the agent answers the question with ``yes'', otherwise with ``no''. In this example, \textit{anemia} is found, so the agent answers with ``yes''.
+
+\subsection{Bootstrapping via Supervised Learning}
+\label{subsec:supervised}
+
+Reinforcement learning algorithms often take a long time to converge due to their trial-and-error nature combined with large action spaces and sparse rewards~\cite{Xiong2017DeePpath, Lin2020RewardShaping}. Thus, the reinforcement learning agent can be bootstrapped, by first training it on a series of expert demonstrations. For example, AlphaGo~\cite{Silver2016AlphaGO} trained the agent on demonstrations from expert Go players before continuing with their reinforcement learning algorithm. In our case, the expert demonstrations come from a breadth-first search (BFS) on the causality graph. First, we randomly select a subset $\overline{Q}$ of size $\alpha \cdot |questions|$  of the training questions, where $\alpha$ is a hyperparameter. Subsequently, we run a BFS on the cause $e_c$ and effect $e_e$ of each question in $\overline{Q}$ and build a path rollout for each found path. If a path rollout is shorter than the path rollout length $T$, it is padded with the \textit{STAY} action.\footnote{A question $q$ is discarded, if a path of length less than or equal to $T$ cannot be found between its cause $e_c$ and its effect $e_e$.} Next, we train the policy network $\pi_{\theta}(a_t | s_t)$ via REINFORCE
+\begin{equation}
+  \nabla_{\theta} J(\theta) = - \frac{1}{B} \sum_{i}^{B} \sum_{t=0}^{T-1} \nabla_{\theta} \log(\pi_{\theta} (a_t | s_t)) \, r_t + \beta H_{\pi_\theta}
+\end{equation}
+where $B$ is the batch size, $T$ the path rollout length, and $H_{\pi_\theta}$ the entropy regularization from Section~\ref{subsec:approach-description}. During supervised training, the reward $r_t$ is set to $1$ at each step. Note that we only train the policy network $\pi_{\theta}(a_t | s_t)$ during supervised learning. Afterward, we further train both the policy and value networks via Algorithm~\ref{alg:algorithm}, as explained in Section~\ref{sec:pseudocode-training}.

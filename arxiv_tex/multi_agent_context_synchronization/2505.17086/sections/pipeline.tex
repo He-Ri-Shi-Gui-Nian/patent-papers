@@ -1,0 +1,232 @@
+\section{RAG Agent}
+% To Yihong, 我们可以把2.2和这个combine了
+% To Yihong, 我把Question Decomposition的"动机"留给你了。这部分需要讲一点故事，虽然introduction里会详细讲，这里也需要refresh一下
+
+% We start this section with problem definition.
+% We discuss agent design and propose a conceptual model for task decomposition.
+% Based on this model, we propose our agent framework.
+
+\subsection{Problem Definition}
+% We formally define the concept of agents and the task of Multi-Hop Question-Answering (MHQA).
+% We define agents as autonomous intelligent entities who can make a plan, take actions according to the environment, and sequentially reason \cite{liu2025advances}.
+% LLMs in current RAG systems are required to determine what to search, modify queries based on context, and infer answers from available information.
+% According to the definition, we consider LLMs as agents.
+% We try to build a LLM agent who performs well on QA tasks.
+
+% Question answering is a task that an AI system try to predict the correct answer given a question.
+% Compared with sing-hop question answering, Multi-Hop Question Answering (MHQA) requires the system to reason or search over multiple sources (hops), which makes it a more interesting and complex research problem \cite{mavi2024multi}.
+% MHQA could be further breakdown into two sub-tasks, Information Retrieval (IR) and Machine Reading Comprehension (MRC).
+% IR is responsible for gathering information while MRC extract the answer from retrieved sources.
+% We adopt the open-domain setting, which requires the system to search information from a large database, on knowledge graphs and text.
+% Detailed introduction can be found in appendix.
+This work addresses Open-Domain Multi-Hop Question Answering (MHQA), a key challenge and benchmark for RAG.
+QA systems aim to provide correct answers to given questions.
+Compared with single-hop QA, MHQA necessitates reasoning across multiple sources (hops)~\cite{mavi2024multi}, which renders MHQA a more challenging task. %significantly more complex challenge.
+We focus on the open-domain setting, where relevant information must be retrieved from large-scale corpora (knowledge graphs or text collections).
+Details are provided in Appendix~\ref{probelm_definition}.
+
+The inherent complexity of MHQA, characterized by multi-stage planning requirements and iterative evidence synthesis, necessitates framing the solution mechanism as an autonomous agent.
+We define an agent as an entity capable of planning, taking actions based on the environment, and engaging in sequential reasoning \cite{liu2025advances}.
+We observe that LLMs equipped with RAG perform functions analogous to such an agent. Specifically, LLMs determine information requirements and search strategies (planning), formulate search queries (acting), and synthesize final answers from gathered evidence (reasoning). Recognizing this functional correspondence, we position the LLM itself as the core agent within our system.
+
+
+% \paragraph{Notation}
+% Let $\mathcal{Q}$ be the set of all multi-hop questions, $\mathcal{Q}' \subset \mathcal{Q}$ be the set of all sing-hop questions, $\mathcal{M}$ be the set of all LLM agents, $\mathcal{G}$ be the set of all dependency graphs.
+% We define the answer of question $q\in \mathcal{Q}$ as a probability distribution $a_q$ and actions as functions associated with agents, e.g., $\func{act}(\cdot | m)$, where $\func{act}$ is a placeholder for actual actions and $m \in \mathcal{M}$.
+% When the context is clear, we omit the notation of agent, i.e., we denote simply by $\func{act}(\cdot)$.
+
+% \subsection{Multi-hop Question Answering as Dynamic Programming}
+% Question Decomposition (QD) \cite{min2019multi, perez2020unsupervised, yang-etal-2024-decompose} is a common technique for complex questions.
+% The motivation of QD is that most of complex questions can be decomposed and solved recursively, which allows to solve MHQA as a series of simple questions.
+% Despite its wide usage, there is no in-depth discussion for QD.
+% We hereby formulate the question-decompose-answer process as Dynamic Programming (DP) \cite{bellman1966dynamic}: find the state transition function and solve it recursively.
+% Question Decomposition (QD) is a widely adopted technique for addressing complex questions, particularly in MHQA where queries often require multi-step reasoning \citep{min2019multi, perez2020unsupervised, yang-etal-2024-decompose}.
+% The motivation of QD is that complex questions can be broken down into simpler, interdependent sing-hop sub-questions, which are then solved orderly to derive the final answer.
+% Despite its empirical success and prevalence, a formal framework for the QD process remains underexplored.
+% This work proposes to fill this gap by formulating the question-decomposition-and-answering process through the lens of Dynamic Programming (DP) \citep{bellman1966dynamic}.
+% We aim to define the state space and the transition function within this DP framework, allowing complex MHQA problems to be solved by recursively finding optimal solutions to subquestions.
+
+% We use the term Dependency Graph (DG) to describe complex relations between subquestions.
+% Given a question $q \in \mathcal{Q}$, a dependency graph $g(q) =(\mathcal{N}_q, \mathcal{E}_q )$ is a Directed Acyclic Graph.
+% The node set $\mathcal{N}_q = \{q_i \in \mathcal{Q} | i \in \{0,1,...,n\}, q_0 = q \}$ contains all sub-questions induced from $q$.
+% The edge set $\mathcal{E}_q \subseteq \mathcal{Q} \times \mathcal{Q}$ contains all dependency relations.
+% Edge $(q_i, q_j)$ is an ordered pair meaning that $q_i$ relies information from $q_j$.
+% If $q_i$ has no descent, $q_i$ is a single-hop question.
+% % FIXME: not accurace
+% \fixme{From MZ: Do we really need to define the ``dual question''? We do not mention it afterwards. }
+% We denote $q'_i \in \mathcal{Q'}$ as a dual question of $q_i$, who has the same semantic as $q_i$ but without co-reference.
+
+% QA as DP contains two processes: a forward process to generate DGs and a backward process for message-passing.
+% The forward process is an agent action $fwd: \mathcal{Q} \xrightarrow{} \mathcal{G}$ generating the DG given a question, which reflects agent's planning ability.
+% Once the DG is build, we execute the backward process to gather information and answer sub-questions recursively.
+% The backward process is a pruning process on DG.
+% % FIXME: use visiting ?
+% The agent first answer leaf questions, then it uses sub-answers to update the parents of leaf questions, transforming them into its dual question, and removing the edges and visited nodes.
+% Repeat the process until the final answer is yielded.
+
+% We can define the DG's state based on if each sub-question is solved or not.
+% Let $\mathcal{S}(q) = \{\vs \in \R^n | s_i = 1 \text{ or } 0  \}$ denote the state space of $q$, where $s_i$ denote if sub-question $q_i$ is solved or not (1 for solved).
+% In current model, we cannot insert more sub-question to the DG during the backward process.
+% A more realistic scenario should support dynamic edit during the backward process, which we leaves in future work.
+% However, we argue that a successful agent should at least 
+
+
+
+% \subsection{\underline{\textbf{M}}ulti-hop \underline{\textbf{J}}oint \underline{\textbf{I}}ntelligence for \underline{\textbf{C}}omplex Question \underline{\textbf{A}}nswering (\textbf{Mujica})}
+\subsection{Mujica}
+% 考虑到我们要把planning和reasoning的过程解耦，我们对应地设计了两个模块
+% Planner，控制整个Question answering的workflow，决定何时应该调用外部检索模块，检索什么样的信息，并根据回传的答案做进一步的规划。如何解答一个问题
+% Reasoner 直接和retriever交互，（mini-rag）对具体的子问题做解答，
+% Considering the limited reasoning capabilities of LLMs and their susceptibility to distractions, the proposed agentic multi-hop question answering pipeline simplifies each complex question $q$ by decomposing it into simple subquestions $\{q_1, q_2, \cdots q_n\}$. These subquestions are then answered sequentially based on their dependencies.
+% \fixme{Multi-hop Joint Intelligence for Complex Answering (Mujica)}
+As previously noted, repeated retrieval from RAG systems generates extended contexts that are challenging for LLMs to effectively process.
+To mitigate this, a straightforward approach is to adopt a divide-and-conquer approach by partitioning the context into smaller segments.
+Accordingly, we introduce \underline{\textbf{M}}ulti-hop \underline{\textbf{J}}oint \underline{\textbf{I}}ntelligence for \underline{\textbf{C}}omplex Question \underline{\textbf{A}}nswering (\textbf{Mujica}) -- a multi-agent RAG framework that decomposes multi-turn interactions into coordinated sub-interactions.
+
+Figure~\ref{pipeline} shows the overall pipeline of the proposed agentic RAG framework. Given a complex question $q$, our RAG agent aims to decompose it into a series of simple subquestions $\{q_1, q_2, \cdots, q_n\}$, and progressively answers each subquestion based on their internal dependencies until obtaining the final answer $a$. Let $\mathcal{I}$ denote the instruction prompts, $\mathcal{C} = \{
+\mathcal{C}_1, \mathcal{C}_2, \cdots, \mathcal{C}_n\}$ denote the supporting contexts of each subquestion $q_i$, and $a_i$ an answer to it. Inspired by~\cite{Search-o1}, we can formulate the answer generation process as the following objective function: 
+% \begin{equation}~\label{decoupling}
+% \begin{aligned}
+%    &f_{\text{QA}}(q,I,\mathcal{C}) = P(a|q, I,\mathcal{C}) \\ &= P(q_1|q, \mathcal{I}) \cdot \prod_{i=2}^n{P(q_i|a_{<i}, q_{<i}, q, \mathcal{I})} \cdot \prod_{i=1}^n{P(a_i|q_i,\mathcal{C}_i,\mathcal{I})},
+% \end{aligned}
+% \end{equation}
+\begin{equation}~\label{decoupling}
+\begin{aligned}
+   &f_{\text{QA}}(q,I,\mathcal{C}) = P(a|q, I,\mathcal{C}) \\ &= \prod_{i=1}^n{P(q_i|a_{<i}, q_{<i}, q, \mathcal{I})} \cdot \prod_{i=1}^n{P(a_i|q_i,\mathcal{C}_i,\mathcal{I})},
+\end{aligned}
+\end{equation}
+where $q_{<i}$ and $a_{<i}$ denote all preceding subquestions of subquestion $q_i$ and their corresponding answers. Based on the equation above, 
+% a QA agent can be naturally decoupled into two specialized modules that will be introduced in the following subsections:
+the QA framework can naturally be decoupled into two specialized roles:
+\begin{enumerate}[label=\arabic{enumi})]
+    \item \emph{Planner}: {Being responsible for planning how to answer a complex question, the planner determines the series of subquestions to be addressed, identifies what specific information needs to be retrieved, and adjusts the plan based on the answer of each subquestion. } 
+    \item \emph{Worker}: {Acting as a mini-RAG system, the worker directly interacts with the retriever and tackles specific sub-questions identified by the planner. }
+\end{enumerate}
+
+\emph{Planner} and \emph{worker} interact with each other through a conversational process, each serving as both user and assistant for one another. 
+The planner and worker may operate as independent agents (distinct LLMs) or as virtual agents backed by a shared LLM but conditioned on distinct instruction prompts. 
+Considering the substantial size of LLMs, we opt for the latter design for better computational efficiency.
+
+
+\paragraph{Planner: Planning Subquestions as a Directed Acyclic Graph.}
+
+
+
+
+% 理想情况下，每一个complex question都可以被拆分为目的明确的多个子问题。然而，就像我们在Section 2.1中描述的，多个子问题之间可能存在一些conditions and dependencies. 因此，在整个QA process开始时，我们并没有任何子问题的答案，也无法对依赖前序问题答案的子问题进行实例化。不过，大语言模型强大的语义理解能力允许我们对复杂问题从宏观的角度进行分析。
+% Ideally, every complex question can be decomposed into a set of well-defined subquestions. However, as described in Section 2.1 and Figure~\ref{pipeline}, these subquestions often exhibit conditions and dependencies. Subsequent questions cannot be instantiated until we obtain the answers of preceding questions. Nevertheless, the advanced semantic understanding capabilities of LLMs allow the planner to analyze a multi-hop question from a global perspective. Specifically, the planner first utilizes the LLM to initialize a raw plan for question answering. Formally, we have:
+% \begin{equation}
+%     P(o_1, o_2, \cdots, o_n|q) = 
+% \end{equation}
+% Specifically, 我们首先利用LLM对如何回答问题生成一个初始的raw plan。根据计划，我们这个计划会对后续的resoning iterations进行指导。
+
+
+% 近期，一些工作(例如search-o1，plan-on-graph)的证明了通过equation 1)的方式进行chain-of-thought推理 is able to 得出正确答案。However，并不是回答每一个子问题都依赖所有前序问题的答案, 直接通过equation 1的方式进行reasoning是低效率且不准确的。For example, in Figure 1, 寻找film Dreaming Of Space的导演并不需要毫不相关的film Kedi Billa Killadi Ranga的导演信息。通过并行化的解答这两个子问题，我们一方面可以减少reasoning steps，加速整个推理链路，另一方面可以排除无关信息对LLM reasoning的干扰。因此，在找到我们首先需要回答的子问题之前，我们的planner首先利用LLM的从global perspective对如何回答一个complex question生成一个初始的计划。
+
+
+Recent work (e.g., Search-o1~\cite{Search-o1}, PoG~\cite{PoG}) has demonstrated that performing chain-of-thought reasoning through Eq.~\ref{decoupling} is capable of deriving correct answers.
+However, in real-world scenarios, the subquestions posed are not naturally shaped as a sequence, since not all subquestions depend on answers to preceding ones.
+As shown in Fig.~\ref{fig:qdag}, there might be two conditionally independent subquestions, $\text{S}_{2,1}$ and $\text{S}_{2,2}$, which are dependent in the later subquestion $\text{S}_{4,1}$.
+The dependency relations form a directed acyclic graph (DAG).
+Directly applying Eq.~\ref{decoupling} to such a reasoning process can be both inefficient and suboptimal.
+Therefore, to effectively handle DAG dependency graphs,
+we allow our Mujica planner to ask subquestions in multiple iterations sequentially, where the answers of subquestions at an iteration can become dependent in later iterations.
+In each iteration, Mujica will simultaneously ask multiple conditionally independent subquestions.
+
+
+% By resolving these two subquestions in parallel, we can reduce the number of reasoning steps, accelerate the overall reasoning process, and mitigate the impact of irrelevant information in the reasoning process. In light of this, the planner first generates an initial plan on how to answer the complex question by providing a sequence of subquestions that should be addressed from a global perspective. Since we do not have the intermediate answers for all subquestions, some of them are in nature incomplete, which needs to reorganized afterwards. 
+% Therefore, instead of directly identifying which subquestions should be answered first, the planner generates an initial plan on how to answer the complex question from a global perspective by giving a sequence 
+% Therefore, prior to identifying the subquestions that should be answered first, the planner generates an initial plan on how to answer the complex question from a global perspective by giving a sequence of ``pseudo-subquestions''. Formally, we have:
+% \begin{equation}
+%     f_{\text{plan}}(q) = P(\hat{q}_1, \hat{q}_2, \cdots, \hat{q}_n | q) = \prod_{i=1}^{n}{P(\hat{q}_{i}|\hat{q}_{<i}, q)},
+% \end{equation}
+% where each pseudo-subquestion $\hat{q}_i$ can be a complete subquestion or an incomplete one. 
+
+
+
+
+
+
+
+% \paragraph{Iterative Reasoning. } 
+% % 每一个reasoning iteration可被分为三个步骤，think, action, 和observation.
+% After obtaining the initial plan, our planner starts to answer each of the subquestions in an iterative manner. Each reasoning iteration can be divided into two steps: ``\textit{think}'' and ``\textit{action}''.
+
+% Think-step 主导着整个reasoning process, 分析上一个iteration所得到的问题答案，判断当前的信息是否足以让我们得到整个complex的答案，
+
+\begin{wrapfigure}{r}{0.4\linewidth}
+	\vspace{-1em}
+	\centering
+	\includegraphics[width=1\linewidth]{figures/QDAG.pdf}
+	\caption{Modeling Complex Question Answering Process as a Directed Acyclic Graph.}
+	\label{fig:qdag}
+    \vspace{-1em}
+\end{wrapfigure}
+
+More specifically, following the previous work~\cite{ReAct},
+in each iteration,  the planner will execute two steps:
+\textbf{\emph{think}} and \textbf{\emph{action}}.
+In the \textbf{\textit{think}} step, at the $i$-th iteration, the planner summarizes the information obtained in the previous iterations and judges whether the supporting information it has gathered is sufficient to answer the complex question $q$. 
+% 如果信息完整，the planner会generate 它对整个问题的conclusion, 反之，它会identify哪些sub-questions，需要被，也可以被在当前循环解答。
+If all necessary information is available, the planner generates its conclusion for the entire complex question.
+Otherwise, the planner will excute the \textbf{\emph{action}} step - it formulates the subquestions and outsources them to a \textbf{\emph{Worker}} to retrieve the corresponding information from the environment. 
+After gathering the information from the \textbf{\emph{Worker}}, the \textbf{\emph{Planner}} will move to the next iteration, and this process continues until obtaining the final answer.
+
+
+
+% \begin{figure}[h]
+% 	\centering
+% 	\includegraphics[width=0.4\linewidth]{figures/QDAG.pdf}
+% 	\caption{Modeling Complex Question Answering Process as a Directed Acyclic Graph.}
+% 	\label{fig:qdag}
+% \end{figure}
+
+% Otherwise, it identifies the set of subquestions needs to be addressed and can be resolved in the current iteration. If necessary, the planner will make adjustments to its initial plan. 
+% Formally, we have:
+% \begin{equation}
+%     f_{\text{think}}^{(i)}(q) =P(\{\hat{q}\}^{(i)},r_{\text{think}}^{(i)} | \{q\}^{(i-1)}, \{a\}^{(i-1)}, \{\hat{q}\}_{\{\cdot\}}, q),
+% \end{equation}
+% where $q^{(i-1)}$ and $a^{(i-1)}$ denotes the set of subquestions resolved in $(i-1)$-th iteration and their answers, correspondingly. $r^{(i)}$ denotes the ``thoughts'' generated in the $i$-th iteration, which ensures traceable and responsible reasoning. 
+% To ensure traceable and responsible reasoning, the planner also explicitly illustrates its thoughts in its outputs
+
+% Action-step
+% % 相较于直接和外部环境交互, planner将回答simple subquestion的任务外包给了Worker. 这可以避免irrelevant retrieved context拉长token length并对reasoning process进行干扰。 
+% In the ``\textbf{\textit{action}}'' step, the planner takes action to answer the subquestions it planned to answer in the current iteration. Rather than directly interacting with the external environment, the planner outsources the task of answering simple subquestions to a \textbf{\textit{worker}}. This setting helps prevent irrelevant retrieved contexts from inflating token length and disrupting the reasoning process.
+% It should be noted that subquestions generated during the planning phase may initially be incomplete. To resolve this, the planner leverages the answers from preceding subquestions to refine and transform incomplete queries into a structured, actionable format ``<action>Search("Question"</action>''. Once our QA agent detects this pre-defined pattern in the LLM output, it assigns the question answering task to the \textbf{\textit{worker}}. 
+% Formally, we have:
+% \begin{equation}
+%     f_{\text{action}}^{(i)}(q)=P(\{q\}^{(i)}|\{\hat{q}\}^{(i)},\{q\}^{(i-1)}, \{a\}^{(i-1)}).
+% \end{equation}
+% Once our QA agent detects the corresponding special tokens (``<action>Search("Question"</action>''), it assigns the question answering task to the \textbf{\textit{worker}}.
+
+% Finally, the \textbf{\textit{planner}} receives answers to each subquestions from the \textbf{\textit{worker}}, which triggers the $(i+1)$-th reasoning iteration. 
+
+
+
+% 为了让worker方便处理查询，our agent 利用上一个iteration的subquestion答案来将incomplete psuedo-questions转化成格式化的形式。
+%一旦我们的QA agent detect到corresponding special tokens, 它将派发任务给Worker来完成。
+% Observation-step （被user提供），用于激活下一个循环
+% 经过了一定数量的iteration后，think step或认为当前的信息已经足够回答此问题，它会给出对完整问题的答案。
+\paragraph{Worker: Interacting with the External Environments.}
+
+As aforementioned, the \textbf{\emph{Worker}} is responsible for handling interactions with the external environments, and answers questions assigned by the planner. 
+Specifically, we utilize the same LLM-agent with a mini-RAG system.
+% In general, the worker can be any single-hop QA model. Here, we devise our custom solution, a mini-RAG system associated with an external retriever.
+% Specifically, for each simple question $q^{(s)}$, the worker 调用external retriever 从KG或document corpus中获取与问题最相关的前$k$条supporting context~\footnote{我们用bge-large-en-v1.5 sentence transformer编码问题和supporting contexts，并通过cosine similarity计算相关性}
+% For each simple question $q^{(s)}$, the worker invokes the external retriever to fetch the top $k$ most relevant supporting contexts from a KG or a document corpus.~\footnote{We employ bge-large-en-v1.5 sentence transformer to encode the question and supporting contexts, and examine the relevance with cosine similarities.}
+For each simple question $q_i$, the worker invokes an external retriever to fetch the top $k$ most relevant supporting contexts from a KG or a document corpus.~\footnote{We employ bge-large-en-v1.5 sentence transformer as the external retriever. 
+%  to encode the question and supporting contexts, and examine the relevance with cosine similarities.
+}
+Then, the \textbf{\emph{Worker}} employs the LLM to review the target of the question, examine each retrieved context and accordingly anwser the subquestions outsourced by the \textbf{\emph{Planner}}. Specifically, the LLM is instructed to explicitly illustrate its thoughts, and select  relevant contexts by providing their indexes.
+Detailed prompts for \textbf{\emph{Planner}} and \textbf{\emph{Worker}} are provided in Appendix~\ref{appendix_working_examples}.
+
+
+% Formally, we can formulate the worker as follows:
+% \begin{equation}
+%     f_{\text{worker}}(q) = P(a_q,r_{\text{think}}^{(q)}, \mathcal{C}|\hat{\mathcal{C}}, q)=P(a_q|r_{\text{think}}^{(q)},\mathcal{C},q)\cdot P(r_{\text{think}}^{(q)},\mathcal{C}|\hat{\mathcal{C}},q),
+% \end{equation}
+% where $a_q$ is the answer, $r_{\text{think}}^{(q)}$ denote the thoughts generated by the worker, $\mathcal{C}$ is the relevant contexts selected by the LLM, and $\hat{\mathcal{C}}$ denotes raw contexts obtained from the retriever.
+
+
+% 在后者的情况下，QA-agent将强行要求LLM通过已有的信息回答问题。Finally, the QA-agent 会将答案包围在special symbol <answer> 和 </answer> 之间输出。Detailed prompts可在appendix中查看。
+% The agentic QA pipeline concludes when the planner reaches a conclusion in its ``\textit{think}'' step or when the number of reasoning iterations exceeds a pre-defined threshold. In the latter case, the QA agent will force the LLM to provide an answer based on the information collected so far. Finally, the QA agent outputs the answer enclosed within special symbols <answer> and </answer>. 

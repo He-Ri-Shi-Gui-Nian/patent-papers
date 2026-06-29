@@ -1,0 +1,45 @@
+\section{Problem and Data Structure}
+
+We first define the problem of version-aware RAG with its three fundamental query types and then design our data structure based on the identified query types.
+
+\subsection{Problem Formulation.}
+\label{sub:problem}
+Let $\mathcal{D} = \{d_1, d_2, ..., d_n\}$ be a collection of documents where each document $d_i$ exists in multiple versions $V_{d_i} = \{v_{i,1}, v_{i,2}, ..., v_{i,m}\}$. Given a query $q$, the versioned document QA task requires retrieving the correct context $c$ from the appropriate version(s) to generate answer $a$. We identify three fundamental query types that require distinct retrieval strategies: (1) \textit{Content Retrieval} - retrieving information from a specific version, (2) \textit{Version Retrieval} - identifying available versions or version metadata, and (3) \textit{Change Retrieval} - detecting modifications between versions. \hl{\textit{Standard RAG systems fail because they optimize $p(c|q)$ without considering version constraints, while our approach models $p(c|q,v)$ where $v$ represents version context.}}
+
+\subsection{Version-Aware Graph Structure.}
+VersionRAG constructs a hierarchical graph $G = (N, E)$ - where $N$ are the nodes and $E$ the edges - during indexing to explicitly model version relationships. As shown in Figure~\ref{fig:versiongraph}, the graph consists of five levels: (1) \textit{Category nodes} organize documents into semantic groups, (2) \textit{Document nodes} represent unique documents with multiple versions, (3) \textit{Version nodes} capture specific document versions with edges indicating temporal sequence, (4) \textit{Content nodes} store references to vector embeddings of document chunks, and (5) \textit{Change nodes} represent modifications between versions, either extracted from changelogs (explicit) or inferred through difference analysis (implicit). This structure enables both efficient graph traversal for version-specific queries and compatibility with vector search for content retrieval.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=1.0\columnwidth]{Figures/data_modeling_graph.png}
+    \caption{Version-aware graph structure with hierarchical organization from categories to individual changes, enabling precise version-specific retrieval.}
+    \label{fig:versiongraph}
+\end{figure}
+
+
+\section{VersionRAG}
+\label{sec:versionrag}
+
+VersionRAG consists of three main parts: (1) \textbf{Indexing}, which creates our version-aware graph data structure; (2) \textbf{Retrieval}, which implements a hybrid retrieval strategy, including intend detection, retrieval mode selection and version-aware filtering; (3) \textbf{Generation}, which contains the answer generation for the user based on version-specific context (see Figure~\ref{fig:framework}).
+
+
+\begin{figure*}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{Figures/framework.png}
+    \caption{VersionRAG framework with three main components: indexing constructs the version-aware graph, retrieval routes queries through appropriate paths, and generation produces answers using retrieved context.}
+    \label{fig:framework}
+\end{figure*}
+
+
+\subsection{Indexing Pipeline.}
+The indexing process transforms raw documents into the version-aware graph through five steps. First, \textit{attribute extraction} uses an LLM to extract document metadata (title, version, type) from the first pages. Second, \textit{document clustering} groups versions of the same document and organizes them into categories using semantic similarity. Third, \textit{graph construction} creates the hierarchical structure with proper version sequencing. Fourth, \textit{content indexing} chunks documents and stores embeddings in a vector database with version metadata. Finally, \textit{change extraction} identifies modifications either from explicit changelogs or by computing differences between consecutive versions using the DeepDiff library \cite{Dehpour_DeepDiff}, then employs an LLM to generate semantic descriptions of changes.
+
+\subsection{Hybrid Retrieval Strategy.}
+VersionRAG employs a query-aware retrieval strategy that routes queries through appropriate retrieval paths based on their intent. The retrieval pipeline consists of three components: (1) \textit{Query parsing} uses an LLM to classify the query type and to extract relevant parameters (category, document, version), achieving 92\% classification accuracy with DeepSeek-R1 70B. (2) \textit{Retrieval mode selection} determines whether to use graph traversal (for version/change queries) or vector search (for content queries). (3) \textit{Version-aware filtering} constrains vector search to specific versions when needed, ensuring temporal accuracy. For change retrieval, the system can traverse the graph to find explicit change nodes or perform semantic search over indexed changes. This hybrid approach maintains the efficiency of vector search while adding precise version control through graph-based filtering.
+
+
+\subsection{Generation.}
+After retrieval, the generation component synthesizes answers using the retrieved context. The LLM receives both the original query and version-specific context, with explicit instructions to ground responses in the provided information. Unlike standard RAG where context may contain temporally inconsistent information, VersionRAG ensures that the retrieved context aligns with the query's version requirements, enabling accurate and consistent answer generation.
+
+\textbf{Efficiency Considerations.}
+VersionRAG achieves significant efficiency gains compared to GraphRAG through its structured approach. By encoding version relationships as graph edges rather than extracting them through LLM analysis of entire documents, VersionRAG requires 97\% fewer tokens during indexing (186K vs 2,970K tokens with DeepSeek-R1 70B). The graph structure also enables incremental updates—new versions can be added without reprocessing existing documents, making the system practical for continuously evolving documentation.

@@ -1,0 +1,151 @@
+\section{Evaluation}
+\label{section:evaluation}
+
+\subsection{IRAC KG Generation and Quality Review}
+\label{section:evaluation_kg_generation}
+
+We randomly sampled $\sim$12K cases, with 220 cases from each U.S. jurisdiction, and divided them into Train and Validation for model training purposes with a ratio of 10:1. We produced KGs with both Claude Sonnet 3.5 and Llama-3.1-405B-Instruct. Two SMEs then reviewed the Sonnet KG of 18 cases and the Llama KG of 8 cases\footnote{Due to its inferior quality, we stopped the review process.}, with each entity and relation examined by a single SME.
+
+Table \ref{table:kg_quality_review} shows that the Sonnet KG has superior quality on most entity types (except for \textit{Legal Issue}), by taking into account both \textit{Good} and \textit{Acceptable}. Note that the Llama KG generally has notably higher ratios of entities labeled as \textit{Poor}. In terms of relations, the Sonnet KG also showed much higher quality, with only 8\% of relations labeled as \textit{Fail} compared to that of 41\% of the Llama KG.
+%of we observe that most of the extracted entities and relations are graded as high quality, i.e., high percentages of \textbf{\textit{Good}} and \textbf{\textit{Pass}}.
+
+One drawback of both KGs is that they miss a decent percentage of entities. In a legal case, not all facts or issues are considered critical for courts to decide their rulings. A legal issue may be mentioned in passing without further discussions; also, some facts may merely be included in a case while not being essential to the core issues of the case. In such situations, missing entities have little impact in understanding the case. We leave it to future work to improve our KG's comprehensiveness.
+
+Given the above quality review, we adopted the IRAC KG from Claude Sonnet 3.5 for producing the post-training datasets. We also utilized Sonnet 3.5 to generate the explanation ($Exp$ at Line 9 in Algorithm \ref{algorithm:rules_sft}) for the SFT dataset, and employed it as the LLM Judge ($LJ$ at Line 11 in Algorithm \ref{algorithm:rules_dpo}) during preference data generation.
+
+\subsection{Evaluation Benchmarks}
+\label{section:evaluation_benchmarks}
+
+In order to verify the effectiveness of our proposed IRAC KG, we carried out extensive experiments on diverse legal datasets (detailed in Appendix \ref{section:appendix_benchmark}).
+
+\textbf{LexGLUE}\footnote{https://github.com/coastalcph/zeroshot\_lexglue} \cite{DBLP:journals/corr/abs-2304-12202} is a well-adopted legal benchmark, covering European and U.S. jurisdictions. It mainly consists of (multi-class and multi-label) classification tasks, together with a multiple choice question answering task; each task includes 1,000 samples. The number of classes range from 10 to 100, presenting substantial challenges to legal AI systems.
+
+\textbf{LegalBench} \cite{DBLP:conf/nips/GuhaNHRCKCPWRZT23} is a recent benchmark that mainly focuses on multiple choice question answering. In addition, it also includes several information extraction tasks, such as extracting plaintiffs and defendants from case excerpts. It includes a total of 162 tasks, and we removed \textit{rule\_qa} whose evaluation requires manual review according to the LegalBench team.
+
+\textbf{COLIEE} \cite{DBLP:journals/rss/RabeloGKKYS22} is a well-known competition for legal systems, with two major types of tasks: retrieval (of relevant cases or statues) and entailment. For retrieval, it is to find supporting prior cases to help decide on a new case in Canada (Task-1) or to locate relevant law articles (statutes) for Japanese legal queries (Task-3). For entailment, instead of requiring the systems to locate the relevant prior cases or statues, the input already includes this information, and the systems should decide whether the following entailments hold: <paragraph (from a prior legal case) $\models$ court decision> (Task-2) or <statute $\models$ legal\_query> (Task-4). Given that the test set is relatively small for each specific year, we combined the data from all previous years for our evaluation.
+
+\textbf{SuperGPQA} \cite{DBLP:journals/corr/abs-2502-14739} consists of graduate-level multiple choice questions for a broad range of domains, e.g., Medicine, History, etc. Our evaluation focuses on the 656 questions in \textit{Law}, where each question contains 9 $\sim$ 10 choices.
+
+\textbf{$\delta$-Stance} \cite{DBLP:conf/acl/GuptaR025} is a large-scale dataset to specifically evaluate AI systems' legal reasoning capability. In U.S. legal cases, introductory signals (e.g., \textit{see, contra, see generally, etc.}) between two text snippets often indicate certain important relations. This dataset consists of $\sim$14K triples of <snippet A, signal, snippet B>. We consulted SMEs to group such triples into four higher-level classes (Appendix \ref{section:delta_stance}): directly supports, indirectly supports, contradicts and background. We also produced a 3-class version where we removed the ``background'' category that does not provide as much value as the other three according to SMEs.
+
+%\textbf{\textit{Parentheticals}} is a proprietary dataset created by our team to specifically evaluate AI systems' legal reasoning capability. Given two quotations from two different cases respectively, \textit{quotation\_current} from current case and \textit{cited\_quotation} from a prior case, a system should decide whether \textit{cited\_quotation} directly supports, indirectly supports, or contradicts \textit{quotation\_current}. We gathered the groundtruth by utilizing the introductory signal preceding the \textit{cited\_quotation} (e.g., the word ``see'' indicates ``support'' while ``contra'' expresses ``contradiction''), and we then removed such signals from our dataset in order to make it a challenging task. Our dataset is relatively balanced with 110, 110 and 88 samples labeled as ``direct support'', ``indirect support'' and ``contradiction'' respectively. Unlike other tasks that rely heavily on textual similarity, this dataset requires AI systems to possess advanced reasoning capability in order to understand the relationship between the two quotations.
+
+\subsection{Model Training Details}
+\label{section:model_training_details}
+
+We post-trained (Appendix \ref{section:hyperparameter}) models of different scales: \textbf{Qwen3-30B-A3B-Instruct-2507} (Qwen3-30B), \textbf{
+Llama-3\_3-Nemotron-Super-49B-v1\_5} (Nemotron1.5-49B) and \textbf{Llama-3.1-70B-Instruct} (Llama3.1-70B). The first two recent models obtained competitive results on various benchmarks. As for Llama \cite{DBLP:journals/corr/abs-2407-21783}, the 3.3 model is not as competitive as the 3.1 model (Appendix \ref{section:llama}), thus we utilized the earlier version.
+%Due to infrastructure constraints, we did not experiment with even larger models.
+
+%We adopted Transformers \cite{DBLP:conf/emnlp/WolfDSCDMCRLFDS20}, DeepSpeed\footnote{https://github.com/deepspeedai/DeepSpeed}, Liger Kernel \cite{DBLP:journals/corr/abs-2410-10989} and Transformer Reinforcement Learning (TRL)\footnote{https://github.com/huggingface/trl} for training (Appendix \ref{section:hyperparameter}).
+%Due to Liger Kernel's incompatibility with others, we only used it for \textit{SFT}.
+
+\subsection{Results and Discussion}
+\label{section:results}
+
+\begin{table*}[ht]
+  \centering
+  \begin{threeparttable}
+  \begin{tabular}{cccc|ccc|ccc|c}
+    \hline
+    \multirow{2}{*}{\textbf{Benchmark}} & \multicolumn{3}{c|}{\textbf{Qwen3-30B}} & \multicolumn{3}{c|}{\textbf{Nemotron1.5-49B}} & \multicolumn{3}{c|}{\textbf{Llama3.1-70B}} & \textbf{SaulLM} \\
+    & OOB & SFT & DPO & OOB & SFT & DPO & OOB & SFT & DPO & (141B) \\ \hline
+    \multicolumn{1}{l}{LexGLUE Average} & 57.9 & 60.3 & \textbf{61.6} & 57.0 & 61.2 & \textbf{62.5} & 65.0 & 66.8 & \hl{\textbf{67.2}} & 64.4 \\
+    ECtHR A\tnote{$\bigstar$} & 53.4 & 59.7 & \underline{62.8} & 52.8 & 63.2 & \underline{66.3} & 73.6 & 77.3 & \underline{\hl{77.9}} & 73.6 \\
+    ECtHR B\tnote{$\bigstar$} & 60.2 & 66.3 & \underline{69.0} & 60.9 & 70.0 & \underline{73.7} & 80.0 & 82.1 & \underline{\hl{82.3}} & 77.6 \\
+    EUR-LEX\tnote{$\bigstar$} & 27.6 & 28.5 & \underline{30.5} & 27.1 & 29.2 & \underline{29.5} & \underline{\hl{33.9}} & 32.3 & 31.8 & 32.2 \\
+    LEDGAR\tnote{$\bigstar$} & \underline{69.7} & 69.6 & 69.6 & 66.0 & 66.5 & \underline{67.2} & 63.6 & 66.8 & \underline{67.5} & \hl{71.8} \\
+    SCOTUS\tnote{$\bigstar$} & \underline{66.0} & 65.8 & 65.9 & 65.4 & \underline{66.0} & 65.4 & 67.5 & \underline{\hl{68.9}} & 68.8 & 52.2 \\
+    CaseHOLD\tnote{$\S$$\Diamond$} & 70.7 & 71.7 & \underline{72.0} & 69.7 & 72.5 & \underline{73.2} & 71.6 & 73.4 & \underline{75.1} & \hl{79.0} \\
+   \hline
+    \multicolumn{1}{l}{COLIEE Average} & 56.6 & 59.0 & \textbf{61.1} & 49.4 & 53.5 & \textbf{54.2} & 57.0 & 59.8 & \hl{\textbf{60.7}} & 24.6 \\
+    Task-1\tnote{$\bigstar$} & 39.8 & 35.0 & \underline{\hl{40.3}} & 20.3 & 28.3 & \underline{28.5} & 30.8 & 30.6 & \underline{32.4} & 0.0 \\
+    Task-2\tnote{$\bigstar$$\Diamond$} & 52.2 & 60.0 & \underline{62.1} & 48.0 & 54.6 & \underline{57.2} & 57.7 & 66.0 & \underline{\hl{67.6}} & 25.1 \\
+    Task-3\tnote{$\triangle$} & 64.3 & 67.1 & \underline{\hl{67.7}} & \underline{53.6} & 53.4 & 53.4 & 61.3 & 64.4 & \underline{64.6} & 0.0 \\
+    Task-4\tnote{$\S$$\Diamond$} & 70.2 & 73.9 & \underline{74.2} & 75.9 & 77.5 & \underline{77.7} & \underline{\hl{78.4}} & 77.9 & 78.0 & 73.1 \\
+   \hline
+   \multicolumn{1}{l}{$\delta$-Stance Average\tnote{$\dag$$\Diamond$}} & \textbf{45.5} & 44.3 & 43.7 & 33.9 & 38.7 & \textbf{40.9} & 48.8 & 49.7 & \hl{\textbf{50.1}} & 43.8 \\
+   3-class & \underline{52.7} & 51.2 & 50.7 & 38.8 & 44.0 & \underline{46.5} & 55.1 & 56.1 & \underline{\hl{56.5}} & 48.8 \\
+   4-class & \underline{38.3} & 37.3 & 36.8 & 29.1 & 33.4 & \underline{35.3} & 42.6 & 43.2 & \underline{\hl{43.6}} & 38.8 \\
+   \hline
+   \multicolumn{1}{l}{LegalBench\tnote{$\blacktriangle$}} & 74.1 & 75.3 & \textbf{75.4} & 74.2 & 75.9 & \textbf{76.4} & 78.0 & \hl{\textbf{79.3}} & \hl{\textbf{79.3}} & \hl{79.3} \\
+   %Conclusion\tnote{$\blacktriangle$} & 78.9 & \underline{80.3} & 80.0 & 80.2 & 81.1 & \cellcolor{my_lightblue}\underline{81.3} & 79.1 & 80.5 & \underline{80.7} & 80.6 \\
+   %Interpretation\tnote{$\blacktriangle$} & 74.3 & 75.2 & \underline{75.3} & 75.4 & \underline{76.4} & \underline{76.4} & 78.1 & \cellcolor{my_lightblue}\underline{79.3} & 79.1 & 79.1 \\
+   %Issue\tnote{$\blacktriangle$} & 74.1 & 78.0 & \underline{78.6} & 66.5 & 73.6 & \underline{78.2} & 83.6 & 85.4 & \cellcolor{my_lightblue}\underline{86.1} & 86.7 \\
+   %Rhetoric\tnote{$\blacktriangle$} & \underline{77.2} & 77.0 & 77.1 & 76.0 & \cellcolor{my_lightblue}\underline{77.7} & \cellcolor{my_lightblue}\underline{77.7} & \cellcolor{my_lightblue}\underline{77.7} & 77.0 & 77.5 & 76.1\\
+   %Rule\tnote{$\blacktriangle$} & 46.6 & \underline{48.6} & 47.7 & 51.2 & \underline{52.1} & 51.4 & 52.0 & 54.4 & \underline{54.8} & \cellcolor{my_lightblue}55.8 \\
+   \hline
+   \multicolumn{1}{l}{SuperGPQA (Law)\tnote{$\S$$\Diamond$}} & 42.4 & 42.1 & \textbf{42.5} & 37.7 & 37.6 & \textbf{38.0} & 40.3 & 41.7 & \hl{\textbf{43.8}} & 28.4 \\
+   \hline
+  \end{tabular}
+  \begin{tablenotes}
+    \item $\Diamond$: Legal reasoning task.
+    \item $\bigstar$: Micro-F1; $\dag$: Macro-F1; $\triangle$: Macro-F2; $\S$: Accuracy; $\blacktriangle$: Balanced Accuracy.
+  \end{tablenotes}
+  \end{threeparttable}
+  \caption{\label{table:results}
+    Evaluation results (0$\sim$100). OOB denotes the out-of-the-box model without additional training; SFT and DPO represent the models after the corresponding training respectively. For each model, we underscore each task's best performance, and bold the highest average performance; blue background indicates the highest score for a row.
+  }
+\end{table*}
+
+\textbf{SFT/DPO vs. OOB}. In Table \ref{table:results}, compared to the OOB models, our KG-based post-training achieved improvements on 10, 13 and 12 out of the 14 tasks for Qwen3-30B, Nemotron1.5-49B and Llama3.1-70B respectively, where the best performance falls on either SFT or DPO. Furthermore, for all three models, DPO training helped obtain the highest average performance on most benchmarks, except for Qwen3-30B on $\delta$-Stance.
+
+\textbf{DPO vs. SFT}. Compared to SFT, DPO did provide additional benefits on 11/14 tasks for Qwen3-30B and Llama3.1-70B, and on 12/14 tasks for Nemotron1.5-49B. Unlike prior works that mostly focus on training smaller models, such as 7B/8B \cite{DBLP:conf/aaai/FanHW0JS25,DBLP:journals/corr/abs-2507-00018,DBLP:journals/corr/abs-2404-14723} and 32B \cite{wen-etal-2025-light}, our results demonstrated the benefits of KG-based DPO training of different and also larger scales: 30B, 49B and 70B. Furthermore, compared to the 30B model, the two larger DPO models exhibited clearer advantages than SFT on 4/6 legal reasoning tasks: CaseHOLD, $\delta$-Stance (both tasks) and SuperGPQA.
+
+\textbf{SaulLM (141B)} \cite{DBLP:conf/nips/ColomboPBMHMCCD24} is a SOTA legal LLM that was trained on a large amount of legal data. Despite post-trained on much smaller SFT (13.5K) and DPO (5.3K) datasets, our models show noticeable benefits. First, while Nemotron1.5-49B OOB is substantially worse than SaulLM on LexGLUE, $\delta$-Stance and LegalBench, its DPO version clearly narrowed the gaps. Furthermore, although Llama3.1-70B OOB already outperforms SaulLM on most benchmarks, our post-training did fully close the gap on LegalBench.
+
+%\textbf{\textit{NLL loss for DPO}}. Adding NLL loss on the chosen answers during DPO training has shown its benefits in the literature \cite{DBLP:journals/corr/abs-2404-19733}. For most benchmarks, Table \ref{table:nll} shows that it indeed provided improved performance for Qwen3 (though the impact is small on \textit{LegalBench} and \textit{SuperGPQA}), while having little impact for the larger Llama model. One interesting observation is that it resulted in a noticeable drop on \textit{Parentheticals} for both models. The goal of this dataset is to determine whether a cited quotation from a prior case supports/contradicts a quotation in the current case; thus, by fully focusing on learning how to differentiate the chosen and the rejected answers, models without the NLL term achieved higher scores.
+%\begin{table}[ht]
+%  \centering
+%  \begin{tabular}{llcccc}
+%    \hline
+%    \multirow{2}{*}{\textbf{Benchmark}} & \multicolumn{2}{c}{\textbf{Qwen3}} &\multicolumn{2}{c}{\textbf{Llama3.1}} \\
+%    & 0.0 & 0.2 & 0.0 & 0.2 \\ \hline
+%    LexGLUE & 60.8 & \textbf{61.6} & 67.0 & \textbf{67.2} \\ \hline
+%    COLIEE & 60.7 & \textbf{61.1} & \textbf{60.7} & \textbf{60.7} \\ \hline
+%    LegalBench & 75.3 & \textbf{75.4} & \textbf{79.4} & 79.3 \\ \hline
+%    SuperGPQA & 42.3 & \textbf{42.5} & 43.1 & \textbf{43.8} \\ \hline
+%    Parentheticals & \textbf{38.4} & 37.4 & \textbf{52.3} & 51.5 \\ \hline
+%  \end{tabular}
+%  \caption{\label{table:nll}
+%    NLL loss impact (0$\sim$100) with $\alpha\in$\{0.0, 0.2\}. W report the average of all tasks for each benchmark.
+%  }
+%\end{table}
+
+\textbf{Instruction Following (IF)}. Since Nemotron1.5-49B is also based on Llama, we only present the scores of Qwen3-30B and Llama3.1-70B in Table \ref{table:if}. In general, both models were able to follow the instructions in our prompts. Furthermore, our post-training did not damage models' IF capability, and in fact, they provided noticeable improvements: Qwen3-30B on LexGLUE, and Llama3.1-70B on COLIEE and SuperGPQA (Law).
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lcc}
+    \hline
+    \multirow{2}{*}{\textbf{Benchmark}} & \textbf{Qwen3-30B} & \textbf{Llama3.1-70B} \\
+    & O/S/D & O/S/D \\ \hline
+    LexGLUE & 5.7/3.4/2.1 & 1.8/2.7/2.2 \\
+    COLIEE & 0.4/0.3/0.2 & 3.4/1.8/2.1 \\
+    $\delta$-Stance & 0.0 & 0.0 \\
+    LegalBench & 0.4/0.2/0.2 & 0.2/0.1/0.2 \\
+    SuperGPQA & 0.0 & 1.4/0.0/0.2 \\ \hline
+%    Parentheticals & 0.0 & 0.0 \\ \hline
+  \end{tabular}
+  \caption{\label{table:if}
+    IF error rates (0$\sim$100). We report the average of all tasks for each benchmark. O, S and D represent the OOB, SFT and DPO models respectively; a single number indicates the same rate for all models.
+  }
+\end{table}
+
+We did not employ complex post-processings: We lowercased model outputs, removed punctuations, and performed exact string matching against the groundtruth. Due to our relatively strict metric calculation, compared to other benchmarks, we do observe higher error rates on LexGLUE (mainly classification tasks), where we require the predictions of a test sample to be a subset of the available labels for the corresponding task. For instance, for EUR-LEX (multi-label classification of EU legislative documents), Qwen3-30B OOB predicated \textit{risk management} while only \textit{management} is a valid label. We do not give partial credit in such scenarios.
+
+%\begin{table}[t]
+%  \centering
+%  \begin{tabular}{lcc}
+%    \hline
+%    \multirow{2}{*}{\textbf{Dataset}} & \textbf{Qwen3} & \textbf{Llama} \\
+%    & O/S/D & O/S/D \\ \hline
+%    LexGLUE & 94.5/96.7/97.9 & 98.3/97.3/97.8 \\
+%    COLIEE & 99.7/99.7/99.7 & 96.8/98.2/97.8 \\
+%    LegalBench & 99.7/99.8/99.8 & 99.8/99.9/99.8 \\
+%    SuperGPQA & 100/100/100 & 98.6/100/99.9 \\
+%    Parenth. & 100/100/100 & 100/100/100 \\ \hline
+%  \end{tabular}
+%  \caption{\label{table:if}
+%    Instruction Following Performance. We report the average of all tasks for each dataset. \textit{Qwen3} and \textit{Llama} stand for \textit{Qwen3-30B-A3B-Instruct-2507} and \textit{Llama-3.1-70B-Instruct} respectively; \textit{O}, \textit{S} and \textit{D} represent the \textit{OOB}, \textit{SFT} and \textit{DPO} models respectively. \textit{Parenth.} denotes the \textit{Parentheticals} dataset.
+%  }
+%\end{table}

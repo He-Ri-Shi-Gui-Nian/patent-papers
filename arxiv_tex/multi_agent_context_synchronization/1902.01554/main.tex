@@ -1,0 +1,1023 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2019_conference,times}
+
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{comment}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{wrapfig}
+\usepackage{paralist}
+\usepackage{subfig}
+\usepackage{comment}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+
+\newcommand{\note}[1]{{\it \color{red} [#1]}}
+\newcommand{\doing}[1]{{\color{blue} #1}}
+
+\newcommand{\sched}{SchedNet}
+\newcommand{\myparagraph}[1]{\vspace{-0.25cm} \paragraph{#1}}
+
+
+\title{Learning to Schedule Communication \\ in Multi-agent Reinforcement Learning}
+
+
+\author{Daewoo Kim, Sangwoo Moon, David Hostallero, Wan Ju Kang, Taeyoung Lee, \\ {\bf Kyunghwan Son \& Yung Yi} \\
+School of Electrical Engineering, KAIST\\
+Daejeon, South Korea\\
+\texttt{\small \{dwkim, swmoon, ddhostallero, wjkang, taeyoung.lee, khson\}@lanada.kaist.}\\ \texttt{\small ac.kr, yiyung@kaist.edu} \\
+}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+\input{mymath}
+\maketitle
+
+%\input{abstract}
+\begin{abstract}
+  Many real-world reinforcement learning tasks require multiple agents
+  to make sequential decisions under the agents' interaction, where
+  well-coordinated actions among the agents are crucial to achieve the
+  target goal better at these tasks. One way to accelerate the
+  coordination effect is to enable multiple agents to communicate with
+  each other in a distributed manner and behave as a group.
+  In this paper, we study a practical scenario when {\em (i)} the
+  communication bandwidth is limited and {\em (ii)} the agents share the
+  communication medium so that only a restricted number of agents are
+  able to simultaneously use the medium, as in the state-of-the-art wireless networking standards.  
+  This calls for a certain
+  form of {\em communication scheduling.}  In that regard, we propose a
+  multi-agent deep reinforcement learning framework, called {\sched},
+  in which agents learn how to schedule themselves, how to encode the
+  messages, and how to select actions based on received
+  messages. {\sched} is capable of deciding which agents should be
+  entitled to broadcasting their (encoded) messages, by learning the
+  importance of each agent's partially observed information.  We
+  evaluate {\sched} against multiple baselines under two different
+  applications, namely, cooperative communication and navigation, and
+  predator-prey. Our experiments show a non-negligible performance gap
+  between {\sched} and other mechanisms such as the ones without
+  communication and with vanilla scheduling methods, {\em e.g.}, round
+  robin, ranging from 32\% to 43\%.
+\end{abstract}
+
+% \input{intro}
+\section{Introduction}
+\label{sec:intro}
+Reinforcement Learning (RL) has garnered renewed interest in recent
+years.  Playing the game of Go \citep{dqn}, robotics control
+\citep{robot,ddpg}, and adaptive video streaming \citep{pensieve}
+constitute just a few of the vast range of RL applications. Combined
+with developments in deep learning, deep reinforcement learning (Deep
+RL) has emerged as an accelerator in related fields. From the
+well-known success in single-agent deep reinforcement learning, such
+as \citet{dqn}, we now witness growing interest in its multi-agent
+extension, the multi-agent reinforcement learning (MARL), exemplified
+in \citet{gupta2017cooperative,lowe2017multi,coma,omidshafiei2017deep,
+  dial, commnet, mordatch2017grounded,havrylov2017,lenient,bicnet,
+  lola, tampuu2017multiagent, leibo2017multi,foerster2017stabilising}.
+In the MARL problem commonly addressed in these works, multiple agents
+interact in a single environment repeatedly and improve their policy
+iteratively by learning from observations to achieve a common goal.
+Of particular interest is the distinction between two lines of
+research: one fostering the direct communication among agents
+themselves, as in \citet{dial,commnet} and the other coordinating their
+cooperative behavior without direct communication, as in
+\citet{foerster2017stabilising,lenient,leibo2017multi}.
+
+In this work, we concern ourselves with the former. We consider MARL
+scenarios wherein the task at hand is of a cooperative nature and
+agents are situated in a partially observable environment, but each
+endowed with different observation power.  We formulate this scenario
+into a multi-agent sequential decision-making problem, such that all
+agents share the goal of maximizing the same discounted sum of
+rewards. For the agents to directly communicate with each other and
+behave as a coordinated group rather than merely coexisting
+individuals, they must carefully determine the information they
+exchange under a practical bandwidth-limited environment and/or in the case
+of high-communication cost. To coordinate this exchange of messages,
+we adopt the centralized training and distributed execution paradigm
+popularized in recent works, {\em e.g.}, \citet{coma, lowe2017multi, vdn,
+  qmix, gupta2017cooperative}.
+
+In addition to bandwidth-related constraints, we take the issues of
+sharing the communication medium into consideration, especially when
+agents communicate over wireless channels. The state-of-the-art standards on wireless communication such as Wi-Fi and LTE specify the way of scheduling users as one of the basic functions. However, as elaborated in
+Related work, MARL problems involving scheduling of only a restricted set
+of agents have not yet been extensively studied. The key challenges in
+this problem are: {\em (i)} that limited bandwidth implies that agents must
+exchange succinct information: something concise and yet meaningful
+and {\em (ii)} that the shared medium means that potential contenders must
+be appropriately arbitrated for proper collision avoidance,
+necessitating a certain form of communication scheduling, popularly 
+referred to as MAC (Medium Access Control) in the area of wireless
+communication.  While stressing the coupled nature of the
+encoding/decoding and the scheduling issue, we zero in on the said
+communication channel-based concerns and construct our neural network
+accordingly.
+
+\myparagraph{Contributions} In this paper, we propose a new deep
+multi-agent reinforcement learning architecture, called {\sched}, with
+the rationale of centralized training and distributed execution in
+order to achieve a common goal better via decentralized cooperation.
+During distributed execution, agents are allowed to communicate over
+wireless channels where messages are broadcast to all agents in each
+agent's communication range. This broadcasting feature of wireless
+communication necessitates a Medium Access Control (MAC) protocol to
+arbitrate contending communicators in a shared medium. CSMA (Collision
+Sense Multiple Access)  in Wi-Fi is one such
+MAC protocol. While prior work on MARL to date considers only the
+limited bandwidth constraint, we additionally address the shared
+medium contention issue in what we believe is the first work of its
+kind: which nodes are granted access to the shared medium.
+Intuitively, nodes with more important observations should be chosen,
+for which we adopt a simple yet powerful mechanism called weight-based
+scheduler (WSA), designed to reconcile simplicity in training with
+integrity of reflecting real-world MAC protocols in use ({\em e.g.},
+802.11 Wi-Fi).  We evaluate {\sched} for two applications: cooperative
+communication and navigation and predator/prey and demonstrate that
+{\sched} outperforms other baseline mechanisms such as the one without
+any communication or with a simple scheduling mechanism such as round
+robin.  We comment that {\sched} is not intended for competing with
+other algorithms for cooperative multi-agent tasks without considering
+scheduling, but a complementary one. We believe that adding our idea
+of agent scheduling makes those algorithms much more practical and
+valuable.
+
+
+\myparagraph{Related work} We now discuss the body of relevant
+literature. \citet{busoniu2008} and \citet{iql} have studied MARL with
+decentralized execution extensively. However, these are based on
+tabular methods so that they are restricted to simple environments.
+Combined with developments in deep learning, deep MARL algorithms have
+emerged \citep{tampuu2017multiagent, coma, lowe2017multi}.
+\citet{tampuu2017multiagent} uses a combination of DQN with
+independent Q-learning. This independent learning does not perform
+well because each agent considers the others as a part of environment
+and ignores them. \citet{coma, lowe2017multi, gupta2017cooperative,
+  vdn}, and \citet{foerster2017stabilising} adopt the framework of centralized training with
+decentralized execution, empowering the agent to learn cooperative
+behavior considering other agents' policies without any communication
+in distributed execution.
+
+It is widely accepted that communication can further enhance the
+collective intelligence of learning agents in their attempt to
+complete cooperative tasks. To this end, a number of papers have
+previously studied the learning of communication protocols and
+languages to use among multiple agents in reinforcement learning. We
+explore those bearing the closest resemblance to our research.
+\citet{dial,commnet,bicnet, guestrin2002}, and \citet{zhang2013} train multiple
+agents to learn a communication protocol, and have shown that
+communicating agents achieve better rewards at various tasks.  \citet
+{mordatch2017grounded} and \citet{havrylov2017} investigate the possibility of the
+artificial emergence of language. Coordinated RL by
+\citet{guestrin2002} is an earlier work demonstrating the feasibility
+of structured communication and the agents' selection of jointly
+optimal action.
+
+Only DIAL \citep{dial} and \citet{zhang2013} explicitly address
+bandwidth-related concerns. In DIAL, the communication channel of the
+training environment has a limited bandwidth, such that the agents
+being trained are urged to establish more resource-efficient
+communication protocols. The environment in \citet{zhang2013} also has
+a limited-bandwidth channel in effect, due to the large amount of
+exchanged information in running a distributed constraint optimization
+algorithm. Recently, \citet{attentional_comm} proposes an attentional communication model
+that allows some agents who request additional information from others to
+gather observation from neighboring agents. However, they
+do not explicitly consider the constraints imposed by limited communication bandwidth and/or scheduling due to communication over a shared medium.
+
+To the best of our knowledge, there is no prior work that incorporates an
+intelligent scheduling entity in order to facilitate inter-agent
+communication in both a limited-bandwidth and shared medium access
+scenarios. As outlined in the introduction, intelligent scheduling
+among learning agents is pivotal in the orchestration of their
+communication to better utilize the limited available
+bandwidth as well as in the arbitration of agents contending 
+for shared medium access.
+
+
+% \input{background}
+\section{Background}
+\label{sec:background}
+
+\paragraph{Reinforcement Learning}
+We consider a standard RL formulation based on Markov Decision
+Process (MDP). An MDP is a tuple $<\cS, \cA, r, P, \gamma>$ where
+$\cS$ and $\cA$ are the sets of states and actions, respectively, and
+$\gamma \in [0, 1]$ is the discount factor. A transition probability
+function $P : \cS \times \cA \rightarrow \cS$ maps states and actions
+to a probability distribution over next states, and
+$r : \cS\times\cA\rightarrow \real$ denotes the reward. The goal of RL
+is to learn a policy $\pi: \cS \rightarrow \cA$ that solves the MDP by
+maximizing the expected discounted return
+$R_t =\expect{\sum_{k=0}^{\infty} \gamma^{k}r_{t+k}|\pi}$.  The policy
+induces a value function $V^\pi(s)=\mathbb{E}_\pi[R_t|s_t=s]$, and an
+action value function $Q^\pi(s,a)=\mathbb{E}_\pi[R_t|s_t=s,a_t=a]$.
+
+\myparagraph{Actor-critic Method}
+The main idea of the policy gradient method is to optimize the policy,
+parametrized by $\theta^\pi$, in order to maximize the objective
+$J(\theta) = \mathbb{E}_{s\sim p^\pi,a\sim \pi_\theta}[R]$ by directly
+adjusting the parameters in the direction of the gradient. By the policy
+gradient theorem \cite{sutton2000policy}, the gradient of the objective is:
+\begin{align}
+  \label{eq:pg}
+\grad_\theta J(\pi_\theta) = \mathbb{E}_{s\sim \rho^\pi,a\sim \pi_\theta}[\grad_\theta \log \pi_\theta(a|s)Q^\pi(s, a)],
+\end{align}
+where $\rho^\pi$ is the state distribution.  Our baseline algorithmic framework is the {\em actor-critic} approach \cite{konda2003}. In this approach, an {\em actor} adjusts the parameters $\theta$ of the policy $\pi_\theta(s)$ by gradient ascent. Instead of the unknown true
+action-value function $Q^\pi(s,a)$, its approximated version 
+$Q^w(s,a)$ is used with parameter $w$. A {\em critic}
+estimates the action-value function $Q^w(s,a)$ using an appropriate
+policy evaluation algorithm such as temporal-difference learning \cite{tesauro1995temporal}. To reduce the variance of the gradient updates, some baseline function $b(s)$ is often subtracted from the action value, thereby resulting in $Q^\pi(s,a) - b(s)$ \cite{sutton1998}. A popular choice for this baseline function is the state value $V(s)$, which indicates the inherent ``goodness" of the state. This difference between the action value and the state value is often dubbed as the advantage $A(s,a)$ whose TD-error-based substitute $\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)$ is an unbiased estimate of the advantage as in \cite{mnih2016a3c}. The actor-critic algorithm can also be applied to
+a deterministic policy $\mu_\theta : \cS \rightarrow \cA$. By the deterministic policy gradient theorem \cite{dpg}, we update
+the parameters as follows: 
+\begin{align}
+\label{eq:dpg}
+  \grad_\theta J(\mu_\theta) = \mathbb{E}_{s\sim
+  \rho^\mu}[\grad_\theta \mu_\theta(s)\grad_aQ^\mu(s,
+  a)|_{a=\mu_\theta (s)}].
+\end{align}
+
+\myparagraph{MARL: Centralized Critic and Distributed Actor (CCDA)}
+
+We formalize MARL using DEC-POMDP \citep{oliehoek2016concise},
+which is a generalization of MDP to allow a distributed control by
+multiple agents who may be incapable of observing the global state. A
+DEC-POMDP is described by a tuple
+$<\cS, \cA, r, P, \Omega, \cO, \gamma>$. We use bold-face fonts in some notations to highlight the context of multi-agents. Each agent
+$i \in \set{N} $ chooses an action $a_i \in \cA,$ forming a joint action vector $\bm{a} = [a_i] \in \cA^n$  and has partial observations $o_i \in \Omega$ according to some
+observation function
+$\cO(\bm{s},i) : \cS \times \set{N} \mapsto \Omega.$ 
+$P(\bm{s'}|\bm{s},\bm{a}): \cS \times \cA^n \mapsto [0,1]$ is the transition probability function. All agents share the same reward $r(\bm{s},\bm{u}): \cS \times \cA^n \mapsto \real.$
+Each agent $i$
+takes action $a_i$ based on its own policy $\pi^i(a_i|o_i)$.
+As mentioned in Section~\ref{sec:intro}, our particular focus is on 
+the centralized training and distributed
+execution paradigm, where the actor-critic approach is a good fit to such a paradigm. Since the agents should execute in a distributed setting, 
+each agent, say $i$, maintains its own actor that selects $i$'s action based only on what is partially observed by $i.$
+The critic is naturally responsible for centralized training, and thus works in a centralized manner. Thus, the critic is allowed to have the global state
+${\bm s}$ as its input, which includes all agents' observations and extra
+information from the environment. The role of the critic is to ``criticize''
+individual agent's actions. 
+This centralized nature of the critic helps in 
+providing more accurate feedback to the individual actors with
+limited observation horizon.
+In this case, each agent's policy, $\pi^i$, is updated by a variant of 
+(\ref{eq:pg}) as:
+\begin{align}
+  \label{eq:mapg}
+\grad_{\theta} J(\pi^i_{\theta}) = 
+ \mathbb{E}_{\bm{s}\sim \rho^\pi,\bm{a}\sim
+   \pi_{\theta}}[\grad_{\theta} \log \pi^i_\theta(a_i|o_i)(r+\gamma V(\bm{s}_{t+1})-V(\bm{s}_t))].
+\end{align}
+
+
+% \input{method}
+\section{Method}
+
+\subsection{Communication Environment and Problem}
+\label{sec:comm-env}
+
+In practical scenarios where agents are typically separated but are
+able to communicate over a shared medium, {\em e.g.}, a frequency channel in wireless communications, two important constraints are
+imposed: bandwidth and contention for medium access \citep{wcp}. The
+bandwidth constraint entails a limited amount of bits per unit time,
+and the contention constraint involves having to avoid collision among
+multiple transmissions due to the natural aspect of signal
+broadcasting in wireless communication. Thus, only a restricted number
+of agents are allowed to transmit their messages each time step for a reliable
+message transfer. In this paper, we use a simple model to incorporate
+that the aggregate information size per time step is limited by
+$L_{\text{band}}$ bits and that only $K_{\text{sched}}$ out of $n$ agents
+may broadcast their messages.
+
+\myparagraph{Weight-based Scheduling} Noting that distributed
+execution of agents is of significant importance, there may exist a
+variety of scheduling mechanisms to schedule $K_{\text{sched}}$ agents
+in a distributed manner. In this paper, we adopt a simple algorithm
+that is weight-based, which we call WSA (Weight-based Scheduling
+Algorithm). Once each agent decides its own weight, the
+agents are scheduled based on their weights following a class of the
+pre-defined rules.  We consider the following two specific ones among many
+different proposals due to simplicity, but more importantly,
+good approximation of wireless scheduling protocols in practice. 
+\begin{compactitem}[$\circ$]
+\item {\em Top($k$).} Selecting top $k$ agents in terms of their
+  weight values.
+\item {\em Softmax($k$).} Computing softmax values
+  $\sigma_i({\bm w}) = \frac{e^{w_i}}{\sum_{j=1}^{n}e^{w_j}}$ for each
+  agent $i,$ and then randomly selecting $k$ agents acoording to the probability distribution $[\sigma_i({\bm w})]_{i=1}^n.$
+\end{compactitem}
+
+Since distributed execution is one of our major operational
+constraints in {\sched} or other CTDE-based MARL algorithms, Top($k$)
+and Softmax($k$) should be realizable via a weight-based mechanism in
+a distributed manner. In fact, this has been an active research topic
+to date in wireless networking, where many algorithms exist
+\citep{tassiulas1992stability, yy_scheduling,jiang2010distributed}.
+Due to space limitation, we present how to obtain distributed versions
+of those two rules based on weights in our supplementary material. To
+summarize, using so-called CSMA (Carrier Sense Multiple Access) \citep{kurose2005computer},
+which is a fully distributed MAC scheduler and forms a basis of Wi-Fi,
+given agents' weight values, it is possible to implement Top($k$) and
+Softmax($k$).
+
+
+Our goal is to train agents so that every time each agent takes an action, only $K_{\text{sched}}$ agents can broadcast their messages with limited
+size $L_{\text{band}}$ with the goal of receiving the highest cumulative reward via cooperation. Each agent should determine a policy described by its scheduling weights, encoded communication messages, and actions.  
+
+\begin{wrapfigure}{R}{0.55\textwidth}
+  \centering
+  \includegraphics[width=0.53\columnwidth]{fig5}
+  \vspace{-0.1cm}
+\caption{\small Architecture of {\sched} with three agents. Agents 1 and 3 have been scheduled for this time step.}
+  \label{fig:arch}
+\vspace{-1.0cm}
+\end{wrapfigure}
+
+\subsection{Architecture}
+\label{sec:architecture}
+
+To this end, we propose a new deep MARL framework with scheduled communications, 
+called {\sched}, whose overall architecture is depicted in 
+Figure~\ref{fig:arch}. {\sched} consists of the following three components: 
+{\em (i)} actor network, {\em (ii)} scheduler, and
+{\em (iii)} critic network.
+This section is devoted to presenting the architecture only, whose details are presented in the subsequent sections. 
+
+
+\myparagraph{Neural networks} 
+The actor network is the collection of $n$ per-agent individual actor networks, where each agent $i$'s individual actor network consists of a triple of the following networks: a \linebreak
+
+message encoder, an action selector, and a weight generator, as specified by: 
+\begin{align*}
+&\text{\bf message encoder} \  f^i_{\text{enc}}: o_i \mapsto m_i, \cr \quad
+&\text{\bf action selector} \  f_{\text{as}}^i: (o_i, \vec{m} \otimes \vec{c}) \mapsto u_i, \cr
+&\text{\hspace{0cm}} \text{\bf weight generator} \  f_{\text{wg}}^i: o_i \mapsto w_i. 
+\end{align*}
+Here, $\vec{m} = [m_i]_n$\footnote{We use $[\cdot]_n$ to mean the $n$-dimensional vector, where $n$ is the number of agents.} is the vector of each $i$'s encoded message $m_i.$ An agent schedule vector $\vec{c} = [c_i]_n,$ $c_i \in \{0,1\}$ represents whether each agent is scheduled.
+Note that agent $i$'s encoded message
+$m_i$ is generated by a neural network $f^i_{\text{enc}}: o_i \mapsto m_i.$ The operator ``$\otimes$'' concatenates all the scheduled agents' messages. For example, 
+for $\vec{m} = [010,111,101]$ and $\vec{c} = [110],$ $\vec{m} \otimes \vec{c} = 010111.$ This concatenation with the schedule profile $\vec{c}$ means that 
+only those agents scheduled in $\vec{c}$ may broadcast their messages to all other agents. We denote by $\theta^i_{\text{as}}$, $\theta^i_{\text{wg}}$, and $\theta^i_{\text{enc}}$ the parameters of the action selector, the weight generator, and the encoder of agent $i$, respectively, where we let $\bm{\theta}_{\text{as}} = [\theta^i_{\text{as}}]_n$, and similarly define $\bm{\theta}_{\text{wg}}$ and $\bm{\theta}_{\text{enc}}$. 
+
+
+
+\myparagraph{Coupling: Actor and Scheduler} 
+Encoder, weight generator and the scheduler are the modules for handling the constraints of
+limited bandwidth and shared medium access. Their common goal is to
+learn the state-dependent ``importance'' of individual agent's
+observation, encoders for generating compressed messages and the scheduler for
+being used as a basis of an external scheduling mechanism based on the weights generated by per-agent weight generators. These three
+modules work together to smartly respond to time-varying states. The
+action selector is trained to decode the incoming message, and
+consequently, to take a good action for maximizing the reward. At
+every time step, the schedule profile ${\bm c}$ varies depending on
+the observation of each agent, so the incoming message $\vec{m}$ comes
+from a different combination of agents. Since the agents can be
+heterogeneous and they have their own encoder, the action selector
+must be able to make sense of incoming messages from different
+senders. However, the weight generator's policy changes, 
+the distribution of incoming messages also changes, which is in turn affected by the pre-defined WSA. Thus, the action
+selector should adjust to this changed scheduling. This also affects
+the encoder in turn. The updates of the encoder and the action
+selector trigger the update of the scheduler again. Hence, 
+weight generators, message encoders, and action selectors  
+are strongly coupled with dependence on a specific WSA, and we train those three networks at the
+same time with a common critic.
+
+
+\myparagraph{Scheduling logic} The schedule profile $\vec{c}$ is
+determined by the WSA module, which is mathematically a mapping from all
+agents' weights $\vec{w}$ (generated by $f^i_{\text{wg}}$) to
+$\vec{c}.$ Typical examples of these mappings are {\em Top($k$)} and
+{\em Softmax($k$)}, as mentioned above. The scheduler of each agent
+is trained appropriately depending on the employed WSA algorithm.
+
+
+% \input{action_select}
+\subsection{Training and Execution}
+\label{sec:act}
+
+
+\begin{wrapfigure}{R}{0.3\textwidth}
+\vspace{-0.4cm}
+  \centering
+  \includegraphics[width=0.3\columnwidth]{critic}
+\caption{\small Architecture of the critic. FC stands for fully connected
+  neural network.}
+  \label{fig:critic}
+\vspace{-0.6cm}
+\end{wrapfigure}
+
+In the centralized training with distributed execution, for a given
+WSA, we include all components and modules in Figure~\ref{fig:arch} to
+search for
+$\bm{\theta}_{\text{as}}$, $\bm{\theta}_{\text{wg}}$, and
+$\bm{\theta}_{\text{enc}}$, whereas in execution, each agent $i$ runs 
+a certain shared medium access mechanism, well-modeled by a weight-based scheduler, and just needs three agent-specific
+parameters $\theta^i_{\text{as}}$, $\theta^i_{\text{wg}}$, and
+$\theta^i_{\text{enc}}$.
+
+\subsubsection{Centralized Training}
+\label{sec:training}
+
+\paragraph{Centralized critic}
+The actor is trained by dividing it into two parts: {\em (i)} message encoders and action selectors, and {\em (ii)} weight generators. This partitioning is motivated by the fact that it is hard to update both parts with one backpropagation since WSA is not differentiable. 
+To update the actor, we use a centralized critic parametrized by
+$\theta_{\text{c}}$ to
+estimate the state value function $V_{{\theta}_{\text{c}}}(\bm{s})$ for
+the action selectors and message encoders, and the action-value function
+$Q_{{\theta}_{\text{c}}}^\pi(\bm{s},\bm{w})$ for the weight generators. 
+The critic is used only when training, and it can
+use the global state $\bm{s}$, which includes the observation of all agents.
+All networks in the actor are trained with gradient-based on temporal difference
+backups. To share common features between
+$V_{{\theta}_{\text{c}}}(\bm{s})$ and
+$Q_{{\theta}_{\text{c}}}^\pi(\bm{s},\bm{w})$ and perform
+efficient training, we use shared parameters in the lower layers of the
+neural network between the two functions, as shown in Figure \ref{fig:critic}.
+
+\myparagraph{Weight generators}
+We consider the collection of all agents' WGs as a single neural network $\mu_{\bm{\theta}_\text{wg}}(\bm{o})$ mapping from $\bm{o}$ to $\bm{w}$,
+parametrized by $\bm{\theta}_\text{wg}$. 
+Noting that $w_i$ is a continuous value, we apply 
+the DDPG algorithm \citep{ddpg}, where the entire policy gradient of the collection of WGs is given by:
+\begin{align*}
+\grad_{\bm{\theta}_{\text{wg}}} J( \bm{\theta}_{\text{wg}} , \cdot ) = \mathbb{E}_{\bm{w} \sim \mu_{\bm{\theta}_\text{wg}}} [
+\grad_{\bm{\theta}_{\text{wg}}} \mu_{\bm{\theta}_\text{wg}} ({\bm o}) \grad_{{\bm w}} Q_{{\theta}_{\text{c}}} ({\bm s}, {\bm w})
+|_{{\bm w} = \mu_{\bm{\theta}_\text{wg}} ({\bm o})}]. \nonumber
+\end{align*}
+We sample the policy gradient for sufficient amount of experience in
+the set of all scheduling profiles, {\em i.e.}, $\set{C} = \{\vec{c} \mid \sum_{c_i} \leq k \}$.
+The values of $Q_{{\theta}_{\text{c}}} ({\bm s}, {\bm w})$ are estimated by the
+centralized critic, where ${\bm s}$ is the global state corresponding to
+${\bm o}$ in a sample.
+
+\myparagraph{Message encoders and action selectors}
+The observation of each agent travels through the encoder and the
+action selector. We thus serialize $f^i_{\text{enc}}$ and $f^i_{\text{as}}$ together and
+merge the encoders and actions selectors of all agents into one aggregate network
+$\pi_{\bm{\theta}_{\text{u}}}({\bm u}|{\bm o},{\bm c})$, which is parametrized by $\bm{\theta}_{\text{u}}=\{\bm{\theta}_{\text{enc}},\bm{\theta}_{\text{as}}\}$. This
+aggregate network $\pi_{\bm{\theta}_{\text{u}}}$ learns via backpropagation of actor-critic
+policy gradients, described below. The gradient of this objective
+function, which is a variant of (\ref{eq:mapg}), is given by
+\begin{align}
+  \label{eq:a_gradient}
+  \grad_{\bm{\theta}_{\text{u}}} J(\cdot,\bm{\theta}_{\text{u}}) 
+  &= \mathbb{E}_{\bm{s}\sim \rho^\pi,\bm{u}\sim \pi_{\bm{\theta}_{\text{u}}}}[\grad_{\bm{\theta}_{\text{u}}} \log
+                                       \pi_{\bm{\theta}_{\text{u}}}({\bm u}|{\bm o}, {\bm c})[r + \gamma V_{{\theta}_{\text{c}}}({\bm s'}) - V_{{\theta}_{\text{c}}}({\bm s})]],
+\end{align}
+where ${\bm s}$ and ${\bm s'}$ are the global states corresponding to
+the observations at current and next time step. We can get the value
+of state $V_{{\theta}_{\text{c}}}({\bm s})$ from the centralized critic and then adjust the
+parameters $\bm{\theta}_{\text{u}}$ via gradient ascent accordingly.
+
+
+\subsubsection{Distributed Execution}
+\label{sec:execution}
+
+ In execution, each agent $i$ should be able to determine the
+  scheduling weight $w_i$, encoded message $m_i$, and action selection
+  $u_i$ in a distributed manner. This process must be based on its own observation, and the weights generated by 
+  its own action selector, message encoder, and weight
+  generator with the parameters $\theta^i_{\text{as}}$, $\theta^i_{\text{enc}}$,     and $\theta^i_{\text{wg}}$, respectively.
+  After each agent determines its scheduling
+  weight, $K_{\text{sched}}$ agents are scheduled by WSA, which leads the encoded
+  messages of scheduled agents to be broadcast to all agents. Finally, each agent
+  finally selects an action by using received messages. This process is
+  sequentially repeated under different observations over time.  
+
+
+% \input{experiment}
+\section{Experiment}
+\label{sec:exp}
+
+\paragraph{Environments} To evaluate \sched\footnote{The code is available on \texttt{https://github.com/rhoowd/sched\_net}}, we consider two different
+environments for demonstrative purposes: Predator and Prey (PP) which
+is used in \citet{stone2000multiagent}, and Cooperative Communication
+and Navigation (CCN) which is the simplified version of the one in
+\citet{lowe2017multi}. The detailed experimental environments are
+elaborated in the following subsections as well as in supplementary material.
+We take the communication environment into our consideration as
+follows. $k$ out of all agents can have the chance to broadcast
+the message whose bandwidth\footnote{The unit of bandwidth is 2 bytes
+  which can express one real value (float16 type)} is limited by $l$.
+
+
+\myparagraph{Tested algorithms and setup}
+We perform experiments in aforementioned environments. We compare \sched~with a variant of
+DIAL,\footnote{We train and execute DIAL without discretize/regularize
+  unit (DRU), because in our setting, agents can exchange messages that
+  can express real values.}~\citep{dial} which allows communication
+with limited bandwidth. During the execution of DIAL, the limited
+number ($k$) of agents are scheduled following a simple
+round robin scheduling algorithm, and the agent reuses the
+outdated messages of non-scheduled agents to make a decision on the action to take,
+which is called DIAL($k$). The other baselines are independent DQN
+(IDQN)~\citep{tampuu2017multiagent} and COMA~\citep{coma} in which no
+agent is allowed to communicate. To see the impact of scheduling in
+\sched, we compare \sched~with {\em (i)} RR (round robin), which is a
+canonical scheduling method in communication systems where all agents
+are sequentially scheduled, and {\em (ii)} FC (full communication), which is
+the ideal configuration, wherein all the agents can send their
+messages without any scheduling or bandwidth constraints. We also
+diversify the WSA in \sched~into: {\em (i)} Sched-Softmax(1) and {\em (ii)}
+Sched-Top(1) whose details are in Section~\ref{sec:comm-env}.
+We train our models until convergence, and then evaluate them by
+averaging metrics for 1,000 iterations. The shaded area in each plot
+denotes 95\% confidence intervals based on 6-10 runs with 
+different seeds. 
+
+
+\begin{figure}[t!]
+\captionsetup[subfigure]{justification=centering}
+  \begin{center}
+\hspace{-0.2cm}
+   \subfloat[\scriptsize PP: Comparison with other baselines. $k=1, l=2$] {\label{fig:p_pp}
+      \includegraphics[width=0.32\columnwidth]{1_compare_others} }
+      \hspace{-0.2cm}    
+    \subfloat[\scriptsize PP: Comparison with scheduling schemes. $l=2$]{\label{fig:pp_schedule}
+      \includegraphics[width=0.32\columnwidth]{2_schedule} }
+    \hspace{-0.2cm} 
+    \subfloat[\scriptsize CCN:  Comparison with scheduling schemes. $k=1, l=1$]
+    {\label{fig:ccn_p}
+     \includegraphics[width=0.32\columnwidth]{1_1_ccn_performance} }
+\end{center}
+\vspace{-0.4cm}
+\caption{\small Learning curves during the learning of the PP and CCN tasks. The plots
+  show the average time taken to complete the task, where shorter time
+  is better for the agents.}
+\label{fig:result}
+\vspace{-0.4cm}
+\end{figure}
+
+
+
+\subsection{Predator and Prey}
+\label{sec:pp}
+
+In this task, there are multiple agents who must capture a randomly
+moving prey. Agents' observations include position of themselves and
+the relative positions of prey, if observed. We employ four
+agents, and they have different observation horizons, where only agent 1
+has a $5 \times 5$ view while agents 2, 3, and 4 have a smaller,
+$3 \times 3$ view. The predators are rewarded when they capture the
+prey, and thus the performance metric is the number of time steps
+taken to capture the prey.
+
+\myparagraph{Result in PP} Figure \ref{fig:p_pp} illustrates the
+learning curve of 750,000 steps in PP. In FC, since the agents can use
+full state information even during execution, they achieve the best
+performance.  \sched~outperforms IDQN and COMA in which
+communication is not allowed. It is observed that agents first find the prey, and then follow it until all other agents also eventually observe the prey. An
+agent successfully learns to follow the prey after it observes the prey
+but that it takes a long time to meet the prey for the first time. If the
+agent broadcasts a message that includes the location information of the
+prey, then other agents can find the prey more quickly. Thus, it is
+natural that \sched~and DIAL perform better than IDQN or COMA, because
+they are trained to work with communication. However, DIAL is not
+trained for working under medium contention constraints. Although DIAL works
+well when there is no contention constraints, under the condition
+where only one agent is scheduled to broadcast the message by a simple
+scheduling algorithm ({\em i.e.}, RR),
+the average number of steps to capture the prey in DIAL(1) is larger
+than that of \sched -Top(1), because the outdated messages of
+non-scheduled agents is noisy for the agents to decide on
+actions. Thus, we should consider the scheduling from when we train
+the agents to make them work in a demanding environment.
+
+
+\begin{wrapfigure}{R}{0.36\textwidth}
+  \vspace{-0.5cm}
+  \includegraphics[width=0.35\columnwidth]{3_2_sched_pp}
+  \vspace{-0.3cm} \captionof{figure}{\small Instances of scheduling results over 25 time steps in  PP}
+  \label{fig:sched}
+  \vspace{0.3cm}                
+  \includegraphics[width=0.33\columnwidth]{4_msgs}
+  \vspace{-0.4cm} \captionof{figure}{\small Encoded messages projected onto 2D plane in PP task}
+  \label{fig:msg}
+  \vspace{-0.9cm}
+\end{wrapfigure}
+
+
+
+\myparagraph{Impact of intelligent scheduling} In Figure
+\ref{fig:pp_schedule}, we observe that IDQN, RR, and \sched
+-Softmax(1) lie more or less on a comparable performance tier, with
+\sched -Softmax(1) as the best in the tier.  \sched -Top(1)
+demonstrates a non-negligible gap better than the said tier, implying
+that a deterministic selection improves the agents' collective rewards
+the best. In particular, \sched -Top(1) improves the performance by
+43\% compared to RR. Figure \ref{fig:pp_schedule} lets us infer that,
+while all the agents are trained under the same conditions except for
+the scheduler, the difference in the scheduler is the sole determining
+factor for the variation in the performance levels. Thus, ablating away
+the benefit from smart encoding, the intelligent scheduling element in
+\sched~can be accredited with the better performance.
+
+
+\myparagraph{Weight-based Scheduling}
+We attempt to explain the internal behavior of \sched~by investigating
+instances of temporal scheduling profiles obtained during the
+execution.  We observe that \sched~has learned to schedule those agents
+with a farther observation horizon, realizing the rationale of
+importance-based assignment of scheduling priority also for the PP
+scenario. Recall that Agent 1 has a wider view and thus tends to
+obtain valuable observation more frequently. In
+Figure~\ref{fig:sched}, we see that scheduling chances are distributed
+over (14, 3, 4, 4) where corresponding average 
+weights are (0.74,
+0.27, 0.26, 0.26), implying that those with greater observation power
+tend to be scheduled more often.
+
+\myparagraph{Message encoding} 
+
+
+
+We now attempt to understand what the predator agents communicate when
+performing the task. Figure~\ref{fig:msg} shows the projections of the
+messages onto a 2D plane, which is generated by the scheduled agent
+under \sched -Top(1) with $l=2$. When the agent does not observe the
+prey (blue circle in Figure), most of the messages reside in the
+bottom or the left partition of the plot. On the other hand, the
+messages have large variance when it observes the prey (red `x'). This
+is because the agent should transfer more informative messages that
+implicitly include the location of the prey, when it observes the
+prey. Further analysis of the messages is presented in our
+supplementary material.
+
+\subsection{Cooperative communication and navigation}
+In this task, each agent's goal is to arrive at a pre-specified
+destination on its one-dimensional world, and they collect a joint
+reward when both agents reach their respective destination. Each agent has a zero
+observation horizon around itself, but it can observe the situation of
+the other agent. We introduce heterogeneity into the scenario, where
+the agent-destination distance at the beginning of the task differs
+across agents. The metric used to gauge the performance is the number
+of time steps taken to complete the CCN task.
+
+
+
+\myparagraph{Result in CCN} We examine the CCN environment whose results
+are shown in Figure \ref{fig:ccn_p}.  \sched~and other baselines were
+trained for 200,000 steps. As expected, IDQN takes the longest time,
+and FC takes the shortest time. RR exhibits mediocre performance,
+better than IDQN, because agents at least take turns in obtaining the
+communication opportunity. Of particular interest is \sched,
+outperforming both IDQN and RR with a non-negligible gap. We remark
+that the deterministic selection with \sched -Top(1) slightly beats
+the probabilistic counterpart, \sched -Softmax(1). The 32\% improved
+gap between RR and \sched~clearly portrays the effects of intelligent
+scheduling, as the carefully learned scheduling method of \sched~was
+shown to complete the CCN task faster than the simplistic RR.
+
+
+\begin{wrapfigure}{R}{0.35\textwidth}
+  \includegraphics[width=0.35\columnwidth]{3_1_sched_ccn}
+  \vspace{-0.1cm} \captionof{figure}{\small Instances of scheduling results
+    over 25 time steps in  CCN}
+  \label{fig:sched_ccn}
+\end{wrapfigure}
+
+\myparagraph{Scheduling in CCN}
+As Agent 2 is farther from its destination than Agent 1, we observe
+that Agent 1 is scheduled more frequently to drive Agent 2 to its
+destination (7 vs. 18), as shown in Figure~\ref{fig:sched_ccn}. This
+evidences that \sched~flexibly adapts to heterogeneity of agents via
+scheduling. Towards more efficient completion of the task, a rationale
+of {\em more scheduling for more important agents} should be
+implemented.
+This is in accordance with the results obtained from PP environments:
+more important agents are scheduled more.
+
+
+
+% \input{discussion}
+\section{Conclusion}
+\label{sec:discussion}
+
+We have proposed \sched~for learning to schedule inter-agent communications
+in fully-cooperative multi-agent tasks. In \sched, we have the centralized critic
+giving feedback to the actor, which consists of message encoders, action selectors, and weight generators of each individual agent. The message encoders and action selectors are criticized
+towards compressing observations more efficiently and selecting actions
+that are more rewarding in view of the cooperative task at hand. Meanwhile,
+the weight generators are criticized such that $k$ agents with apparently more valuable observation are allowed to access the shared medium and broadcast their messages to all other agents. Empirical results and an accompanying ablation study indicate that the learnt encoding and scheduling behavior each significantly improve the agents' performance. We have observed that an
+intelligent, distributed  communication scheduling can aid in a more efficient, coordinated,
+and rewarding behavior of learning agents in the MARL setting. 
+
+
+
+% \bibliography{ref}
+% \bibliographystyle{iclr2019_conference}
+\begin{thebibliography}{42}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Bourlard \& Kamp(1988)Bourlard and Kamp]{bourlard1988auto}
+Herv{\'e} Bourlard and Yves Kamp.
+\newblock Auto-association by multilayer perceptrons and singular value
+  decomposition.
+\newblock \emph{Biological cybernetics}, 59\penalty0 (4-5):\penalty0 291--294,
+  1988.
+
+\bibitem[Busoniu et~al.(2008)Busoniu, Babuska, and De~Schutter]{busoniu2008}
+Lucian Busoniu, Robert Babuska, and Bart De~Schutter.
+\newblock A comprehensive survey of multiagent reinforcement learning.
+\newblock \emph{IEEE Transactions on Systems, Man, And Cybernetics}, 2008.
+
+\bibitem[Dunkels et~al.(2004)Dunkels, Gronvall, and Voigt]{contiki}
+Adam Dunkels, Bjorn Gronvall, and Thiemo Voigt.
+\newblock Contiki-a lightweight and flexible operating system for tiny
+  networked sensors.
+\newblock In \emph{Proceedings of Local Computer Networks (LCN)}, 2004.
+
+\bibitem[Foerster et~al.(2016)Foerster, Assael, de~Freitas, and Whiteson]{dial}
+Jakob Foerster, Ioannis~Alexandros Assael, Nando de~Freitas, and Shimon
+  Whiteson.
+\newblock Learning to communicate with deep multi-agent reinforcement learning.
+\newblock In \emph{Proceedings of Advances in Neural Information Processing
+  Systems}, pp.\  2137--2145, 2016.
+
+\bibitem[Foerster et~al.(2017{\natexlab{a}})Foerster, Farquhar, Afouras,
+  Nardelli, and Whiteson]{coma}
+Jakob Foerster, Gregory Farquhar, Triantafyllos Afouras, Nantas Nardelli, and
+  Shimon Whiteson.
+\newblock Counterfactual multi-agent policy gradients.
+\newblock \emph{arXiv preprint arXiv:1705.08926}, 2017{\natexlab{a}}.
+
+\bibitem[Foerster et~al.(2017{\natexlab{b}})Foerster, Nardelli, Farquhar, Torr,
+  Kohli, Whiteson, et~al.]{foerster2017stabilising}
+Jakob Foerster, Nantas Nardelli, Gregory Farquhar, Philip Torr, Pushmeet Kohli,
+  Shimon Whiteson, et~al.
+\newblock Stabilising experience replay for deep multi-agent reinforcement
+  learning.
+\newblock \emph{arXiv preprint arXiv:1702.08887}, 2017{\natexlab{b}}.
+
+\bibitem[Foerster et~al.(2017{\natexlab{c}})Foerster, Chen, Al{-}Shedivat,
+  Whiteson, Abbeel, and Mordatch]{lola}
+Jakob~N. Foerster, Richard~Y. Chen, Maruan Al{-}Shedivat, Shimon Whiteson,
+  Pieter Abbeel, and Igor Mordatch.
+\newblock Learning with opponent-learning awareness.
+\newblock \emph{arxiv preprint arXiv:1709.04326}, 2017{\natexlab{c}}.
+
+\bibitem[Gu et~al.(2017)Gu, Holly, Lillicrap, and Levine]{robot}
+Shixiang Gu, Ethan Holly, Timothy Lillicrap, and Sergey Levine.
+\newblock Deep reinforcement learning for robotic manipulation with
+  asynchronous off-policy updates.
+\newblock In \emph{Proceedings of IEEE International Conference on Robotics and
+  Automation (ICRA)}. IEEE, 2017.
+
+\bibitem[Guestrin et~al.(2002)Guestrin, Lagoudakis, and Parr]{guestrin2002}
+Carlos Guestrin, Michail Lagoudakis, and R~Parr.
+\newblock {Coordinated reinforcement learning}.
+\newblock In \emph{Proceedings of International Conference on Machine
+  Learning}, 2002.
+
+\bibitem[Gupta et~al.(2017)Gupta, Egorov, and
+  Kochenderfer]{gupta2017cooperative}
+Jayesh~K Gupta, Maxim Egorov, and Mykel Kochenderfer.
+\newblock Cooperative multi-agent control using deep reinforcement learning.
+\newblock In \emph{Proceedings of International Conference on Autonomous Agents
+  and Multiagent Systems}, 2017.
+
+\bibitem[Havrylov \& Titov(2017)Havrylov and Titov]{havrylov2017}
+Serhii Havrylov and Ivan Titov.
+\newblock Emergence of language with multi-agent games: learning to communicate
+  with sequences of symbols.
+\newblock In \emph{Proceedings of Advances in Neural Information Processing
+  Systems}, pp.\  2146--2156, 2017.
+
+\bibitem[Hinton \& Zemel(1994)Hinton and Zemel]{hinton1994autoencoders}
+Geoffrey~E Hinton and Richard~S Zemel.
+\newblock Autoencoders, minimum description length and helmholtz free energy.
+\newblock In \emph{Proceedings of Advances in Neural Information Processing
+  Systems}, pp.\  3--10, 1994.
+
+\bibitem[Jang et~al.(2014)Jang, Yun, Shin, and Yi]{jang}
+Hyeryung Jang, Se-Young Yun, Jinwoo Shin, and Yung Yi.
+\newblock Distributed learning for utility maximization over csma-based
+  wireless multihop networks.
+\newblock In \emph{Proceedings of IEEE INFOCOM}, 2014.
+
+\bibitem[Jiang \& Lu(2018)Jiang and Lu]{attentional_comm}
+Jiechuan Jiang and Zongqing Lu.
+\newblock Learning attentional communication for multi-agent cooperation.
+\newblock \emph{arXiv preprint arXiv:1805.07733}, 2018.
+
+\bibitem[Jiang \& Walrand(2010)Jiang and Walrand]{jiang2010distributed}
+Libin Jiang and Jean Walrand.
+\newblock A distributed csma algorithm for throughput and utility maximization
+  in wireless networks.
+\newblock \emph{IEEE/ACM Transactions on Networking (ToN)}, 18\penalty0
+  (3):\penalty0 960--972, 2010.
+
+\bibitem[Konda \& Tsitsiklis(2003)Konda and Tsitsiklis]{konda2003}
+Vijay~R Konda and John~N Tsitsiklis.
+\newblock Actor-critic algorithms.
+\newblock \emph{Control Optimization}, 42\penalty0 (4):\penalty0 1143--1166,
+  2003.
+
+\bibitem[Kurose(2005)]{kurose2005computer}
+James~F Kurose.
+\newblock \emph{Computer networking: A top-down approach featuring the
+  internet}.
+\newblock Pearson Education India, 2005.
+
+\bibitem[Leibo et~al.(2017)Leibo, Zambaldi, Lanctot, Marecki, and
+  Graepel]{leibo2017multi}
+Joel~Z Leibo, Vinicius Zambaldi, Marc Lanctot, Janusz Marecki, and Thore
+  Graepel.
+\newblock Multi-agent reinforcement learning in sequential social dilemmas.
+\newblock In \emph{Proceedings of International Conference on Autonomous Agents
+  and MultiAgent Systems}, pp.\  464--473, 2017.
+
+\bibitem[Lillicrap et~al.(2015)Lillicrap, Hunt, Pritzel, Heess, Erez, Tassa,
+  Silver, and Wierstra]{ddpg}
+Timothy~P Lillicrap, Jonathan~J Hunt, Alexander Pritzel, Nicolas Heess, Tom
+  Erez, Yuval Tassa, David Silver, and Daan Wierstra.
+\newblock Continuous control with deep reinforcement learning.
+\newblock \emph{arXiv preprint arXiv:1509.02971}, 2015.
+
+\bibitem[Lowe et~al.(2017)Lowe, Wu, Tamar, Harb, Abbeel, and
+  Mordatch]{lowe2017multi}
+Ryan Lowe, Yi~Wu, Aviv Tamar, Jean Harb, Pieter Abbeel, and Igor Mordatch.
+\newblock Multi-agent actor-critic for mixed cooperative-competitive
+  environments.
+\newblock \emph{arXiv preprint arXiv:1706.02275}, 2017.
+
+\bibitem[Mao et~al.(2017)Mao, Netravali, and Alizadeh]{pensieve}
+Hongzi Mao, Ravi Netravali, and Mohammad Alizadeh.
+\newblock Neural adaptive video streaming with pensieve.
+\newblock In \emph{Proceedings of ACM Sigcomm}, pp.\  197--210, 2017.
+
+\bibitem[Mnih et~al.(2015)Mnih, Kavukcuoglu, Silver, Rusu, Veness, Bellemare,
+  Graves, Riedmiller, Fidjeland, Ostrovski, et~al.]{dqn}
+Volodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei~A Rusu, Joel Veness,
+  Marc~G Bellemare, Alex Graves, Martin Riedmiller, Andreas~K Fidjeland, Georg
+  Ostrovski, et~al.
+\newblock Human-level control through deep reinforcement learning.
+\newblock \emph{Nature}, 518\penalty0 (7540):\penalty0 529, 2015.
+
+\bibitem[Mnih et~al.(2016)Mnih, Badia, Mirza, Graves, Lillicrap, Harley,
+  Silver, and Kavukcuoglu]{mnih2016a3c}
+Volodymyr Mnih, Adria~Puigdomenech Badia, Mehdi Mirza, Alex Graves, Timothy
+  Lillicrap, Tim Harley, David Silver, and Koray Kavukcuoglu.
+\newblock Asynchronous methods for deep reinforcement learning.
+\newblock In \emph{Proceedings of International Conference on Machine
+  Learning}, pp.\  1928--1937, 2016.
+
+\bibitem[Mordatch \& Abbeel(2017)Mordatch and Abbeel]{mordatch2017grounded}
+Igor Mordatch and Pieter Abbeel.
+\newblock Emergence of grounded compositional language in multi-agent
+  populations.
+\newblock \emph{arxiv preprint arXiv:1703.10069}, 2017.
+
+\bibitem[Oliehoek et~al.(2016)Oliehoek, Amato, et~al.]{oliehoek2016concise}
+Frans~A Oliehoek, Christopher Amato, et~al.
+\newblock \emph{A concise introduction to decentralized POMDPs}, volume~1.
+\newblock Springer, 2016.
+
+\bibitem[Omidshafiei et~al.(2017)Omidshafiei, Pazis, Amato, How, and
+  Vian]{omidshafiei2017deep}
+Shayegan Omidshafiei, Jason Pazis, Christopher Amato, Jonathan~P How, and John
+  Vian.
+\newblock Deep decentralized multi-task multi-agent {RL} under partial
+  observability.
+\newblock \emph{arXiv preprint arXiv:1703.06182}, 2017.
+
+\bibitem[Palmer et~al.(2017)Palmer, Tuyls, Bloembergen, and Savani]{lenient}
+Gregory Palmer, Karl Tuyls, Daan Bloembergen, and Rahul Savani.
+\newblock Lenient multi-agent deep reinforcement learning.
+\newblock \emph{arxiv preprint arXiv:1707.04402}, 2017.
+
+\bibitem[Peng et~al.(2017)Peng, Yuan, Wen, Yang, Tang, Long, and Wang]{bicnet}
+Peng Peng, Quan Yuan, Ying Wen, Yaodong Yang, Zhenkun Tang, Haitao Long, and
+  Jun Wang.
+\newblock Multiagent bidirectionally-coordinated nets for learning to play
+  starcraft combat games.
+\newblock \emph{arxiv preprint arXiv:1703.10069}, 2017.
+
+\bibitem[Rappaport(2001)]{wcp}
+Theodore Rappaport.
+\newblock \emph{Wireless Communications: Principles and Practice}.
+\newblock Prentice Hall PTR, Upper Saddle River, NJ, USA, 2nd edition, 2001.
+\newblock ISBN 0130422320.
+
+\bibitem[Rashid et~al.(2018)Rashid, Samvelyan, Schroeder, Farquhar, Foerster,
+  and Whiteson]{qmix}
+Tabish Rashid, Mikayel Samvelyan, Christian Schroeder, Gregory Farquhar, Jakob
+  Foerster, and Shimon Whiteson.
+\newblock {QMIX}: Monotonic value function factorisation for deep multi-agent
+  reinforcement learning.
+\newblock In \emph{Proceedings of International Conference on Machine
+  Learning}, 2018.
+
+\bibitem[Silver et~al.(2014)Silver, Lever, Heess, Degris, Wierstra, and
+  Riedmiller]{dpg}
+David Silver, Guy Lever, Nicolas Heess, Thomas Degris, Daan Wierstra, and
+  Martin Riedmiller.
+\newblock Deterministic policy gradient algorithms.
+\newblock In \emph{Proceedings of International Conference on Machine
+  Learning}, 2014.
+
+\bibitem[Stone \& Veloso(2000)Stone and Veloso]{stone2000multiagent}
+Peter Stone and Manuela Veloso.
+\newblock Multiagent systems: A survey from a machine learning perspective.
+\newblock \emph{Autonomous Robots}, 8\penalty0 (3):\penalty0 345--383, 2000.
+
+\bibitem[Sukhbaatar et~al.(2016)Sukhbaatar, Fergus, et~al.]{commnet}
+Sainbayar Sukhbaatar, Rob Fergus, et~al.
+\newblock Learning multiagent communication with backpropagation.
+\newblock In \emph{Proceedings of Advances in Neural Information Processing
+  Systems}, pp.\  2244--2252, 2016.
+
+\bibitem[Sunehag et~al.(2018)Sunehag, Lever, Gruslys, Czarnecki, Zambaldi,
+  Jaderberg, Lanctot, Sonnerat, Leibo, Tuyls, and Graepel]{vdn}
+Peter Sunehag, Guy Lever, Audrunas Gruslys, Wojciech~Marian Czarnecki,
+  Vin{\'{\i}}cius~Flores Zambaldi, Max Jaderberg, Marc Lanctot, Nicolas
+  Sonnerat, Joel~Z. Leibo, Karl Tuyls, and Thore Graepel.
+\newblock Value-decomposition networks for cooperative multi-agent learning
+  based on team reward.
+\newblock In \emph{Proceeding of {AAMAS}}, 2018.
+
+\bibitem[Sutton \& Barto(1998)Sutton and Barto]{sutton1998}
+Richard~S Sutton and Andrew~G Barto.
+\newblock \emph{Reinforcement learning: An introduction}.
+\newblock MIT press Cambridge, 1998.
+
+\bibitem[Sutton et~al.(2000)Sutton, McAllester, Singh, and
+  Mansour]{sutton2000policy}
+Richard~S Sutton, David~A McAllester, Satinder~P Singh, and Yishay Mansour.
+\newblock Policy gradient methods for reinforcement learning with function
+  approximation.
+\newblock In \emph{Proceedings of Advances in Neural Information Processing
+  Systems}, 2000.
+
+\bibitem[Tampuu et~al.(2017)Tampuu, Matiisen, Kodelja, Kuzovkin, Korjus, Aru,
+  Aru, and Vicente]{tampuu2017multiagent}
+Ardi Tampuu, Tambet Matiisen, Dorian Kodelja, Ilya Kuzovkin, Kristjan Korjus,
+  Juhan Aru, Jaan Aru, and Raul Vicente.
+\newblock Multiagent cooperation and competition with deep reinforcement
+  learning.
+\newblock \emph{PloS one}, 12\penalty0 (4):\penalty0 e0172395, 2017.
+
+\bibitem[Tan(1993)]{iql}
+Ming Tan.
+\newblock Multi-agent reinforcement learning: Independent vs. cooperative
+  agents.
+\newblock In \emph{Proceedings of International Conference on Machine
+  Learning}, pp.\  330--337, 1993.
+
+\bibitem[Tassiulas \& Ephremides(1992)Tassiulas and
+  Ephremides]{tassiulas1992stability}
+Leandros Tassiulas and Anthony Ephremides.
+\newblock Stability properties of constrained queueing systems and scheduling
+  policies for maximum throughput in multihop radio networks.
+\newblock \emph{IEEE transactions on automatic control}, 37\penalty0
+  (12):\penalty0 1936--1948, 1992.
+
+\bibitem[Tesauro(1995)]{tesauro1995temporal}
+Gerald Tesauro.
+\newblock Temporal difference learning and td-gammon.
+\newblock \emph{Communications of the ACM}, 38\penalty0 (3):\penalty0 58--68,
+  1995.
+
+\bibitem[Yi et~al.(2008)Yi, Prouti\`{e}re, and Chiang]{yy_scheduling}
+Yung Yi, Alexandre Prouti\`{e}re, and Mung Chiang.
+\newblock Complexity in wireless scheduling: Impact and tradeoffs.
+\newblock In \emph{Proceedings of ACM Mobihoc}, 2008.
+
+\bibitem[Zhang \& Lesser(2013)Zhang and Lesser]{zhang2013}
+Chongjie Zhang and Victor Lesser.
+\newblock Coordinating multi-agent reinforcement learning with limited
+  communication.
+\newblock In \emph{Proceedings of International conference on Autonomous agents
+  and multi-agent systems}, 2013.
+
+\end{thebibliography}
+
+\newpage
+\input{supp}
+
+
+
+
+
+
+
+
+
+\end{document}

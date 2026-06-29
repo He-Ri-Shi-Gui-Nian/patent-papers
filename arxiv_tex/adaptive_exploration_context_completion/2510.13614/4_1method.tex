@@ -1,0 +1,153 @@
+% \section{Method}
+% \label{sec:method}
+
+% \subsection{Temporal Grounding}
+% \label{sec:method:grounding}
+
+% The temporal grounding stage transforms a natural-language temporal question into its structured reasoning representation, establishing a grounded basis for subsequent retrieval and reasoning. 
+% It comprises three key phases: temporal fact grounding, question analysis, and temporal question decomposition. 
+% An overview of the entire temporal grounding workflow is illustrated in Figure~\ref{fig:initial}.
+
+% \myparagraph{Knowledge fact grounding}
+% Given an input question $Q$, \mot first identifies a relevant temporal subgraph $\mathcal{G}_Q$ within the underlying TKG.
+% This subgraph captures all entities, relations, and time-stamped triples that are semantically or temporally related to $Q$ within a bounded $D_{\max}$-hop neighborhood, 
+% serving as the factual grounding for subsequent reasoning.
+
+% \myparagraphunderline{Topic entity recognition}
+% To locate question-relevant entities, \mot employs LLMs to extract potential entity mentions and associated timestamps from $Q$. 
+% Following extraction, a Dense Retrieval Model (DRM) aligns these mentions with KG entities using embedding-based similarity matching. 
+% Specifically, both question keywords and KG entities are encoded into dense embeddings, and an entity index is constructed using FAISS. 
+% A cosine similarity matrix is then computed between the two embedding spaces, and the highest-scoring entities are selected to form the topic entity set $Topics$. 
+% These topics act as initial anchors for building the question-specific subgraph and initializing temporal retrieval.
+
+% \myparagraphunderline{Subgraph construction}
+% After identifying the topic entities, \mot constructs a $D_{\max}$-hop evidence subgraph $\mathcal{G}_Q$ that includes all triples connected to each topic entity within the defined temporal window. 
+% This subgraph provides a localized yet sufficiently rich factual context for reasoning. 
+% To mitigate redundancy and computational overhead, we apply graph reduction and relation clustering techniques following~\cite{pogtan2025paths}, ensuring $\mathcal{G}_Q$ remains compact and semantically coherent. 
+% The resulting subgraph forms the temporal evidence foundation for all subsequent modules.
+
+
+% \myparagraph{Question analysis}
+% Once the temporal subgraph $\mathcal{G}_Q$ is obtained, the question is analyzed to infer its underlying temporal intent. 
+% Unlike conventional KGQA approaches that treat all questions uniformly, temporal questions often involve diverse forms and complex temporal constraints. 
+% Therefore, \mot first performs temporal type classification to identify the temporal operator implied in $Q$ before proceeding to question decomposition.
+
+% \myparagraphunderline{Temporal type classification.}
+% Temporal type classification determines the intrinsic temporal relations expressed in a question. 
+% Following Allen’s interval algebra~\cite{allen1984towards}, we consider thirteen fundamental temporal relations (\eg \textsc{before}, \textsc{meets}, \textsc{overlaps}, \textsc{during}, \textsc{starts}, \textsc{finishes}, \textsc{equals}), 
+% as well as extended temporal operators such as set relations, duration comparisons, and ordering operations (\eg \textsc{first}, \textsc{last}, \textsc{n-th})~\cite{TimelineKGQA}.  
+% Existing methods typically rely on static prompt templates or manually curated exemplars, which limits their adaptability to diverse temporal patterns.  
+% In contrast, \mot employs a continually updated experience pool $\mathcal{E}_{pool}$ that stores successful reasoning trajectories and LLM operations. 
+% This memory structure enables dynamic retrieval of contextually relevant exemplars to enhance in-context classification.
+% Formally, for a given question $Q$, type-specific exemplars are retrieved as:
+% \[
+% \mathcal{E}_{\text{type}} = \textsf{GetTypeExp}(\mathcal{E}_{pool}, Q, W_{\text{exp}}),
+% \]
+% where $W_{\text{exp}}$ denotes the exemplar retrieval limit. 
+% These exemplars are incorporated into the classification prompt as:
+% \[
+% \textsf{Type}(Q) = \textsf{Prompt}_{\text{TypeSelect}}(Q, \mathcal{E}_{\text{type}}),
+% \]
+% allowing the LLM to infer the most appropriate temporal operator. 
+% This adaptive, exemplar-guided strategy improves type prediction accuracy and ensures generalization to unseen question forms.
+
+
+
+
+\section{Method}
+\label{sec:method}
+
+% \noindent\textbf{Overview.}
+% \mot\ implements \emph{temporal KG–grounded LLM reasoning} by (i) grounding a natural-language question on a question-specific temporal subgraph, (ii) recursively decomposing the question into executable sub-queries with experience-guided control, (iii) executing experience-informed toolkits to retrieve and prune temporally valid evidence paths, and (iv) writing verified traces back to a continually evolving experience memory. 
+% Unlike prior methods that rely on a single retriever or fixed prompts, \mot\ couples a temporal-first pruning policy with an experience layer that adapts prompts, toolkit choices, and reuse decisions over time. 
+% The overall framework (Figure~\ref{fig:overall}) comprises four components:
+
+% \begin{itemize}[leftmargin=*]
+%   \item \textbf{Temporal Grounding.} 
+%   From the input question, \mot\ links topic entities and constructs a $D_{\max}$-hop temporal evidence subgraph $\mathcal{G}_Q$. 
+%   It then performs temporal type classification (via experience-augmented prompts) and generates a hierarchical question tree with explicit indicators $\Ind_i=\langle x?,R,y?,\tau;\mathcal{C}_{time}\rangle$ that normalize operators, bounds, and granularity for downstream execution (Section~\ref{sec:method:grounding}).
+
+%   \item \textbf{Recursive Reasoning (Controller).} 
+%   Given the question tree, \mot\ follows a memory-first policy: for each node $q_i$, it reuses verified trajectories when sufficient; otherwise, it selects one or more temporal toolkits using experience-guided prompts. 
+%   The controller coordinates sufficiency testing, lightweight debate–vote aggregation, and—if needed—refinement or further decomposition under depth/branch limits, progressively assembling a coherent reasoning chain (Section~\ref{sec:recursion}).
+
+%   \item \textbf{Temporal Facts Retrieval \& Pruning (Execution).} 
+%   The selected toolkits trigger a hybrid retriever that combines time-monotone graph exploration with dense embedding lookup. 
+%   Candidates are first filtered by strict temporal validity (constraint satisfaction and monotonicity), then re-ranked by semantic compatibility and temporal proximity; a final LLM-aware selector retains Top-$W_{\max}$ evidence paths for verification (Section~\ref{sec:retrieval}).
+
+%   \item \textbf{Experience Memory.} 
+%   Verified sub-answers, paths, indicators, and toolkit decisions are encoded with dual embeddings (question and indicator) and stored together with type labels and hit statistics. 
+%   At query time, retrieval is scoped by type and ranked by a hybrid score (similarity and recency/hit-count), while write-back continuously refreshes the exemplar pool and short-term buffer—closing the retrieval–reasoning–learning loop (Section~\ref{sec:memory}).
+% \end{itemize}
+\noindent\textbf{Overview.}
+\mot\ implements ``TKG-grounded LLM reasoning'' by grounding each question in temporal facts, recursively decomposing it into executable sub-queries, retrieving and pruning temporally valid evidence, and continually refining its experience memory. 
+Unlike prior TKGQA or RAG systems that depend on static retrievers or fixed prompts, \mot\ integrates temporal alignment, hierarchical control, and self-evolving memory into a unified reasoning framework. 
+The overall architecture of \mot is detailed in Figure~\ref{fig:overall}, consisting of four key components:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Temporal Grounding.} 
+  The model begins by linking topic entities and constructing a $D_{\max}$-hop temporal subgraph $\mathcal{G}_Q$ from the TKG. 
+  It then classifies the temporal type of the question using exemplars retrieved from memory, producing structured temporal constraints for downstream reasoning (Section~\ref{sec:method:grounding}).
+
+  \item \textbf{Tree of Time Reasoning.} 
+  Given the grounded question and its temporal type, \mot\ constructs a hierarchical decomposition tree and executes sub-questions in a top-down manner. 
+  For each node, it dynamically decides whether to recall prior experiences, invoke temporal toolkits, or refine unresolved branches, ensuring temporal consistency and interpretability (Section~\ref{sec:recursion}).
+
+  \item \textbf{Temporal Evidence Retrieval and Pruning.} 
+  Guided by toolkit configurations, \mot performs hybrid retrieval, combining time-monotone, graph exploration, and embedding-based search. 
+  Retrieved candidates are filtered by temporal constraints, re-ranked by semantic and temporal proximity, and finally verified through an LLM-aware selection step (Section~\ref{sec:retrieval}).
+
+  \item \textbf{Experience Memory.} 
+  Verified reasoning traces, toolkit selections, and sub-question embeddings are stored in a dynamic memory pool. 
+  At inference, similar experiences are retrieved by type and relevance; after reasoning, new traces are written back to continuously refine retrieval and decision-making across future questions (Section~\ref{sec:memory}).
+\end{itemize}
+\vspace{-4mm}
+\subsection{Temporal Grounding}
+\label{sec:method:grounding}
+
+The temporal grounding stage transforms a natural-language temporal question into a structured reasoning representation, establishing a factual and temporal foundation for subsequent retrieval and inference.  
+It consists of two core phases: knowledge fact grounding and question analysis.  The pseudo-code of the temporal grounding is detailed in Algorithm \ref{algorithm:analysis} of Appendix \ref{appendix:alg}.
+% An overview of the entire grounding workflow is shown in Figure~\ref{fig:initial}.
+
+\myparagraph{Knowledge fact grounding}
+Given an input question $Q$, \mot first identifies the relevant temporal subgraph $\mathcal{G}_Q$ within the underlying TKG.  
+This subgraph captures entities, relations, and time-stamped triples that are semantically or temporally associated with $Q$ within a bounded $D_{\max}$-hop neighborhood, 
+serving as the factual evidence base for downstream reasoning.
+
+\myparagraphunderline{Topic entity recognition}
+To locate question-relevant entities, \mot employs LLMs to extract potential entity mentions and associated timestamps from $Q$.  
+Following extraction, a Dense Retrieval Model (DRM) aligns these mentions with KG entities via embedding-based similarity matching.  
+Specifically, both question keywords and KG entities are encoded into dense embeddings, and an entity index is constructed using FAISS \cite{douze2024faiss}.  
+Cosine similarity is then computed between the two embedding spaces, and the top-ranked entities are selected to form the topic entity set $Topics$.  
+These topic entities act as the initial anchors for constructing a localized subgraph.
+
+\myparagraphunderline{Subgraph construction}
+Once the topic entities are identified, \mot constructs a $D_{\max}$-hop subgraph $\mathcal{G}_Q$ that aggregates all triples connected to each topic entity within the defined temporal window.  
+This subgraph provides a compact yet semantically rich neighborhood for temporal reasoning.  
+To reduce redundancy and computational overhead, we apply graph reduction and relation clustering techniques following~\cite{pogtan2025paths}, ensuring $\mathcal{G}_Q$ remains concise while preserving the most relevant temporal relations.  
+% The resulting evidence subgraph serves as the contextual grounding for all subsequent modules.
+
+\myparagraph{Question analysis}
+After constructing $\mathcal{G}_Q$, the next step is to analyze the temporal intent of the question.  
+Unlike conventional TKGQA approaches that treat all questions uniformly, or use the label from the dataset, leveraging the flexibility reduces. Temporal questions exhibit diverse syntactic forms and intricate time constraints.  
+To capture these nuances, \mot first performs {temporal type classification}, identifying the temporal operator that governs the question’s reasoning logic.
+
+\myparagraphunderline{Temporal type classification}
+Temporal type classification determines the intrinsic temporal relations implied by a question.  
+Following Allen’s interval algebra~\cite{allen1984towards}, we consider thirteen fundamental temporal relations,  
+as well as extended operators such as set relations, duration comparisons, and ordering mechanisms~\cite{TimelineKGQA}, as introduced in Section \ref{sec:preliminaries}.  
+Existing methods often rely on static prompts or manually designed exemplars, limiting their adaptability to complex or unseen temporal structures.  
+In contrast, \mot leverages a continuously updated experience pool $\mathcal{E}_{pool}$ that stores successful reasoning trajectories, toolkit configurations, and classification results.  
+This memory-based design enables dynamic retrieval of contextually aligned exemplars, improving temporal reasoning consistency across question types.  
+Formally, for a given question $Q$, type-specific exemplars are retrieved as:
+$
+\mathcal{E}_{\text{type}} = \textsf{GetTypeExp}(\mathcal{E}_{pool}, Q, W_{\text{exp}}),
+$
+where $W_{\text{exp}}$ denotes the exemplar retrieval limit.  
+These exemplars are then incorporated into the LLM classification prompt:
+$
+\textsf{Type}(Q) = \textsf{Prompt}_{\text{TypeSelect}}(Q, \mathcal{E}_{\text{type}}),
+$
+allowing the model to identify the most appropriate temporal operator for $Q$.  
+% The prompt template is presented in Appendix \ref{appendix:prompt}.
+This exemplar-guided strategy enables the \mot to adapt to new question patterns, enhances type prediction accuracy, and lays the foundation for the subsequent decomposition stage.

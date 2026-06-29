@@ -1,0 +1,60 @@
+\section{Methodology}
+
+\begin{wrapfigure}{l}{0.5\linewidth} % right side
+    \centering
+    \includegraphics[width=\linewidth]{Node.drawio.pdf}
+    \caption{\metricn Classification Flowchart: Decision tree showing how execution trajectories are classified based on planner and subagent behavior. Each path represents a different execution outcome in MAS and resulting \metricn class}
+    \label{fig:dharma_flowchart}
+    \vspace{-5mm} % adjust vertical spacing if needed
+\end{wrapfigure}
+
+We propose a three-way approach: first, abstracting centralized and decentralized MAS into common design primitives (e.g., capturing planning, delegation, communication, and execution) to compare frameworks like Autogen, LangGraph, and OpenAI Agents on equal footing. Second, we introduce \metricn, a design-aware risk metric that scores failure modes at a fine-grained level, revealing how specific design choices drive vulnerabilities. Together, these components enable systematic identification of weak links and support more robust MAS design. We also develop a framework-agnostic implementation layer that encapsulates agents, tools, and tasks as modular abstractions, enabling reproducible experimentation across frameworks.
+
+
+\subsection{Abstracting Design Primitives}
+
+
+
+We study the effect of following design dimensions that influence vulnerability surfaces:
+
+    \textbf{Sub-agent Autonomy:}
+    captures the granularity at which the coordinating agent delegates tasks to specialized subagents. In centralized architectures, the orchestrator can either assign high-level subtasks (such as "post this content on the website") that require multiple actions from the subagent, or provide atomic instructions (such as "click on the button") where the orchestrator maintains fine-grained control over each step. For instance, frameworks like Magentic restrict subagents to single actions before returning control to the orchestrator, while others such as LangGraph allow subagents to execute multiple sequential actions autonomously. This design choice directly impacts vulnerability detection: when subagents receive higher-level subtasks, they retain sufficient context to recognize potentially harmful
+    objectives, whereas atomic instructions may fragment malicious intent across multiple isolated actions, making detection more difficult.
+
+    
+
+    \textbf{Stratified Planning vs. Combined Planning:} determines whether plan construction occurs as a separate phase before delegation (stratified planning) or is integrated with the delegation process itself (combined planning). For instance, Magentic employs stratified planning by first generating a detailed fact sheet about the task followed by a structured execution plan, while LangGraph integrates planning directly into the orchestrator's delegation decisions without a separate planning phase. Stratified planning enables more detailed upfront analysis since the planner can focus exclusively on task decomposition, but requires additional logic to handle execution failures or plan revisions. Combined planning places both responsibilities on the orchestrator, potentially creating cognitive load but enabling dynamic plan adaptation during execution.
+
+    \textbf{Context Organization:} governs how task descriptions, generated plans, and agent roles are structured and positioned within the LLM's input context. Different frameworks make varying choices about how to sequence plan information relative to task descriptions, and where to position agent role specifications. For example, Magentic places the generated plan in an assistant message followed by the user request in a user message, while LangGraph positions the agent description in a system message, then places the user request in a user message followed by the generated plan in an assistant message. These organizational decisions can significantly influence how the underlying LLM processes and prioritizes different pieces of information, potentially affecting both task execution and safety behavior in ways that are not immediately apparent from the architectural structure alone.  
+   
+
+\subsection{DHARMA: evaluation metric}
+
+\metricn employs a hierarchical classification approach that divides agent trajectories from MAS into two higher-level categories: planner-level behaviors and sub-agent-level behaviors. Fig.\ref{fig:dharma_flowchart} illustrates the complete decision tree, capturing all possible execution paths from initial task input to final \metricn classification.
+
+
+
+\textbf{Planner-Level Behaviors:} \metricn first examines planner behavior, which can result in three distinct outcomes. \textbf{Planner-Stop} occurs when the planner issues a refusal or safety warning and this refusal successfully halts task execution. \textbf{Planner-Ignored} captures cases where the planner refuses or issues warnings, but the system continues execution despite these safety signals, indicating a breakdown in the planner's authority. \textbf{Planner-Failed}  identifies a critical failure mode where the planner does not refuse but fails to generate a valid executable plan, yet the system continues execution despite a valid plan -- highlighting cases where safety mechanisms should have prevented execution due to planning failures.
+
+\textbf{Sub-Agent-Level Behaviors:} When the planner successfully generates a plan without refusal, \metricn examines sub-agent behavior during execution. \textbf{Sub-Agent-Stop} occurs when one or more sub-agents recognize the harmful nature of their assigned tasks and refuse execution, successfully halting the overall harmful objective. \textbf{Sub-Agent-Ignored} captures scenarios where some sub-agents issue refusals or warnings, but other sub-agents or the orchestrator ignore these safety signals and continue with harmful execution.
+
+\textbf{Unmitigated Execution and Error Classifications:} \textbf{Unmitigated Execution} represents cases where neither planner nor sub-agents issue any refusals, and the system proceeds to execute the harmful task without any safety intervention. Finally, \textbf{Error} (\texttt{E}) captures trajectories that encounter technical failures or errors that prevent completion, regardless of safety considerations.
+
+Note that the planner can rerun in some of the MAS (e.g., Magentic) and multiple agents can take turns in executing a task. However, at a given time, only one agent or the planner is active. Thus, Fig.\ref{fig:dharma_flowchart} captures all execution modes in MAS. Given the scale of evaluation across multiple benchmarks and agent architectures, manual classification of agent trajectories is impractical. We therefore employ an LLM-as-judge approach to automatically classify trajectories into \metricn categories. The detailed prompts and implementation details are provided in Appendix~\ref{app:prompts_metric}. By combining aggregate metrics (ASR, RR), risk levels (ARIA-1 to 4), and architecture-aware \metricn classes, \safeagentsn enables a comprehensive, multi-resolution evaluation of MAS safety. Aggregate measures capture the overall success/refusal profile, ARIA situates outcomes along a behavioral risk spectrum, and \metricn pinpoints which components of the architecture contributed to unsafe or safe behavior.
+\vspace{-5pt}
+\subsection{Implementation and extensibility of \safeagentsn}
+
+
+\safeagentsn aims to make the current state of MAS evaluation more robust and consistent. It offers the necessary high level abstractions required to define and
+  evaluate a MAS against a benchmark. Researchers can conduct systematic study of impact of various design choices in MAS through declarative configuration. We
+  define framework-agnostic \texttt{Agent}, \texttt{Tool}, and \texttt{Team} classes that abstract away implementation details while exposing relevant design
+  decisions in a MAS as configurable parameters. \texttt{Agent} class is configured through \texttt{AgentConfig}, which specifies the agent's capabilities including
+   tools, system messages, and handoff targets for task delegation. \texttt{Tool} is defined through a decorator pattern that abstracts away the environment upon
+  which agents act. The most crucial abstraction is \texttt{Team}, which captures the logic of making \safeagentsn framework-agnostic. It declares a unified
+  interface through the \texttt{create()} factory method that accepts framework selection (Autogen, LangGraph, or OpenAI Agents) and architecture type (centralized
+  or decentralized) as parameters. Every integrated framework in \safeagentsn is a child class of \texttt{Team} which implements the core \texttt{run()} method
+  according to framework-specific execution patterns. This abstraction enables researchers/developers to run experiments consistently across frameworks and
+  benchmarks, without implementing the features for a design decision repetitively. \texttt{Team} allows incorporating new MAS architectures in the same way thus
+  making \safeagentsn architecture-agnostic as well. The \texttt{Dataset} class provides the abstraction to define both task collections and evaluation workflows
+  for particular benchmarks, with built-in support for safety assessment metrics (ARIA, DHARMA), attack detection, and progress checkpointing for long-running
+  experiments.

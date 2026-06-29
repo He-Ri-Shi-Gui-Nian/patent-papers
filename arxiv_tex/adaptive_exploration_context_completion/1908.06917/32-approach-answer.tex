@@ -1,0 +1,71 @@
+\subsection{Answer inference}
+
+Our answer inference approach %is a recursive procedure that 
+iteratively traverses and aggregates confidence scores across the graph based on the initial assignment from $I(q)$.
+An answer set $A^i$, i.e., a set of entities along with their confidence scores $E \times [0, 1]$, is produced after each hop $i$ and used as part of the input to the next hop $i+1$, along with the %sets of 
+terms matched for this hop in $I(q)$, i.e., $SEQ_q(i+1) = \langle E^{i+1}, P^{i+1}, C^{i+1}\rangle$.
+The entity set $A^h$ produced after the last hop $h$ can be further transformed to produce the final answer: $A_q=f_{t_q}(A^h)$ via an aggregation function $f_{t_q} \in F$ from a predefined set of available aggregation functions $F$ defined for each of the question types $t_q \in T$.
+We compute the answer set $A^i$ for each hop inductively in two steps: (1) \emph{subgraph extraction} and (2)~\emph{message passing}.
+
+\OurParagraph{Subgraph extraction.} 
+This step refers to the retrieval of relevant triples from the KG that form a subgraph.
+Thus, the URIs of the matched entities and predicates in the query are used as seeds to retrieve the triples in the KG that contain at least one entity (in subject or object position), and one predicate from the corresponding reference sets.
+Therefore, the extracted subgraph will contain $n$ entities, which include all entities from $E^{i}$ and the entities adjacent to them through properties from $P^{i}$.
+
+The subgraph is represented as a set of $k$ adjacency matrices with $n$ entities in the subgraph: $\mathbb{S}^{k\times n\times n}$, where $k$ is the total number of matched property URIs.
+There is a separate $n\times n$ matrix for each of the $k$ properties used as seeds, where $\mathbb{S}_{pij} = 1$ if there is an edge labeled $p$ between the entities $i$ and $j$ , and 0 otherwise.
+All adjacency matrices are symmetric, because $I(q)$ does not model edge directionality, i.e., it treats $K$ as undirected.
+Diagonal entries are assigned 0 to ignore self loops.
+
+\begin{algorithm}[tb]
+\caption{Message passing for KGQA}
+\label{alg:mp}
+\begin{flushleft}
+\textbf{Input:} adjacency matrices of the subgraph $\mathbb{S}^{k\times n\times n}$,\\ entity $\mathbb{E}^{l\times n}$ and property reference activations $\mathbb{P}^{m\times k}$\\
+\noindent\textbf{Output:} answer activations vector $A \in \mathbb{R}^n$\\ 
+\end{flushleft}
+\begin{algorithmic}[1]
+\STATE  $W^{n}, N_P^{n}, \mathbb{Y_E}^{l\times n} = \emptyset$
+\FOR{$P_j \in \mathbb{P}^{m\times k}, j \in \{1, ..., m\}$}%\commentA{iterate over property references}
+    \STATE {$\mathbb{S}_j = \bigoplus_{i=1}^{k} P_j \otimes \mathbb{S}$} \commentA{property update}
+    \STATE $\mathbb{Y} = \mathbb{E} \oplus\otimes \mathbb{S}_j$ \commentA{entity update}
+    \STATE {$W = W + \bigoplus_{i=1}^{l} \mathbb{Y}_{ij}$} \commentA{sum of all activations}
+    \STATE {${N}_{P_j} = \sum_{i=1}^{l} 1$ if $\mathbb{Y}_{ij} > 0$ else $0$} \STATE $\mathbb{Y_E} = \mathbb{Y_E} \oplus \mathbb{Y}$ \commentA{activation sums per entity}
+\ENDFOR
+\STATE $W = 2\cdot W / (l + m) $ \commentA{activation fraction}
+\STATE $N_E = \sum_{i=1}^{l} 1$ if $\mathbb{Y_E}_{ij} > 0$ else $0$ \STATE \textbf{return} $A = (W \oplus N_E \oplus N_P) / (l + m + 1)$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.9\textwidth]{figs/mp_example_aggregation.pdf}
+ \caption{
+(a) A sample subgraph with three entities as candidate answers, (b) their scores after predicate and entity propagation, and (c) the final aggregated score.
+ }
+\label{fig:agg}
+\end{figure*}
+
+\OurParagraph{Message passing.} The second step of the answer inference phase involves message passing,\footnote{The pseudocode of the message passing algorithm is presented in Algorithm~\ref{alg:mp}.} i.e., propagation of the confidence scores from the entities $E^i$ and predicates $P^i$, matched in the question interpretation phase, to adjacent entities in the extracted subgraph.
+This process is performed in three steps, (1)~\emph{property update}, (2)~\emph{entity update}, and (3)~\emph{score aggregation}.
+% See Alg. and the explanation below.
+Algorithm~\ref{alg:mp} summarizes this process, detailed as follows.
+
+For each of $m$ property references $P_j \in \mathbb{P}^{m\times k}, j \in \{1, \ldots, m\}$ where $m = |P^i|$, we
+\begin{enumerate}[nosep,leftmargin=*]
+\item \emph{select} the subset of adjacency matrices from $\mathbb{S}^{k\times n\times n}$ for the property URIs if $p_{ij} > 0$, where $p_{ij} \in P_j$, and propagate the confidence scores to the edges of the corresponding adjacency matrices via element-wise multiplication.
+Then, all adjacency matrices are combined into a single adjacency matrix $\mathbb{S}_j^{n\times n}$, which contains all of their edges with the sum of confidence scores if edges overlap (\emph{property update}: line 3, Algorithm~\ref{alg:mp}).
+
+\item \emph{perform} the main message-passing step via the sum-product update, in which the confidence scores from $l$ entity references, where $l = |E^i|$, are passed over to the adjacent entities via all edges in $\mathbb{S}_j^{n\times n}$ (\emph{entity update}: line 4, Algorithm~\ref{alg:mp}).
+
+\item \emph{aggregate} the confidence scores for all $n$ entities in the subgraph into a single vector $A$ by combining the sum of all confidence scores with the number of entity and predicate reference sets, which received non-zero confidence score.
+The intuition behind this \emph{score aggregation} formula (line 11,  Algorithm~\ref{alg:mp}) is that the answers that received confidence from the majority of entity and predicate references in the question should be preferred.
+The computation of the answer scores for our running example is illustrated in Fig.~\ref{fig:agg}.
+\end{enumerate}
+
+\noindent%
+The minimal confidence for the candidate answer is regulated by a threshold to exclude partial and low-confidence matches.
+Finally, we also have an option to filter answers by considering only those entities in the answer set $A^i$ that have one of the classes in $C^i$.
+
+The same procedure is repeated for each hop in the sequence using the corresponding URI activations for entities, properties and classes modeled in $SEQ_q(i)=\langle E^i, P^i, C^i\rangle$ and augmented with the intermediate answers produced for the previous hop $A^{i-1}$.
+Lastly, the answer to the question $A_q$ is produced based on the entity set $A^h$, which is either returned `as is' or put through an aggregation function $f_{t_q}$ conditioned on the question type $t_q$.

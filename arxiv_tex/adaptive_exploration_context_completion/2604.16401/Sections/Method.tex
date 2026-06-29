@@ -1,0 +1,165 @@
+In this section, we detail GraphRAG-Router into four components: Section~\ref{sec:HRP} describes the hierarchical routing strategy over candidate GraphRAGs and generator LLMs. Section~\ref{sec:SFT} introduces the SFT paradigm, which equips the model with well-structured reasoning and routing formats. Sections~\ref{sec:stage1} and \ref{sec:stage2} describe two complementary RL-based training stages: Stage 1 enables the model to acquire core routing behavior, while Stage 2 further regulates the invocation of generator LLMs to achieve cost-efficient routing.
+\subsection{Hierarchical Routing Strategy}
+\label{sec:HRP}
+To make GraphRAG--LLM coordination tractable, we formulate GraphRAG-Router as a hierarchical routing strategy that progressively selects retrieval infrastructures and generators through reasoning. Upon receiving a question, the model first performs internal analysis within \thinktag{<think>} and \thinktag{</think>} to assess the query’s evidence requirement, and then selects a GraphRAG within \graphragtag{<graphrag>} and \graphragtag{</graphrag>} based on the predefined GraphRAG pool and its descriptions, such as evidence granularity and retrieval specialization. The model then performs further reasoning based on the selected GraphRAG, the query, and the expected type and granularity of the retrieved evidence, and selects the most suitable generation LLM within \llmtag{<llm>} and \llmtag{</llm>} accordingly. Subsequently, it queries the specialist generation LLM with retrieved evidence via \searchtag{<search>}\textit{Query:LLM;GraphRAG} \searchtag{</search>}. The resulting information is returned within \infotag{<information>} and \infotag{</information>} tags. The model may iteratively route across multiple GraphRAG--LLM pairs to gather complementary insights, which are then integrated to produce the final answer within \answertag{<answer>} and \answertag{</answer>}. This hierarchical routing strategy reduces the per-step action space from $\mathcal{O}(|\mathcal{G}|\cdot|\mathcal{L}|)$ joint choices to $\mathcal{O}(|\mathcal{G}|+|\mathcal{L}|)$ staged choices, thereby facilitating more effective optimization.
+
+\subsection{Cold Start Supervised Fine-Tuning}
+To equip the model with a proper routing skeleton, long-horizon reasoning ability, and initial routing capability, we first conduct supervised fine-tuning (SFT) on curated routing trajectories. To this end, we construct two types of supervised data, namely general routing traces and self-reflection routing traces, and then train the model on these trajectories to learn well-structured reasoning and routing behaviors.
+\label{sec:SFT}
+
+\paragraph{General Routing Trace Generation.} We generate high-quality single-turn trajectories that correctly solve the given question while adhering to the desired reasoning, routing, and tool-use manner. Specifically, we begin by collecting GraphRAG--LLM pairs $(g_t, l_t)$ that can correctly solve the question via direct inference, which serve as the basis for constructing general routing trajectories. We then leverage a strong reasoning model (e.g., GPT-5.2~\cite{GPT5}) to generate complete trajectories, including the rationale for each routing decision, such as GraphRAG and generation LLM selection. More details are provided in Appendix~\ref{app:gen}
+%\textcolor{red}{No details, such as prompt template. Refer to the details in Appendix. }
+
+\paragraph{Self-Reflection Routing Trace Generation.}
+Since a single routing decision may fail to select the optimal GraphRAG--LLM pair, especially for challenging questions, we further introduce multi-round self-reflective routing traces. To equip the model with self-reflection abilities, we construct self-reflective trajectories on top of single-turn traces. For each question, we first collect multiple GraphRAG–LLM pairs via direct inference. We then use a strong reasoning model to synthesize multi-turn trajectories in which the model reflects on why the previous route failed to solve the question, identifies whether the failure stems from inadequate retrieval or insufficient reasoning ability, and accordingly decides whether to switch to a different GraphRAG or a stronger LLM. In this way, the model learns to diagnose failure, adjust routing decisions, and progressively reach the final answer. More details are provided in Appendix~\ref{app:gen}
+
+\paragraph{Training Paradigm.}
+By constructing both general and self-reflection routing trajectories, we collect a high-quality hierarchical routing dataset, denote as $\mathcal{D}_{\mathrm{SFT}}$. We then apply SFT to train the model to conduct expect routing strategy:
+\[
+\small
+\mathcal{L}_{\mathrm{SFT}}
+=
+-\mathbb{E}_{(x,y)\sim \mathcal{D}_{\mathrm{SFT}}}
+\left[
+\sum_{t=1}^{|y|}
+\log P_\theta(y_t \mid x, y_{<t})
+\right]
+\]
+where $y$ is the synthetic trajectory.
+
+
+
+\subsection{Routing Policy Alignment}
+\label{sec:stage1}
+Following the cold-start phase, which helps the model acquire an initial structured routing pattern and basic tool-use capability, we leverage RL-based training to further enhance the model's tool-use ability and optimize routing strategies. We extend the general RL optimization objective with external routing pools:
+\[
+\small
+\begin{aligned}
+\max_{\pi_\theta}\;&\mathbb{E}_{x\sim\mathcal{D},\,y\sim\pi_\theta(\cdot\mid x;\mathcal{G},\mathcal{L})}
+\Bigl[r_\phi(x,y) \\
+&-\beta \,\mathbb{D}_{\mathrm{KL}}\!\left[
+\pi_\theta(y\mid x;\mathcal{G},\mathcal{L}) \,\middle\|\, \pi_{\mathrm{ref}}(y\mid x;\mathcal{G},\mathcal{L})
+\right]\Bigr]
+\end{aligned}
+\]
+where $\pi_\theta$ and $\pi_{\mathrm{ref}}$ represent the policy and reference model, respectively, both of which are initialized from the SFT model, $r_\phi$ is the reward function and $\mathbb{D}_{\mathrm{KL}}$ is the KL-divergence. To optimize the hierarchical routing policy, we adopt a rule-based reward function including fine-grained format rewards and final outcome rewards:
+\[
+r_{\phi(x,y)} = r_{\mathrm{format}(y)} + r_{\mathrm{outcome}}
+\]
+\paragraph{Fine-grained Format Reward.} Since our framework produces structured hierarchical routing strategy, format correctness is crucial for ensuring valid reasoning traces and executable routing actions. We therefore design a fine-grained format reward that assigns progressively larger penalties to structural errors of different severity, rather than using a binary format signal:
+\[
+\small
+r_{\mathrm{format}}(y)
+=
+-\min\left(1,\sum_{k=1}^{K}\lambda_k \,\mathbb{I}_k(y)\right)
+\]
+where $\mathbb{I}_k(y)$ indicates whether the $k$-th format rule is violated. The detailed rules are provided in Appendix~\ref{app:format}. This formulation provides more informative supervision for learning stable multi-round hierarchical routing behavior.\\
+\paragraph{Final Outcome Reward.}
+In GraphRAG-Router, we leverage Exact Match (EM) to assess the correctness of the final answer generated by the routing agent with respect to the ground truth, and use it as the sole outcome reward to guide optimization:
+\[
+r_{\mathrm{outcome}} = \mathrm{EM}(a, a_{gt})
+\]
+\subsection{Difficulty-Aware Generator Allocation}
+\label{sec:stage2}
+Although the Routing Policy Alignment stage equips the model with foundational routing ability, the learned policy is often feasible but not optimal, since it remains biased toward large-scale generator LLMs. In practice, a substantial fraction of questions can be handled by smaller models, and thus the unnecessary invocation of large-scale models leads to avoidable computational cost. To bridge this gap, we introduce Difficulty-Aware Generator Allocation, which adaptively penalizes the overuse of large-scale generator models according to question difficulty, encouraging cost-efficient routing without compromising answer correctness. Specifically, we first categorize questions by difficulty level, and then design a curriculum cost-aware reward that penalizes unnecessarily expensive model usage accordingly.
+
+\paragraph{Question Difficulty Categorization.} Inspired by \citet{curriculumreinforcementlearningeasy}, we extend the definition of question difficulty to the setting of multi-scale LLM routing. Specifically, we define it as the minimum generator model scale required to answer a question correctly and reliably. Specifically, for each question $q$, we perform direct inference using every generator LLM in the routing pool for $N$ independent trials, and compute the success rate of each model $l_m$ as
+\[
+\small
+\mathrm{SR}(l_m, q)=\frac{c(l_m,q)}{N}
+\]
+where $c(l_m,q)$ denotes the number of successful trials of model $l_m$ on question $q$. We then regard a model $\mathcal{L}_m$ as being able to reliably solve question $q$ if
+\[
+\small
+\mathrm{SR}(l_m, q)\ge \tau
+\]
+where $\tau$ is a predefined success-rate threshold. Further, we define the difficulty of question $q$ by the minimum model scale that satisfies this condition:
+\[
+\small
+\begin{aligned}
+m(q)=\min \Bigl\{ s \in \{\text{small},\text{medium},\text{large}\} \\
+\mid\ \mathrm{SR}(q,s)\ge \tau
+\Bigr\}
+\end{aligned}
+\]
+Accordingly, the difficulty level of question $q$ is defined as
+\[
+\small
+\mathrm{D}(q)=
+\begin{cases}
+\text{Easy}, & m(q)=\text{small}\\
+\text{Medium}, & m(q)=\text{medium}\\
+\text{Hard}, & m(q)=\text{large}
+\end{cases}
+\]
+\paragraph{Curriculum Cost-aware Reward.}
+To facilitate cost-efficient routing, we first assign each generator LLM a predefined cost $C(l_m)$ according to its model scale, so that model usage becomes explicitly measurable. Combined with the above difficulty categorization, this allows us to define, for each question $q$, its minimum required cost $C_{\min}(q)$ as the cost of the least expensive generator LLM that can reliably answer it correctly:
+\[
+\small
+C_{\min}(q)=\min \left\{ C(l_m)\ \middle|\ \mathrm{SR}(l_m,q)\ge \tau \right\}
+\]
+Based on the minimum required cost $C_{\min}(q)$, we can quantify whether the selected generator LLM is unnecessarily expensive for question $q$. However, such overuse should not be penalized uniformly, since harder questions require greater flexibility to explore stronger models. We therefore adopt a curriculum design that adjusts the penalty strength according to question difficulty:
+\[
+\small
+r_{\mathrm{cost}}(y)=
+\beta\, w_{\mathrm{D}(q)} \, \max \bigl(0,\, C(l_m) - C_{\min}(q)\bigr)
+\]
+where $C(l_m)$ denotes the cost of the generator LLM selected for question $q$, $\beta$ is a scaling coefficient, and $w_{\mathrm{Difficulty}(q)}$ is the penalty weight associated with the difficulty level of $q$, with larger weights assigned to easier questions and smaller weights assigned to harder ones.
+
+\paragraph{Reward Shaping.} To sum up, the overall reward in the Difficulty-Aware Cost Optimization stage is formulated as:
+\[
+r_{\phi(x,y)} = r_{\mathrm{format}(y)} + r_{\mathrm{outcome}} - \mathbbm{1}\{\mathrm{Correct}\}\, r_{\mathrm{cost}(y)}
+\]
+where $\mathbbm{1}\{\mathrm{\mathrm{Correct}}\}$ indicates whether the trajectory yields the correct answer. This design encourages the model to improve cost efficiency under successful task completion, naturally converging to the minimal sufficient routing trajectory.
+
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.10}
+\label{tab:1}
+
+\begin{tabular}{@{} L{2.8cm} L{3.2cm} *{7}{C{1.35cm}} @{}}
+\toprule
+\multirow{2}{*}{\textbf{System}} &
+\multirow{2}{*}{\textbf{Methods}} &
+\multicolumn{3}{c}{\textbf{General QA}} &
+\multicolumn{4}{c}{\textbf{Multi-Hop QA}} \\
+\cmidrule(r){3-5}\cmidrule(l){6-9}
+& & \textbf{NQ$^\dagger$} & \textbf{PopQA$^\star$} & \textbf{TriviaQA$^\star$}
+  & \textbf{HotpotQA$^\dagger$} & \textbf{2Wiki$^\star$} & \textbf{Musique$^\star$} & \textbf{Avg.} \\
+\midrule
+
+\multirow{2}{*}{\textbf{Basic LLM}} &
+Direct Infer$^\spadesuit$ & 0.107 & 0.117 & 0.308 & 0.269 & 0.295 & 0.118 & 0.202 \\
+& CoT$^\spadesuit$ & 0.286 & 0.327 & 0.552 & 0.313 & 0.293 & 0.165 & 0.323 \\
+\midrule
+
+\multirow{6}{*}{\textbf{RAG-Based}} &
+Vanilla RAG & 0.294 & 0.242 & 0.557 & 0.326 & 0.348 & 0.186 & 0.326 \\
+& HippoRAG2 & 0.353 & 0.266 & 0.601 & \underline{0.395} & 0.374 & 0.263 & 0.375 \\
+& LinearRAG & 0.302 & 0.269 & 0.608 & 0.385 & 0.435 & 0.238 & 0.373 \\
+& HyperGraphRAG & 0.268 & 0.272 & 0.585 & 0.253 & 0.336 & 0.209 & 0.321 \\
+& RAPTOR & 0.271 & 0.258 & 0.620 & 0.307 & 0.318 & 0.231 & 0.334 \\
+& GraphRAG & 0.301 & 0.291 & 0.604 & 0.292 & 0.327 & 0.108 & 0.321 \\
+\midrule
+
+\multirow{2}{*}{\textbf{Training-free Agent}} &
+Search-o1 & 0.348 & 0.302 & 0.618 & 0.328 & 0.230 & 0.149 & 0.329 \\
+& GraphSearch & 0.368 & 0.324 & 0.623 & 0.317 & 0.427 & 0.133 & 0.365 \\
+\midrule
+
+\multirow{3}{*}{\textbf{RL-based Agent}} &
+Search-R1 & \underline{0.403} & 0.256 & 0.568 & 0.247 & 0.269 & 0.100 & 0.307 \\
+& Graph-R1 & 0.267 & 0.274 & 0.464 & 0.298 & 0.407 & \underline{0.289} & 0.333 \\
+& Router-R1 & 0.386 & \underline{0.351} & \underline{0.663} & 0.368 & \underline{0.456} & 0.140 & \underline{0.394} \\
+\midrule
+
+\multirow{1}{*}{\textbf{Our Method}} &
+GraphRAG-Router & \textbf{0.426} & \textbf{0.368} & \textbf{0.672} & \textbf{0.461} & \textbf{0.523} & \textbf{0.443} & \textbf{0.482} \\
+\bottomrule
+\end{tabular}
+\caption{Overall Exact Match (EM) on six QA datasets. $\spadesuit$ denotes the best result among different scale of LLMs. $^\dagger$ denotes the in-domain dataset, and $^\star$ denotes the cross-domain dataset. Bold and underline indicate the best and best baseline results, respectively.}
+\label{tab:main}
+\vspace{-15pt}
+\end{table*}

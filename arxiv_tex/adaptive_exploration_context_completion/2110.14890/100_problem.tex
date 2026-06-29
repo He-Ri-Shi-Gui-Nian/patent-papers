@@ -1,0 +1,52 @@
+% !TEX root = main.tex
+
+\section{Multi-hop reasoning on KG}\label{sec:background}
+A knowledge graph (KG) $\Gcal=(\Vcal, \Ecal, \Rcal)$ consists of a set of nodes $\Vcal$, edges $\Ecal$ and relations $\Rcal$. Each edge $e\in\Ecal$ represents a triple $(v_h,r,v_t)$ where $r\in\Rcal$ and $v_h,v_t\in\Vcal$. We are interested in performing multi-hop reasoning on KGs. Multi-hop reasoning queries include relation traversals as well as several logical operations including conjunction ($\wedge$), disjunction ($\vee$), existential quantification ($\exists$) and negation ($\neg$). Here we consider first order logical queries in their disjunctive normal form~\citep{ren2020beta}. 
+%
+\begin{definition}[Logical queries~\citep{ren2020beta}]\label{def:query}
+A first-order logical (FOL) query $q$ consists of a non-variable anchor entity set $\Vcal_q \subseteq \Vcal$, existentially quantified bound variables $V_1, \dots, V_k$ and a single target variable $V_?$ (answer). The disjunctive normal form of a query $q$ is defined as follows: 
+\begin{align*}
+\centering
+	\textstyle
+    q[V_{?}] = V_?\:.\:\exists V_1, \ldots, V_k : c_1 \vee c_2 \vee ... \vee c_n
+\end{align*}
+%
+\begin{itemize}[noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt, leftmargin=*]
+    \item Each $c$ represents a conjunction of one or more literals $e$. $c_i = e_{i1} \wedge e_{i2} \wedge \dots \wedge e_{im}$.
+    \item Each $e$ represents an atomic formula or its negation. $e_{ij} = r(v_a, V)$ or $\neg\:r(v_a, V)$ or $r(V', V)$ or $\neg\:r(V', V)$, where $v_a \in \Vcal_q$, $V \in \{V_?,V_1,\ldots,V_k\}$, $V' \in \{V_1,\ldots,V_k\}$, $V\neq V'$, $r \in \Rcal$.
+\end{itemize}
+\end{definition}
+
+\paragraph{Query computation plan.} 
+A query computation plan (\Figref{fig:background}(B)) provides a plan for executing the query. The computation plan consists of nodes $\Vcal_q \cup \{V_1, \dots, V_k, V_?\}$, where each node corresponds to \emph{a set of entities} on the KG. The edges in the computation plan represent a logical/relational transformation of this set, including relation projection, intersection, union and complement/negation. We adopt the same definition of computation plan as in \cite{ren2020beta} (details in \appref{app:computegraph}).
+
+\paragraph{Traversing the KG using the computation plan to find answers.}
+Conceptually, (assuming no noise, no missing relations in the KG) a logical query can be answered by traversing the edges of the KG. For a valid query, the computation plan is a tree, where the anchor entity set, $\Vcal_q$, are the leaves and the target variable $V_?$ is the single root, representing the set of answer entities (\Figref{fig:background}(C)). 
+Following the computation plan, we start with the anchor entities, traverse the KG and execute logical operators towards the root node. The answers $\Acal_q^\Gcal$ to the query $q$ are stored in the root node after the KG traversal. 
+Note that this conceptual traversal would have exponential computational complexity with respect to the number of hops and also cannot handle noisy or missing relations in the KG, which are both very common in real-world KGs (\Figref{fig:background}(C)). 
+
+\paragraph{Embedding-based ``traversal'' of the KG.} Embedding-based reasoning methods avoid explicit KG traversal. Instead, they start with the embeddings of anchored entities, and then apply a sequence of neural logical operators according to the query computation plan. This way we obtain the embedding of the query where each embedding-based logical operator (\eg, negation) takes the current input embedding and transforms it into a new output embedding. Such operators are then combined according to the query structure. The answers to the query $q$ are then entities $v$ that are embedded close to the final query embedding. The distance is measured by a pre-defined function $\texttt{Dist}(f_\theta(q),f_\theta(v))$, where $f_\theta(q)$ and $f_\theta(v)$ represents the query and entity embedding respectively. Note the distance function $\texttt{Dist}(\cdot,\cdot)$ is tailored to different embedding space and model design $f_\theta$, as specified in~\tabref{tab:kg-model} (\appref{appendix:models} for details).
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.88\textwidth]{bidir_sampler}	
+\vspace{-3mm}
+\caption{Overview of the sampling process for query and positive/negative answers. Our system instantiates queries using query structures from root to leaves. The entity in the root naturally becomes positive answer to the instantiated query. For negative entities, we propose bidirectional rejection sampling, which has a square root computation complexity compared to the traversal-based method.
+\label{fig:query} }
+\vspace{-3mm}
+\end{figure*}
+
+
+\input{table_method}
+
+\input{table_single_hop_method}
+\textbf{Contrastive learning for KG embeddings.}
+During training, we are given a data sampler $\Dcal$, each sample in $\Dcal$ is a tuple $(q,\Acal_q^\Gcal,\Ncal_q^\Gcal)$, which represents a query $q$, its answer entities $\Acal_q^\Gcal\subseteq \Vcal$ and the negative samples $\Ncal_q^\Gcal\subseteq\overline{\Acal_q^\Gcal}$. The contrastive loss~\eqnref{eq:lossfunc} is designed to minimize the distance between the query embedding and its answers $\texttt{Dist}(f_\theta(q), f_\theta(v)), v\in\Acal_q^\Gcal$ while maximizing the distance between the query emebdding and the negative samples $\texttt{Dist}(f_\theta(q), f_\theta(v')), v'\in\Ncal_q^\Gcal$,
+\begin{align} 
+    &\Lcal\rbr{\theta} = - \frac{1}{\abr{\Acal}}\sum_{v\in \Acal_q^\Gcal}\log \sigma \left(\gamma - \texttt{Dist}(f_\theta(q),f_\theta(v)) \right) \nonumber \\
+    &- \frac{1}{\abr{\Ncal}}\sum_{v'\in\Ncal_q^\Gcal} \log \sigma \left(\texttt{Dist}(f_\theta(q),f_\theta(v'))-\gamma \right),\label{eq:lossfunc}
+\end{align}
+where $\gamma$ is a hyperparameter that defines the margin and $\sigma$ is the sigmoid function. 
+
+We emphasize that due to the multi-hop structure in reasoning, identifying/computing $\Acal_q^\Gcal$ and $\Ncal_q^\Gcal$ involves complex first-order logical operations, which are significantly more expensive than sampling in classical (single link) KG completion tasks, and thus is the bottleneck for scaling-up. 
+To resolve this, we propose \modellong~(\modelshort) to scale up single- and multi-hop KG reasoning methods (Tables~\ref{tab:kg-model} and \ref{tab:single-kg-model}), with an efficient sampling algorithm and parallel training, for a given constrastive loss. In then next section we first discuss our efficient training data sampling algorithm.

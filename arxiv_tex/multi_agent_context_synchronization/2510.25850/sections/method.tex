@@ -1,0 +1,58 @@
+\section{\method{}}
+\label{sec:method}
+\subsection{Problem Formulation}
+
+We formalize robot co-design as jointly selecting a morphology $m$ (design parameters) and a reward function $r$ that induces a control policy via reinforcement learning (RL). Let $\mathcal{M}$ be the space of feasible morphologies and $\mathcal{R}$ a family of reward functions. For a candidate pair $(m, r) \in \mathcal{M}\times\mathcal{R}$, the optimal policy is
+\begin{equation}
+    \pi^\ast(m,r) \,=\, \arg\max_{\pi} \, \mathbb{E}_{\pi}\!\left[ \sum_{t=0}^{T} r(s_t, a_t) \right],
+\end{equation}
+where $s_t$ and $a_t$ denote the state and action at time $t$ under policy $\pi$ on morphology $m$, and $T$ is the episode horizon. We denote by $S(m,\pi)$ the task-specific performance score achieved by policy $\pi$ on morphology $m$, measured in simulation. For a candidate $(m,r)$, the score is $S(m,\pi^\ast(m,r))$. Section~\ref{sec:experimental_setup} defines $S$ precisely for our experiments. The goal of co-design is to find:
+\begin{equation}
+    \max_{\,m \in \mathcal{M},\, r \in \mathcal{R}} \; S(m,\pi^\ast(m,r)).
+\end{equation}
+We approximate this joint optimization by iteratively refining $(m, r)$ through structured debate rounds, where agents propose, critique, and revise candidates before evaluation.
+
+A key consideration is to separate training from evaluation to reduce specification gaming~\cite{amodei2016concrete, krakovna2020specification}. During training of a candidate $(m,r)$, the policy is optimized with reward $r$ to obtain $\pi^\ast(m,r)$. At evaluation time, all candidates are compared using the same standardized task score $S(\cdot)$, which is interpretable across different designs and controllers.
+
+\subsection{LLM Agents and Debate Procedure}
+\label{sec:agents}
+
+Our debate procedure follows a thesis--antithesis--synthesis structure: the design agent proposes an initial design (\emph{thesis}), the control agent raises critiques (\emph{antithesis}), and the design agent revises the proposal to address these concerns (\emph{synthesis}). This structure is particularly suited to co-design because morphology and reward interact non-linearly: a body change that improves locomotion under one reward may destabilize the robot under another. By having the control agent critique thesis designs before synthesis, the framework identifies controllability issues early, avoiding expensive simulation of fundamentally unstable designs.
+
+\textbf{Design agent (\raisebox{-0.55em}{\includegraphics[height=1.8em]{figures/design_agent.png}}).} The design agent is prompted as a robot design engineer. At each round, it receives the current robot design $m$, a description of the task, performance metrics from the most recent simulation (e.g., forward velocity, energy consumption, episode length), and a digest of the hall-of-fame archive containing the top-$k$ design--reward pairs ranked by evaluation score $S$. Based on this context, it proposes a specific edit to $m$ that adjusts exposed design parameters, along with a short rationale explaining why the modification could improve performance.
+
+\textbf{Control agent (\raisebox{-0.55em}{\includegraphics[height=1.8em]{figures/control_agent.png}}).} The control agent is prompted as a reward function engineer and serves two roles in the debate loop. During the antithesis phase, it critiques thesis designs proposed by the design agent, highlighting potential control challenges or structural weaknesses. During the \emph{reward generation} phase, it receives the revised (synthesis) design $m'$ along with the task description and recent performance metrics, and outputs a reward function $r$ tailored to $m'$ as a code snippet following a predefined template for computing per-timestep rewards. We validate this code via syntax checking and test execution on a single rollout before inserting $r$ into the training loop. Failures trigger self-repair (see below). This approach follows Eureka~\cite{ma2024eureka}, but the reward is explicitly conditioned on the current morphology.
+
+\textbf{Reliability checks.} To ensure robustness to LLM generation errors, we validate every proposed morphology and reward before training. Reward code compiles on the first attempt in 97\% of cases, and self-repair (re-prompting with traceback) resolves 99\% of failures within two attempts. XML validation rejects ${<}2\%$ of morphology proposals due to constraint violations. Overall, ${<}1\%$ of candidates are discarded. Our self-repair procedure follows prior work on LLM self-debugging~\cite{chen2023teaching, shinn2023reflexion, madaan2023self}.
+
+\textbf{Criterion-specific judges (\raisebox{-0.35em}{\includegraphics[height=1.4em]{figures/judge.png}}).} Given a proposed design $m'$ and reward $r$, we instantiate the morphology in simulation and train a policy for a fixed budget of environment interactions. This yields various performance metrics for the design--reward pair, including locomotion progress, stability, and energy efficiency. A panel of four LLM-based judges then analyzes the metrics for the top-scoring candidate in each round. Each judge focuses on a specific criterion (speed, stability, energy efficiency, or novelty) and produces concise textual feedback highlighting strengths and weaknesses of the design under $r$. These critiques are concatenated and provided to both agents in the subsequent round. The goal is to surface multi-criteria trade-offs that help avoid converging to brittle local optima.
+
+\textbf{Archive and grounding.} The hall-of-fame archive stores all evaluated design--reward pairs ranked by task score $S$, playing an analogous role to quality-diversity archives~\cite{mouret2015illuminating, pugh2016quality}. All selection and ranking decisions are based on the simulator task score $S$, while LLM judges provide feedback only. Unlike typical LLM debate settings where a learned judge arbitrates persuasiveness, here the ``judgment'' is grounded in physics metrics, providing an objective signal that drives proposals toward validated designs.
+After completing $K$ debate rounds, we select the highest-scoring design--reward pair from the archive as the final outcome. The output of \abbrev{} is an optimized robot morphology (provided as an XML specification) along with the reward function that achieved the highest task score $S$. Algorithm~\ref{alg:d2c} summarizes this procedure.
+
+
+\begin{algorithm}[h]
+    \caption{\method{}: Dialectical Co-design Loop.}
+    \label{alg:d2c}
+    \small
+    \begin{algorithmic}[1]
+    \STATE \textbf{Input:} initial design $m_0$, archive $\mathcal{H} \leftarrow \emptyset$, rounds $K$, samples $N_m$, $N_r$
+    \STATE Initialize current best $m^{\ast} \leftarrow m_0$
+    \FOR{$k = 1$ \textbf{to} $K$}
+    \STATE \textbf{Thesis:} design agent proposes $\mathcal{T}_k = \{m_{k,i}^{(\mathrm{th})}\}_{i=1}^{N_m}$ given $(m^{\ast}, \mathcal{H})$
+    \STATE \textbf{Antithesis:} control agent critiques each $m \in \mathcal{T}_k$ \hfill \textit{(thesis not trained)}
+    \STATE \textbf{Synthesis:} design agent revises $\mathcal{T}_k \to \mathcal{S}_k = \{m_{k,i}^{(\mathrm{syn})}\}_{i=1}^{N_m}$
+    \FOR{$i = 1$ \textbf{to} $N_m$}
+        \STATE Control agent proposes rewards $\{r_{k,i,j}\}_{j=1}^{N_r}$ for $m_{k,i}^{(\mathrm{syn})}$
+        \FOR{$j = 1$ \textbf{to} $N_r$}
+            \STATE Train $\pi_{k,i,j}$ on $(m_{k,i}^{(\mathrm{syn})}, r_{k,i,j})$; score $s_{k,i,j} \leftarrow S(m_{k,i}^{(\mathrm{syn})}, \pi_{k,i,j})$
+        \ENDFOR
+    \ENDFOR
+    \STATE Update archive: $\mathcal{H} \leftarrow \mathcal{H} \cup \{(m_{k,i}^{(\mathrm{syn})}, r_{k,i,j}, s_{k,i,j})\}_{i,j}$
+    \STATE Round winner: $(m^{\ast}, r^{\ast}) \leftarrow \arg\max_{(m,r,s) \in \mathcal{H}_k} s$ where $\mathcal{H}_k$ is round-$k$ candidates
+    \STATE \textbf{Judge feedback:} criterion-specific judges critique $(m^{\ast}, r^{\ast})$
+    \STATE Provide archive digest and critiques to agents for round $k{+}1$
+    \ENDFOR
+    \STATE \textbf{Output:} $\arg\max_{(m, r, s) \in \mathcal{H}} s$
+    \end{algorithmic}
+\end{algorithm}

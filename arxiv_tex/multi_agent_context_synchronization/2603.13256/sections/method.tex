@@ -1,0 +1,230 @@
+\section{The \method\ Framework}
+\label{sec:method}
+
+We formalize multi-agent coordination as a training-free probabilistic control loop. Given a task $T$ with query $q$ and a population of $N$ heterogeneous agents $A=\{A_1,\dots,A_N\}$, each agent $A_i$ possesses an unobserved task-conditional competence $\theta_i \in [0,1]$. The controller maintains a Beta posterior $\theta_i \sim \BetaD(\alpha_i,\beta_i)$, updated online from binary feedback $y\in\{0,1\}$ indicating success or failure in the evaluated results. Unless otherwise stated, priors are $\alpha_0=\beta_0=1$ (uninformative) or initialized by the memory-aware scheme in Section~\ref{sec:memory}. The overall decision-making pipeline of \method, including belief-guided delegation, recursive reflection, and memory-based adaptation, is illustrated in Figure~\ref{fig:flowchart}. This flowchart highlights how success cases are propagated through posterior updates and memory, whereas failures trigger refinement, aggregation, and rerouting until a satisfactory solution is produced.
+
+Unlike standard bandit formulations, \method\ operates over compositional multi-agent reasoning trajectories where rewards are delayed, aggregated, and non-attributable to individual actions.
+
+\paragraph{Interpretation of Agent Beliefs.}
+The belief parameter $\theta_i$ does not represent the probability that agent $A_i$ can independently
+solve the task. Instead, $\theta_i$ models the probability that invoking agent $A_i$ at the current
+recursion step yields a \emph{net-positive marginal contribution} relative to the current candidate set.
+This aligns Bernoulli feedback with compositional multi-agent tasks and avoids counterfactual blame
+assignment to individual agents.
+
+\begin{figure*}[t]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  >=latex, thick,
+  block/.style={rectangle, draw, rounded corners, align=center, font=\small,
+                minimum width=26mm, minimum height=8mm, inner sep=2pt, fill=blue!6},
+  decision/.style={diamond, aspect=2, draw, align=center, inner sep=1pt,
+                   minimum width=10mm, minimum height=10mm, font=\small, fill=orange!10},
+  line/.style={-latex}
+]
+
+%------------------------
+% Main horizontal pipeline (row y=0)
+\node[block]    (input)    at (0,0)   {User Query $q$};
+\node[block]    (delegate) at (3.5,0) {Belief-Guided\\Delegation\\(Thompson Sampling)};
+\node[block]    (agent)    at (7,0)   {Selected Agent $A_{i^\star}$};
+\node[block]    (judge)    at (10.8,0){LLM + Programmatic Judge};
+\node[decision] (verdict)  at (14,0)  {Success?};
+
+% Memory directly above verdict
+\node[block]    (memory)   at (14,2.2) {Update Posterior\\\& Store in Memory};
+
+% Failure branch directly below verdict
+\node[block]    (refine)   at (14,-2.2){Refine Query \& Re-route};
+
+% Aggregation & Final stacked vertically on left
+\node[block]    (agg)      at (5.3,-2.2) {Aggregate Candidates\\(Selection + Evidence)};
+\node[block]    (final)    at (5.3,2.2)  {Final Answer};
+
+%------------------------
+% Straight connections
+\draw[line] (input) -- (delegate);
+\draw[line] (delegate) -- (agent);
+\draw[line] (agent) -- (judge);
+\draw[line] (judge) -- (verdict);
+
+% Success path: verdict ↑ memory → final
+\draw[line] (verdict.north) -- (memory.south);
+\draw[line] (memory.west) -- (final.east);
+
+% Failure path: verdict ↓ refine → aggregation → final
+\draw[line] (verdict.south) -- (refine.north);
+\draw[line] (refine.west) -- (agg.east);
+\draw[line] (agg.north) -- (final.south);
+
+\end{tikzpicture}%
+}
+\caption{\textbf{System architecture of \method.} Queries pass through belief-guided delegation, agent execution, and judge evaluation. Upon success (top path), the posterior is updated and stored in memory before producing the final answer. Upon failure (bottom path), the query is refined and re-routed, with candidates aggregated using evidence-based selection.}
+\label{fig:flowchart}
+\end{figure*}
+
+
+\subsection{Belief-Guided Delegation via Thompson Sampling (Core Policy)}
+At recursion depth $d$ for query $q_d$, \method\ treats agent selection as a multi-armed bandit problem and applies Thompson sampling:
+\begin{align}
+\hat{\theta}_i &\sim \BetaD(\alpha_i,\beta_i),\qquad
+i^\star \in \arg\max_i \hat{\theta}_i.
+\end{align}
+The selected agent $A_{i^\star}$ proposes a candidate solution. After judging, the posterior updates are in closed form:
+\begin{align}
+\alpha_{i^\star} \leftarrow \alpha_{i^\star} + y,\qquad
+\beta_{i^\star} \leftarrow \beta_{i^\star} + (1-y),
+\end{align}
+where $y=\mathbb{I}[\text{success}]$. Thompson sampling provides a principled exploration--exploitation trade-off: agents with higher posterior means are preferred while uncertainty induces exploration.
+
+We denote the posterior mean as $\mu_i = \frac{\alpha_i}{\alpha_i+\beta_i}$.
+
+\subsection{Self-Reflection and Judging}
+Each candidate is evaluated by a judge $J$ who delivers a calibrated binary verdict $E\in\{\text{\textsc{success}},\text{\textsc{failure}}\}$. Two evidence channels are integrated:
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Programmatic metrics}, when available (e.g., EM / F1, supporting facts F1, unit test pass rate), which short-circuit the success of unambiguous positives.
+\item \textbf{LLM adjudication}, which produces a binary decision and a brief rationale when the metrics are absent or inconclusive.
+\end{enumerate}
+We calibrate $J$ on a small labeled set ($N\!\approx\!200$) to estimate FP/FN rates and set thresholds. The verdict is mapped to the Bernoulli feedback driving Bayesian updates:
+\[
+y \;=\; \mathbb{I}[E=\text{\textsc{success}}].
+\]
+This makes reflection the engine of both \emph{credit assignment} (posterior updates) and \emph{control} (whether to re-route).
+
+\subsection{Text-Appropriate Aggregation}
+\method\ aggregates by \emph{selection with evidence}, not averaging. We construct a set of candidates with rationales, score them using task metrics or retrieval-grounded entailment checks~\cite{Li25}, optionally run a bounded debate (up to two refinement turns) among top candidates, and select the best-supported answer.
+
+For structured outputs (e.g., numeric fields, dates, JSON), we extract atomic fields, fuse them via competence-weighted voting using $\mu_i=\alpha_i/(\alpha_i+\beta_i)$ as trust weights, then regenerate a coherent output. This modality-aware design yields robustness across open-ended and structured tasks while maintaining interpretability.
+
+\subsection{Recursive Re-Routing}
+\label{sec:reroute}
+If the judged outcome is \textsc{failure}, \method\ executes a budgeted recursive step: (i) update $\BetaD(\alpha_{i^\star},\beta_{i^\star})$ with $y=0$, (ii) refine the query with the judge's critique, and (iii) re-route via Thompson sampling to the next most promising expert. The recursion terminates upon any of the following:
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Success}: the judge returns \textsc{success};
+\item \textbf{Depth limit}: reaching a maximum recursion depth $D$;
+\item \textbf{Budget exhaustion}: cumulative cost (tokens, time) exceeding $B$;
+\item \textbf{Plateau}: no judged improvement across recent iterations.
+\end{enumerate}
+This procedure is not full tree search (no rollout value estimation) but a lightweight, online mechanism that reliably recovers from local errors and discovers productive multi-agent chains with low overhead. The overall recursive procedure of \method, combining Bayesian delegation, self-reflection, query refinement, and memory-aware updating, is summarized in Algorithm~\ref{alg:method}.
+
+\begin{algorithm}[t]
+\caption{\method: Recursive Delegation and Reflection}
+\label{alg:method}
+\begin{algorithmic}[1]
+\Require Query $q$, agents $A_1..A_N$ with $(\alpha_i,\beta_i)$, memory $\mathcal{M}$, judge $J$, max depth $D$, budget $B$, cooldown $r$
+\State $x \gets \mathrm{embed}(q)$
+\State initialize $(\alpha_i,\beta_i)$ via memory-aware priors from $\mathcal{M}$
+\State $\mathrm{cool}[i]\gets 0$ for all $i$;\quad $\mathrm{spent}\gets 0$
+\State $\mathcal{C}\gets \emptyset$ \Comment{set of all candidates with evidence}
+\State $(\mathrm{best}, \mathrm{bestScore}) \gets (\varnothing, -\infty)$
+\For{$d=1$ to $D$}
+  \If{$\mathrm{spent} \ge B$} \textbf{break} \EndIf
+  \State \textbf{Sampling:} for each $i$, draw $\hat{\theta}_i \sim \BetaD(\alpha_i,\beta_i)$ if $\mathrm{cool}[i]=0$ else set $\hat{\theta}_i\gets -\infty$
+  \If{$\max_i \hat{\theta}_i=-\infty$} \Comment{all cooling; force one step of exploration}
+      \State set $\mathrm{cool}[j]\gets 0$ for $j=\arg\max_i \mathrm{cool}[i]$ \Comment{or the smallest cooldown}
+      \State \textbf{continue}
+  \EndIf
+  \State $i^\star \gets \arg\max_i \hat{\theta}_i$ \Comment{tie-break by larger $\alpha_i/(\alpha_i+\beta_i)$}
+  \State $(\mathrm{cand}, \mathrm{usage}) \gets A_{i^\star}(q)$
+  \State $\mathrm{spent} \mathrel{+}= \mathrm{usage}$
+  \If{$\mathrm{spent} > B$} \textbf{break} \EndIf
+  \State $\mathrm{score}_{\mathrm{prog}} \gets \mathrm{programmatic\_metrics}(q,\mathrm{cand})$
+  \If{$\mathrm{score}_{\mathrm{prog}}$ is unambiguous positive}
+      \State $E \gets \text{\textsc{success}}$;\quad $\rho \gets \text{``programmatic pass''}$
+  \Else
+      \State $(E,\rho,\mathrm{score}_{\mathrm{judge}}) \gets J(q,\mathrm{cand},\mathrm{score}_{\mathrm{prog}})$
+  \EndIf
+  \State $y \gets \mathbb{I}[E=\text{\textsc{success}}]$
+  \State $\alpha_{i^\star}\mathrel{+}=y$;\quad $\beta_{i^\star}\mathrel{+}=(1-y)$
+  \State $\mathcal{M}\gets \mathcal{M}\cup\{(x,i^\star,y,\rho,\mathrm{now}())\}$
+  \State $\mathcal{C}\gets \mathcal{C}\cup\{(\mathrm{cand}, \mathrm{score}_{\mathrm{prog}}, \mathrm{score}_{\mathrm{judge}}, i^\star)\}$
+  \State $\mathrm{candScore}\gets \mathrm{combine\_scores}(\mathrm{score}_{\mathrm{prog}}, \mathrm{score}_{\mathrm{judge}})$
+  \If{$\mathrm{candScore} > \mathrm{bestScore}$}
+      \State $(\mathrm{best}, \mathrm{bestScore}) \gets (\mathrm{cand}, \mathrm{candScore})$
+  \EndIf
+  \If{$y=1$}
+      \State \Return $\mathrm{aggregate\_select}(\mathcal{C}, \{\mu_i=\alpha_i/(\alpha_i+\beta_i)\})$ \Comment{selection with evidence}
+  \EndIf
+  \State $\mathrm{cool}[i^\star] \gets r$;\quad \textbf{for all $j$:} $\mathrm{cool}[j]\gets \max(0, \mathrm{cool}[j]-1)$
+  \State $q \gets \mathrm{refine}(q,\mathrm{cand},\rho)$
+  \If{$\mathrm{plateau}(\mathcal{C}, k)$} \textbf{break} \Comment{no score improvement over last $k$ attempts}
+  \EndIf
+\EndFor
+\If{$\mathcal{C}\neq\emptyset$}
+    \State \Return $\mathrm{aggregate\_select}(\mathcal{C}, \{\mu_i\})$ \Comment{best-so-far with evidence checks}
+\Else
+    \State \Return \textsc{failure} \Comment{no candidate produced}
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Design Rationale}
+Several design choices in Algorithm~\ref{alg:method} merit justification.
+
+\textbf{Why Thompson sampling over UCB or $\varepsilon$-greedy?}
+Thompson sampling naturally scales exploration to posterior uncertainty: when beliefs are diffuse (early rounds), it explores broadly; as posteriors concentrate, it exploits. UCB requires explicit tuning of the confidence parameter, and $\varepsilon$-greedy explores uniformly regardless of evidence, wasting budget on agents already known to be weak.
+
+\textbf{Why selection over averaging?}
+Averaging multiple agent outputs degrades quality when agents have heterogeneous competence---a strong answer is diluted by weak ones. Selection with evidence preserves the best candidate while the bounded debate (two rounds) allows targeted refinement without the noise of full ensembling.
+
+\textbf{Why cooldown?}
+Without cooldown, a single false-positive verdict can cause the system to repeatedly select the same agent. The cooldown $r$ forces exploration of alternatives after each selection, complementing the stochastic exploration of Thompson sampling with a deterministic diversity mechanism.
+
+\textbf{Why binary feedback?}
+Richer feedback (e.g., scalar scores) could accelerate learning but requires a well-calibrated scoring model. Binary success/failure is robust to judge miscalibration---the Beta-Bernoulli posterior is a conjugate update that remains valid even under moderate label noise (Theorem~\ref{thm:noisy-regret}).
+
+\subsection{Memory-Aware Priors and Cold-Start Mitigation}
+\label{sec:memory}
+To reduce early-round inefficiency, we seed priors with similarity- and recency-weighted historical outcomes.
+
+\begin{align}
+\alpha_i &\leftarrow \alpha_0 + \sum_{m} K(x_d,x_m)\, y_m \, w_{\Delta t_m}, \\
+\beta_i  &\leftarrow \beta_0  + \sum_{m} K(x_d,x_m)\, (1-y_m)\, w_{\Delta t_m},
+\end{align}
+where $x_d=\mathrm{embed}(q_d)$, $K$ is a task-similarity kernel (e.g., cosine over sentence embeddings), and $w_{\Delta t_m}=\exp(-\lambda \Delta t_m)$ applies temporal decay.   This initialization biases competence posteriors toward agents that recently succeeded on similar tasks while preserving adaptability under drift.
+
+\paragraph{Remark (Interpretability).}
+The beta parameters $(\alpha_i,\beta_i)$, the rationales of the judges $\rho$, and the selection history (agents chosen, verdicts, costs) constitute an auditable decision trail, which facilitates error analysis and responsible deployment.
+
+\subsection{Robustness Considerations}
+The controller relies on binary feedback from a judge, which may be imperfect.
+To mitigate this, \textsc{REDEREF} incorporates several robustness properties:
+(i)~the Beta posterior is inherently resilient to occasional mislabeled feedback because individual observations have diminishing influence as evidence accumulates;
+(ii)~the cooldown mechanism prevents the system from repeatedly exploiting a single agent based on a single lucky positive verdict;
+and (iii)~ensemble judges (majority voting over three independent judges) can further reduce sensitivity to individual judge errors at modest additional cost.
+
+\subsection{Regret Under Noisy Feedback}
+We now quantify the cost of imperfect judging.
+Let $\varepsilon_{\mathrm{FP}}=\Pr[E{=}\text{\textsc{success}}\mid \text{true fail}]$ and
+$\varepsilon_{\mathrm{FN}}=\Pr[E{=}\text{\textsc{failure}}\mid \text{true success}]$ denote the judge's
+false-positive and false-negative rates, and define the \emph{discrimination margin}
+$\delta=1-\varepsilon_{\mathrm{FP}}-\varepsilon_{\mathrm{FN}}>0$.
+
+\begin{theorem}[Regret under noisy judge feedback]\label{thm:noisy-regret}
+Consider $N$ agents with true competences $\theta_1,\dots,\theta_N$ and a judge
+with class-conditional error rates $(\varepsilon_{\mathrm{FP}},\varepsilon_{\mathrm{FN}})$
+satisfying $\delta=1-\varepsilon_{\mathrm{FP}}-\varepsilon_{\mathrm{FN}}>0$.
+Then the Bayesian regret of Thompson sampling over $T$ rounds satisfies
+\[
+  R(T)
+  \;=\;
+  \frac{1}{\delta}\,\widetilde{R}(T)
+  \;=\;
+  O\!\Bigl(\frac{\sqrt{NT\log T}}{\delta}\Bigr),
+\]
+where $\widetilde{R}(T)$ is the regret of Thompson sampling on an equivalent
+noiseless problem with transformed competences
+$\tilde{\theta}_i=\delta\,\theta_i+\varepsilon_{\mathrm{FP}}$.
+\end{theorem}
+
+\begin{corollary}
+As $\delta\to 0$ (uninformative judge), regret diverges; as
+$\delta\to 1$ (perfect judge), we recover the standard
+$O(\sqrt{NT\log T})$ bound of~\citet{AgrawalGoyal13}.
+\end{corollary}
+
+\noindent The proof is given in Appendix~\ref{app:noisy-regret-proof}. Theorem~\ref{thm:noisy-regret} shows that judge noise inflates regret by exactly $1/\delta$, providing a precise budget for investing in judge quality versus accepting routing suboptimality.
+
+\subsection{Summary and Preview}
+The framework provides one theoretical guarantee and three empirically testable properties. Theorem~\ref{thm:noisy-regret} bounds regret under noisy feedback as $O(\sqrt{NT\log T}/\delta)$, establishing that routing quality degrades gracefully with judge noise. The remaining properties---that belief-guided routing improves efficiency over uninformed routing (H1), that posteriors concentrate on domain experts (H2), and that the routing policy adapts to agent degradation (H3)---are validated experimentally in Sections~\ref{sec:exp}--\ref{sec:results}.

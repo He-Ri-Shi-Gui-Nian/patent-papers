@@ -1,0 +1,113 @@
+The sequential protocol of Section~\ref{sec:pareto} reaches the $51.5\%$ ceiling but pays for it in wall time, since each cybench challenge runs four scaffolds in series ($91.5$~h cumulative). The empirical complementarity suggests a stronger architecture: run the heterogeneous scaffolds \emph{in parallel}, share intermediate findings on a common substrate, and let any flag-found event terminate the run. We adopt the classical blackboard pattern \cite{hearsay1980,hayesroth1985blackboard,blackboardllm2025} for three reasons: (i) the four scaffolds have structurally different I/O contracts (free shell, constrained tool registry, one-shot completion), and a typed shared namespace decouples this heterogeneity; (ii) the exclusive-solve table is concentrated, so peer findings posted by one scaffold can compress another's recon phase; and (iii) the pattern admits an opportunistic scheduler that routes partial findings without requiring the originator to know the consumer.
+
+\subsection{Union ceiling}\label{sec:union}
+
+The union $|\bigcup_{s \in \mathcal{S}} S_s| = 17/33$ is the upper bound on coverage under any policy that does not modify any individual scaffold. Running all four scaffolds in series reaches this ceiling in $91.5$~h at $\$8{,}841$. The frugal ensemble of Section~\ref{sec:ensemble} reduces to three scaffolds (Codex $\to$ Claude $\to$ CAI) and the same $17/33$ with a shorter schedule but no wall-time compression, since the challenges still execute sequentially.
+
+\subsection{Parallel race (no communication)}\label{sec:bbresults}
+
+The parallel race deploys all four scaffolds simultaneously against per-scaffold-isolated CTF instances of the same challenge; the first scaffold to post a verified flag terminates the run for the remaining three. No scaffold reads peer state. Table~\ref{tab:bbresults} reports the result.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccc@{}}
+\toprule
+Configuration & Solves & Wall (h) & Cost (\$) \\
+\midrule
+Best individual (Claude/Codex)       & $15/33$ & $26.8$/$18.4$ & $\$5{,}122$/$\$1{,}713$ \\
+Union ceiling                        & $17/33$ & $91.5$ & $\$8{,}841$ \\[2pt]
+\midrule
+\rowcolor{cai_primary!10}
+Parallel race (no-comm)              & $17/33$ & $24.0$  & $\$7{,}322$ \\
+\rowcolor{cai_primary!10}
+Blackboard (cross-write)             & $\mathbf{19/33}$ & $20.2$  & $\$5{,}480$ \\
+\bottomrule
+\end{tabular*}
+\caption{Multi-scaffold configurations. The parallel race matches the union ceiling in $24.0$~h ($3.8\times$ compression). The blackboard cross-write exceeds it, reaching $19/33$ ($57.6\%$).}\label{tab:bbresults}
+\end{table}
+
+The parallel race solves $17/33$, matching the union ceiling but compressing wall time from $91.5$~h to $24.0$~h ($3.8\times$). Per-scaffold attribution: \texttt{CSI::GCAI}~$7$, \texttt{CSI::Claude}~$4$, \texttt{CSI::Codex}~$4$, \texttt{CSI::CAI}~$2$. On solved scenarios the average wall time is $5.7$~min (versus $83.8$~min on unsolved), demonstrating the compression of first-flag-terminate. The solve \emph{mix} differs from the individual campaign by two stochastic flips (\texttt{ezmaze} N$\to$Y, \texttt{noisier\_crc} Y$\to$N) that cancel in count. No synergy is possible by construction, since no scaffold reads peer state.
+
+\subsection{Blackboard (cross-write)}\label{sec:bbcrosswrite}
+
+To test whether inter-scaffold information flow pushes coverage above the union ceiling, we mount a per-scenario shared file (\texttt{/blackboard/notes.md}) into all four scaffold containers. The local routing proxy injects a cooperation directive on the first turn and every $N{=}8$ requests thereafter, instructing the scaffold to read peer findings and post its own artefacts. Six implementation-level design choices ensure that the cooperation overhead does not degrade performance:
+
+\begin{enumerate}[leftmargin=*,nosep]
+  \item \textbf{Budget-aware suppression.} The proxy suppresses all directives after $50\%$ of the per-scenario timeout has elapsed, preserving the second half of the budget for uninterrupted solving.
+  \item \textbf{Asymmetric scaffold roles.} \texttt{CSI::CAI} receives no injections (it never complied with them). \texttt{CSI::Claude} receives only a first-turn directive. \texttt{CSI::GCAI} is a reader (no write pressure). \texttt{CSI::Codex} is the designated writer.
+  \item \textbf{Delta-only reads.} The directive uses \texttt{tail -n +N} instead of \texttt{cat}, serving only new posts since the scaffold's last read.
+  \item \textbf{Post-victory suppression.} Once a flag pattern appears in the scaffold's output, all further directives are suppressed.
+  \item \textbf{No write-nag for non-contributors.} Scaffolds that do not write naturally (\texttt{GCAI}, \texttt{CAI}) are not pressured to produce vacuous posts.
+  \item \textbf{Recency-filtered substrate gate.} The substrate-emptiness check counts only recent posts, so stale substrates do not permanently suppress the density threshold.
+\end{enumerate}
+
+The blackboard solves $\mathbf{19/33}$ ($57.6\%$), exceeding the union ceiling by two challenges.\todo{[review C4.5] reader is left to compute the +5/-3 delta; add "Net: +5 new solves, -3 lost vs. union ceiling for an overall +2"; also tie back to \S6.2 single-run caveat and bound how much of +2 could be variance.} Per-scaffold attribution: \texttt{CSI::GCAI}~$7$, \texttt{CSI::Claude}~$4$, \texttt{CSI::Codex}~$4$, \texttt{CSI::CAI}~$4$. Total wall time is $20.2$~h; total cost is $\$5{,}480$. Five challenges are gained relative to the parallel race: \texttt{failproof} (Codex, $43.3$~min), \texttt{just\_another\_pickle\_jail} (Claude, $51.0$~min), \texttt{randsubware} (CAI, $4.9$~min), \texttt{were\_pickle\_phreaks\_revenge} (CAI, $3.3$~min), and \texttt{noisy\_crc} (CAI, $3.6$~min). One challenge (\texttt{back\_to\_the\_past}) is lost to stochastic variance.
+
+Table~\ref{tab:bbactivity} reports per-scaffold blackboard interactions. \texttt{CSI::Codex} is the dominant writer ($43$ of $77$ posts); \texttt{CSI::GCAI} the dominant reader ($326$ reads); \texttt{CSI::CAI} neither reads nor writes yet wins $4$ scenarios.\todo{[review C5.4] the "all four cooperate via shared substrate" framing is really "one writes, one reads, one listens once, one ignores"; add a paragraph in \S7.1 that owns the asymmetry and argues the lift comes from one-direction flow plus heterogeneity, not symmetric cooperation.} The asymmetric role assignment reflects the empirical compliance pattern: scaffolds that naturally contribute are given the writer role, those that naturally ignore directives are left unencumbered.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lrrrr@{}}
+\toprule
+Scaffold        & Reads   & Writes & Posts & Wins \\
+\midrule
+\texttt{CSI::Claude}  & $95$   & $69$  & $17$ & $4$  \\
+\texttt{CSI::Codex}   & $163$   & $307$   & $43$  & $4$  \\
+\texttt{CSI::GCAI}    & $326$   & $73$   & $17$  & $7$  \\
+\texttt{CSI::CAI}     & $0$ & $0$ & $0$ & $4$ \\
+\midrule
+Total           & $584$ & $449$ & $77$ & $19$ \\
+\bottomrule
+\end{tabular*}
+\caption{Per-scaffold blackboard activity across the $33$-challenge cross-write campaign ($19/33$). \texttt{CSI::GCAI} dominates reads ($326$) as the reader-role scaffold; \texttt{CSI::Codex} is the primary writer ($43$ posts). \texttt{CSI::CAI} neither reads nor writes but wins $4$ scenarios.}\label{tab:bbactivity}
+\end{table}
+
+% NOTE: The "Coordination primitives beyond the blackboard" comparison (seven
+% mechanisms on the 14-challenge subset) is commented out pending a more robust
+% evaluation. Per-scaffold log review showed the coordination was largely
+% nominal (mechanism-specific substrates went unused, agents reverted to the
+% blackboard convention, and one team member hung), so the reported coverage
+% and write-volume figures are not yet a reliable basis for the claims below.
+% Left as future work and referenced as such in the Roadmap and limits.
+\iffalse
+\subsection{Coordination primitives beyond the blackboard}\label{sec:primitives}
+
+The blackboard is one point in a larger design space of coordination mechanisms. To separate the contribution of the \emph{substrate shape} from the contribution of \emph{running heterogeneous scaffolds in parallel}, we generalise the cross-write injector into a mechanism abstraction at the proxy layer and instantiate six additional primitives, each exploring one well-identified coordination pattern. \textbf{Scratchpad} keeps the broadcast log but removes the two tiers and the role asymmetry, so every scaffold reads and writes symmetrically. \textbf{Topic} keeps the broadcast log but tags each post with a topic and has agents read only the topics relevant to the challenge, the publish-subscribe pattern common to DDS keyed-topics and ZeroMQ prefix filtering. \textbf{Mailbox} replaces the board with per-scaffold inboxes, so a finding is addressed to a named peer (point-to-point) rather than posted globally. \textbf{Verify} is an interaction protocol rather than a board: a scaffold posts a candidate flag for falsification before submitting, and peers actively reject or corroborate it, the generator-verifier pattern. \textbf{Llmwiki} replaces the append-only log with a cross-linked, editable HTML knowledge base that agents read from an index, drill into, and curate. \textbf{None} disables injection, recovering the parallel race of Section~\ref{sec:bbresults}. All seven share the same scaffolds, models, and first-flag-terminate policy; they differ only in how intermediate findings are routed.
+
+Table~\ref{tab:primitives} reports a controlled comparison on a fixed $14$-challenge signal subset, holding the model at \aliasmini{} and the team at four scaffolds, with mechanisms interleaved within each challenge to control for backend drift.\footnote{Single run per cell, $900$\,s per-challenge cap, four-scaffold team, run as two batches (four mechanisms, then three). These bounds make the absolute solve counts a lower bound and not directly comparable to the $33$-challenge, full-budget numbers of Table~\ref{tab:bbresults}; the comparison of interest is \emph{across mechanisms} within this subset.} Coverage is invariant: every mechanism solves the same five challenges, regardless of topology, filtering, addressing, protocol, or structure. The substrate write volume on the unsolved hard tail, however, spans a factor of roughly six, from $39$ posts for the role-driven blackboard down to $6$ for the unaddressed mailbox and the no-injection race, with the curated wiki and the verify protocol in between ($17$ and $15$). On this subset the coordination pattern therefore decouples cleanly from coverage: substantially heavier collaboration buys no additional solves, because the unsolved challenges are bounded by the base model's capability on the relevant cryptographic and binary-exploitation patterns, not by how intermediate findings are routed.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}llcc@{}}
+\toprule
+Mechanism & Pattern & Solves & Posts \\
+          &         & ($/14$) & (hard tail) \\
+\midrule
+\textcolor{cai_primary}{Blackboard} & broadcast log, tiered + roles & $5$ & $39$ \\
+\textcolor{cai_primary}{Llmwiki}    & curated HTML knowledge base   & $5$ & $17$ \\
+\textcolor{cai_primary}{Verify}     & generator-verifier handshake  & $5$ & $15$ \\
+\textcolor{cai_primary}{Topic}      & topic-filtered pub/sub        & $5$ & $10$ \\
+\textcolor{cai_primary}{Scratchpad} & broadcast log, flat symmetric & $6$ & $\phantom{0}7$ \\
+\textcolor{cai_primary}{Mailbox}    & point-to-point inboxes        & $5$ & $\phantom{0}6$ \\
+\textcolor{cai_primary}{None}       & no coordination (race)        & $5$ & $\phantom{0}6$ \\
+\bottomrule
+\end{tabular*}
+\caption{Seven coordination mechanisms on the $14$-challenge signal subset (\aliasmini{}, four scaffolds, $900$\,s cap, one run per cell). Coverage is invariant at $5/14$ across every pattern while substrate write volume varies $\sim 6\times$. \texttt{Scratchpad}'s sixth solve (\texttt{noisy\_crc}) did not replicate: the other six mechanisms all failed \texttt{noisy\_crc}, whose individual solve time sits close to the cap, identifying it as single-run variance rather than a mechanism effect.}\label{tab:primitives}
+\end{table}
+
+Two qualitative observations from the per-scaffold logs refine this result. First, directive injection shapes but does not determine collaboration: under \texttt{scratchpad}, \texttt{topic}, and \texttt{mailbox}, agents frequently reverted to the blackboard convention, writing to \texttt{/blackboard/notes.md} in the artefact and hypothesis format rather than to the mechanism's intended file, and under \texttt{mailbox} the per-scaffold inboxes received zero writes while \texttt{notes.md} received several. The dominant collaboration pattern is therefore a property of the scaffolds' learned behaviour, not only of the proxy directive, which bounds how much a mechanism swap can change behaviour without scaffold-level changes. Second, the protocol-oriented primitives raised write volume without raising coverage: \texttt{verify} and \texttt{llmwiki} induced more substrate activity than the plain symmetric board ($15$ and $17$ posts versus $7$), reflecting their candidate-and-verdict and page-curation steps, yet solved no additional challenge. Taken together, the comparison is a negative result that we report as such: on a single-model team bounded by the capability tail, the choice of coordination pattern moves collaboration intensity but not coverage.
+\fi
+
+\subsection{Roadmap and limits}\label{sec:bbbeyond}
+
+The $19/33$ result is a lower bound: the six design choices address proxy-level overhead but not information quality or routing. The unsolved tail is dominated by cryptographic and binary-exploitation challenges, which suggests it is bounded by the base model's capability on those patterns rather than by how intermediate findings are routed across the team. Two consequences follow. First, the most promising remaining directions are the ones that change \emph{what the team can compute}, not how it talks: (i) external symbolic verifiers for cryptographic and binary-exploitation challenges, which form the capability-bound tail; and (ii) heterogeneity at the model level, running multiple scaffolds across multiple base models in a grid, so that the union of solvable patterns grows rather than the routing of a fixed one. Second, the blackboard is one point in a larger design space of coordination mechanisms, however a controlled comparison of alternative primitives, varying topology, addressing, protocol, and the structure of the shared substrate, is left to future work, since an initial pass indicated the coordination such primitives induce is largely nominal on a single-model team and not yet a reliable basis for coverage claims.
+
+\paragraph{Limits.}\label{sec:limits}
+
+The bio-inspired analogy with heterogeneous expert teams is suggestive but not literal. Human experts share a discipline-level prior over the solution space because of their training; the scaffolds share a model-level prior, namely the same \aliasmini{} weights. The empirical complementarity we measure is therefore a function of the \emph{scaffolding} alone, not of distinct knowledge bases. This makes the result more, not less, surprising: one model, five wrappers, $19/33$ challenges under the blackboard (versus $15/33$ for the best individual scaffold and $17/33$ for the union ceiling of independent runs).

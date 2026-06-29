@@ -1,0 +1,165 @@
+\section{Method}
+
+
+We propose a reinforcement learning (RL) framework for adaptive topology control in multi-agent debate (MAD), in which a centralized controller dynamically regulates inter-agent communication to maximize collective reasoning performance under communication constraints. Our approach is characterized by the following innovations: (1) a content-agnostic observation scheme that leverages only interaction-relevant features without accessing agent-level semantics, (2) a multi-objective reward formulation balancing accuracy, consensus, efficiency, and sparsity, (3) a soft and differentiable action space modeling each edge's communication weight as a stochastic variable, and (4) a dual mechanism for communication efficiency combining budget constraints and agent pruning. The full pipeline consists of three stages: initial independent agent reasoning, iterative topology-controlled sparse debate, and consensus aggregation via majority voting.
+\subsection{Framework Pipeline}
+\label{sec:framework_pipeline}
+To illustrate the operation process of RUMAD, we decompose our framework into three sequential stages, each responsible for
+distinct aspects of multi-agent debate, as show in Figure~\ref{fig:process_pipeline}. 
+
+
+\paragraph{\textbf{Stage 1: Independent Initialization}}
+All agents start by independently generating their initial responses to the given problem. Each agent $i$ produces an initial response $r_i^0$ and conclusion $c_i^0$ based solely on the input prompt, without knowledge of other agents’ perspectives, ensuring diverse hypotheses that span the solution space.
+
+\paragraph{\textbf{Stage 2: Adaptive Sparse Debate}}
+In this stage, agents iteratively interact under dynamically controlled topologies. We divide the process into two focused steps:
+
+\begin{enumerate}
+\item \emph{Topology Generation:} The PPO policy network ingests the current observations and outputs the influence weights $w_{ij}^t$ that determines how agents exchange information. Agents with insufficient incoming influence will be masked and reuse their previous responses to save tokens. Thus, we obtain the active nodes and the directed edges with different weights, which together constitute the interaction topology.
+\item \emph{Interaction:} For each active agent $i$, the debate environment construct customized prompts by grouping neighbors into categories based on weight magnitude (Critical, Reference, Background, Invisible). This interaction step propagates information along pruned links, enabling focused debate under a communication budget.
+\end{enumerate}
+
+\paragraph{\textbf{Stage 3: Consensus Formation}}
+After $T$ adaptive rounds, the final conclusions $\{c_i^T\}$ are aggregated via majority voting. The consensus answer emerges as the label with the highest agent support, reflecting the collective reasoning of the ensemble rather than any single participant.
+
+% Please add the following required packages to your document preamble:
+% \usepackage{graphicx}
+% \usepackage[table,xcdraw]{xcolor}
+% Beamer presentation requires \usepackage{colortbl} instead of \usepackage[table,xcdraw]{xcolor}
+
+\subsection{Content-Agnostic Observation}
+
+At each debate round $t$, the controller observes a global state $o_t$ constructed without reference to raw agent content. For each agent $i$, let $r_i^t$ denote its reasoning embedding and $c_i^t$ its current answer. The embedded observable state for actor and critic is identically defined by:
+\begin{equation}
+o_t = \mathrm{MLP}(\left[ \mathrm{sim}(i,j)\right]_{N\times N})
+\end{equation}
+where the $N\times N$ similarity matrix is given \newtext{by MAD environment}:
+\begin{equation}
+\mathrm{sim}(i, j) = \lambda \cos(r_i^t, r_j^t) + (1-\lambda)\, \mathbb{I}(c_i^t = c_j^t)
+\label{eq:similarity}
+\end{equation}
+with hyperparameter $\lambda \in [0,1]$, cosine similarity $\cos(\cdot, \cdot)$ between reasoning embeddings, and $\mathbb{I}(\cdot)$ the indicator function for answer agreement. \newtext{The observation thus encodes only answer-level agreement and high-level semantic structure, ensuring content-agnostic control. RUMAD scheduler can only observe an $N \times N$ matrix with floating-point similarity number within $[0,1]$ without accessing the raw text (nor embedding of text) of agent reasoning.}
+
+\subsection{Action Space and Edge Weight Distribution Modeling}
+
+In our framework, the action space at each debate round consists of a set of continuous communication weights, where each possible directed edge $(i, j)$ is assigned a real-valued weight $w_{ij}^t \in (0, 1)$ reflecting the influence of agent $j$ on agent $i$. To enable principled policy optimization via stochastic gradient methods, we adopt a probabilistic action parameterization: the policy network (actor) outputs, for each edge, the parameters $(\mu_{ij}^t, \sigma_{ij}^t)$ of a Gaussian distribution, from which the edge weight is sampled as
+\begin{equation}
+w_{ij}^t \sim \mathrm{Sigmoid}\big(\mathcal{N}(\mu_{ij}^t,\, {\sigma_{ij}^t}^2)\big).
+\label{eq:weight_definition}
+\end{equation}
+This formulation satisfies the philosophy of PPO. The use of a Gaussian distribution, followed by a Sigmoid transformation to enforce the valid range, provides a flexible and fully differentiable mechanism for modeling continuous actions. This allows for efficient exploration of the topology space, mitigates overfitting to deterministic patterns, and enables robust credit assignment across complex, high-dimensional action spaces. Such stochastic action parameterizations are standard in modern RL for continuous control (e.g., PPO). 
+
+
+\subsection{Communication Budget Constraint}
+
+To achieve joint optimization of reasoning accuracy and communication efficiency, we introduce a dual-threshold mechanism that directly links the learned edge weights to both token consumption and semantic information flow within the debate process. 
+
+Specifically, at each round, the sampled weight matrix $W^t = [w_{ij}^t]_{N \times N}$ not only determines the semantic relevance of each neighbor's response for prompt construction \newtext{(edge-wise)}, but also governs whether an agent actively updates its opinion  \newtext{(node-wise)}, thereby incurring token cost.
+
+For each agent $i$, we compute its average external influence \newtext{(in-degree)} as
+\begin{equation}
+\bar{w}_i^t = \frac{1}{N-1} \sum_{j\neq i} w_{ij}^t,
+\end{equation}
+where $N$ is the total number of agents. An activation threshold $\tau$ is applied: if $\bar{w}_i^t < \tau$, agent $i$ is pruned for the current round and reuses its previous response. \newtext{For simplicity, we utilize $w_{ii}$ as activation threshold $\tau$. The $\tau = w_{ii}^t$ design dynamically models implicit "confidence" of each agent. An agent is confident enough while assigned with higher weight on its own opinion than the average of the external, $\bar{w}_i^t < w_{ii}^t$. As shown by example round 4 in Figure~\ref{fig:RUMAD_example}, it results in zero token usage this round that all agents are assigned as confident. In the sub-sequential round 5, different weights are sampled from distributions defined in Equation~\ref{eq:weight_definition} thus more communication occurs.} This threshold thus directly controls the expected number of agents generating new tokens per round, providing a fine-grained handle on collective communication expenditure.
+
+\begin{figure}[t]
+  \includegraphics[width=\columnwidth]{fig/RUMAD_example.pdf}
+  \caption{An example debate controlled by RUMAD.}
+  \label{fig:RUMAD_example}
+  \Description{An example debate controlled by RUMAD.}
+\end{figure}
+
+% Concurrently, for agents that remain active, we further categorize the semantic role of each neighbor $j$ in agent $i$'s prompt by applying a separate, typically lower, threshold $\delta$. If $w_{ij}^t < \delta$, agent $j$ is treated as "Invisible" and excluded from $i$'s prompt, as shown in Figure~\ref{fig:process_pipeline}. By decoupling $\tau$ (agent activation) and $\delta$ (edge visibility), we allow for flexible and interpretable control over both token-level and content-level sparsity.
+
+The computed weights determine not only the influence strength but also how information is presented to each agent. We implement a three-tier prompt priority filter:
+\begin{equation}
+P_{ij}^t = \begin{cases}
+\text{[Critical]} & \text{if } w_{ij}^t > 0.40 \\
+\text{[Reference]} & \text{if } w_{ij}^t > 0.25 \\
+\text{[Background]} & \text{if } w_{ij}^t > 0.10
+\end{cases}
+\label{eq:semantic_magnitude}
+\end{equation}
+Agents prioritize debate context with tags $P_{ij}^t$ quantized from computed influence weights $w_{ij}^t$, while maintaining the natural language interaction paradigm of LLMs.
+
+To regularize overall communication, we introduce a global budget parameter $B$ representing a soft upper bound on the total number of active communication links per round. Formally, the set of active links is defined as $\{ (i,j) : w_{ij}^t > \delta \}$(where $\delta=0.10$ as minimum visible weight shown in Equation~\ref{eq:semantic_magnitude}), and a budget penalty is incorporated into the policy loss whenever this set exceeds $B$:
+\begin{equation}
+\mathcal{L}_\mathrm{budget}(\theta) = \max\left(0,\, \sum_{i,j} \mathbb{I}(w_{ij}^t > \delta) - B \right),
+\label{eq:Loss_budget}
+\end{equation}
+where $\mathbb{I}(\cdot)$ is the indicator function. \newtext{Crucially, $B$ acts as a \textbf{training-time prior} via the loss function, encouraging the policy to internalize a preference for sparsity, rather than acting as a \textbf{hard constraint at inference}.} This budget constraint reflects a prior preference for overall communication compactness, while leaving the allocation of communication opportunities across agents to be adaptively learned by the policy to best balance informativeness and efficiency.
+
+Through this budget-regularized design, RUMAD enables precise, learnable trade-offs between debate effectiveness and communication cost, granting the controller the capacity to both minimize unnecessary token usage and adaptively maintain critical informational flows.
+
+
+\subsection{Multi-Objective Reward}
+\newtext{To guide the RL agent in navigating the complex trade-offs of debate, we designed a hierarchical, multi-objective reward function. Our design is structured around three core objectives: }
+
+\newtext{\textbf{Maximizing Solution Quality.}}
+As major rewarding signal, $\mathrm{Accuracy}_{t/{ep}}$ are 0/1 binary rewards reflecting whether the majority answers match the ground truth. 
+$\mathrm{Progress}_t$ applies a round-driven-decaying reward amplification to $\mathrm{Accuracy}_t$ when round answer is correct. Thus correctness in early-stage is encouraged. 
+$\mathrm{Improvement}_{t/{ep}}$ are also binary signals rewarding shift from wrong answer to correct answer across adjacent rounds or between round 0 and final response.
+
+\newtext{\textbf{Promoting Group Cohesion.}}
+$\mathrm{Consensus}_{t/{ep}}$ measures the proportion of agent answers that match current majority answer, together with their semantic similarity, rewarding more unified and coherent group responses.
+
+\newtext{\textbf{Optimizing Resource Efficiency.}}
+$\mathrm{Efficiency}_t$ incentivizes reduced token consumption relative to a baseline answer-length budget. 
+In addition, a penalty signal, $\mathrm{Sparsity}_t$, is designed as indicator of "schedule expense". Expenses are assigned corresponding to semantic magnitude filtered in Equation~\ref{eq:semantic_magnitude}.
+
+Formally, at each debate round $t$, the controller receives a composite reward $R_t$ that integrates six key factors:
+\begin{align}
+R_t = \;& \alpha_1\,\mathrm{Accuracy}_t + \alpha_2\,\mathrm{Consensus}_t + \alpha_3\,\mathrm{Progress}_t \\
+ &+ \alpha_4\,\mathrm{Efficiency}_t + \alpha_5\,\mathrm{Improvement}_t - \alpha_6\,\mathrm{Sparsity}_t. \nonumber
+\end{align}
+where $\mathrm{Progress}_t$ and $\mathrm{Sparsity}_t$ are designed as in-progress-only signals. At the end of each debate episode, we compute a terminal reward $R_{{ep}}$:
+\begin{align}
+R_{{ep}} =\; & \beta_1\,\mathrm{Accuracy}_{{ep}} + \beta_2\,\mathrm{Consensus}_{{ep}} \\
+& + \beta_3\,\mathrm{Efficiency}_{{ep}}  + \beta_4\,\mathrm{Improvement}_{{ep}} \nonumber
+\end{align}
+
+% \begin{table}[t]
+% \setlength{\tabcolsep}{5mm}
+% \centering
+% \caption{Weight parameter used in RUMAD multi-objective reward functions.}
+% \begin{tabular}{ccc}
+% \toprule
+% \textbf{Symbol} & \textbf{Description} & \textbf{Value} \\ \midrule
+% $\alpha_1$/$\beta_1$  & Accuracy              & 1.0/2.0     \\
+% $\alpha_2$/$\beta_2$  & Consensus             & 0.3/0.5     \\
+% $\alpha_3$  & Progress              & 0.1     \\
+% $\alpha_4$/$\beta_3$  & Efficiency            & 0.2/0.3     \\
+% $\alpha_5$/$\beta_4$  & Improvement           & 1.0/0.2      \\
+% $\alpha_6$  & Sparsity (penalty)    & 0.1      \\
+% \bottomrule           
+% \end{tabular}%
+% \label{tab:reward_weight_parameter}
+% \end{table}
+
+
+\newtext{$R_t$ and $R_{{ep}}$ are roughly homogeneous with different preference. As shown in Table~\ref{tab:reward_weight_parameter}, parameters of $R_t$ and $R_{{ep}}$ are distributed similarly, except $\mathrm{Improvement}_{t}$ are emphasized with higher weight in $R_t$ as encouragement of runtime adjustment. This two-tier reward mechanism enables the controller to balance immediate step-wise gains (e.g., rapid consensus or token savings) with ultimate debate-level objectives, facilitating robust, generalizable policy learning for efficient multi-agent reasoning under budget constraints. Structural necessity of this hierarchical design is supported by ablation in Section~\ref{sec:ablation}. And parameter robustness is shown through 0-shot generalization revealed in Section~\ref{sec:main_result}.}
+
+
+
+\subsection{RL Dynamic Topology Control}
+
+The controller is trained using the Proximal Policy Optimization (PPO) framework. The policy loss is given by
+\begin{equation}
+\mathcal{L}_\pi(\theta) = - \mathbb{E}_t \left[ \min\left( r_t\,\hat{A}_t,\, \mathrm{clip}(r_t, 1-\varepsilon, 1+\varepsilon)\hat{A}_t \right) \right]
+\end{equation}
+where $r_t = \frac{\pi_\theta(a_t|o_t)}{\pi_{\theta_\mathrm{old}}(a_t|o_t)}$ is the probability ratio, and $\hat{A}_t$ is the advantage computed via Generalized Advantage Estimation (GAE) using the composite reward. 
+
+The PPO value network $\phi$ is trained to minimize the squared error:
+\begin{equation}
+\mathcal{L}_v(\phi) = \mathbb{E}_t \left[ (V_\phi(o_t) - V_t^\mathrm{target})^2 \right]
+\end{equation}
+with $V_\phi(o_t)$ as predicted expectation of future return with current observation $o_t$ versus $V_t^\mathrm{target}$ as the bootstrapped return at time step $t$. 
+
+The total loss for joint PPO training is
+\begin{equation}
+\mathcal{L}(\theta, \phi) = \mathcal{L}_\pi(\theta) + c_1\,\mathcal{L}_v(\phi) + c_2\,\mathcal{L}_\mathrm{budget}(\theta)
+\end{equation}
+where $c_1, c_2 \geq 0$ \newtext{balance loss signals among policy, value and regularization into comparable orders of magnitude, according to PPO style}.
+
+Training proceeds by iteratively sampling debate episodes, updating the controller with the composite loss, and periodically evaluating performance under fixed communication budgets. At deployment, the controller deterministically selects edge weights using the mean of the learned Gaussian distributions.
+

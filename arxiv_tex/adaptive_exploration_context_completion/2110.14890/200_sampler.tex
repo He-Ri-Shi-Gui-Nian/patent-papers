@@ -1,0 +1,61 @@
+% !TEX root = main.tex
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{query}
+\vspace{-2mm}
+\caption{Different query structures and their optimal node cuts (shaded nodes) used by our bidirectional rejection sampling. 
+\label{fig:query_tree}}
+\vspace{-7mm}
+\end{figure*}
+
+
+\section{Efficient training data sampling}\label{sec:sampler}
+Unlike in link prediction, where sampling the training data, {\em head--relation--tail} can be quickly performed via dictionary look up~\citep{zhu2019graphvite, zheng2020dgl}, sampling training data for multi-hop reasoning is much more complicated. It involves generating queries $q$ by instantiating query structures, performing KG traversal to find answers $\Acal_q^{\Gcal}$ as well as negative answers $\Ncal_q^{\Gcal}$, which is computationally expensive. We propose an efficient way to sample training data for contrastive learning for multi-hop reasoning. During inference, there are usually a pre-generated test set or user can input the test query of interest. This section focuses on efficient sampling during training.
+
+\subsection{Instantiating query structure}
+\label{sec:inst_q}
+
+A query logical structure (\Figref{fig:query_tree}) specifies the backbone of a query $q$, including the types of operation (intersection, relation projection, negation, union) and its structure. It can be seen as an abstraction of the query computation plan, where anchor nodes and relation types are not grounded. Instantiating a query structure requires specifying a relation $r\in\Rcal$ for each edge in the structure, as well as the anchor entities $\Vcal_q$ (blue nodes in \Figref{fig:query_tree}). 
+
+A na\"ive way to instantiate a query (construct a concrete query given its logical structure) is to first ground the anchor entities by randomly sampling entities in the KG, and then randomly select relations $r \in \Rcal$ for all the relation projection edges. However, in most cases such randomly generated queries have no answers in the KG as sampled entities may not even have relations of predetermined types, and intersections of random entities will almost always be empty. This means such samples have to be rejected and the sampling process has to start all over again. Such a na\"ive method leads to huge computation cost. 
+
+
+Instead, we instantiate a query structure via {\em reverse directional sampling}, \ie, we first ground the root node (\ie, the answer node) and then proceed towards the anchors. This is the reverse process of KG traversal for answers (\Secref{sec:background}). The main benefit of reverse sampling is that it can always instantiate a given query structure (\appref{app:reverse_sample}). Reverse directional sampling uses depth-first search (DFS) over the query structure from the root (answer) to the leaves (anchor entities). During the DFS, each node on the query structure is grounded to an entity on the KG and an edge to a relation on the KG associated with the previously grounded entity. An example of the process is shown in~\Figref{fig:query}(B). 
+
+Reverse sampling procedure can always obtain valid queries (with non-empty answer set). Another advantage of the above sampling process is that, the overall complexity is $O(C|q|)$, same as the complexity of DFS, where $|q|$ indicates the maximum depth of a path (from root to leaves) in the query structure, and $C$ is the maximum degree of entities in the KG. The sampling process returns the instantiated query $q$, the anchor entities $\Vcal_q$, and a single positive answer $a_q \in \Acal_q^{\Gcal}$ (the instantiated entity at root). 
+
+
+\subsection{Negative sampling}
+\label{sec:bidir_sampling}
+
+After the instantiating (node/edge grounding) the query structure, we obtain the tuple $(q, \Vcal_q, \cbr{a_q})$ as a positive sample while we still need $\Ncal_q^{\Gcal}$ to optimize~\eqnref{eq:lossfunc}. We find that a single answer entity is sufficient in each step of stochastic training, while typically we need $k = |\Ncal_q^{\Gcal}|$ in~\eqnref{eq:lossfunc} to be thousands for negative samples in the contrastive learning objective. Next we explain how to efficiently obtain a set of negative entities $\Ncal_q^{\Gcal}$ (\ie, non-answers).
+
+A na\"ive approach would be to sample negative entities (non-answers) at random from the KG, independent of the query $q$. However, notice that a valid query may have many answers entities in the order of $O(C^{|q|})$. Such an approach would mean that many of the sampled negatives are actually answers to the query, which would lead to noisy training data that would confuse the model.
+An alternative would be to execute the query $q$ and perform KG traversal to obtain all the answers $\Acal_q^\Gcal$ (as presented in \Secref{sec:background}). We could then obtain negative samples $\Ncal_q^\Gcal$ by simply sampling from $\Vcal \backslash\Acal_q^\Gcal$. Although it is possible to re-order the relation projection operations to get better scheduling, in the worst case, $|\Acal_q^{\Gcal}|$ is still in the order of $O(C^{|q|})$, regardless of the query scheduling. Thus, such exhaustive traversal is prohibitive for negative sampling on large KGs.
+
+
+\textbf{Our solution: Bidirectional rejection sampling.}
+Since $\Ncal_q^{\Gcal}$ does not have to contain all the non-answer entities during stochastic training, we propose to exploit rejection sampling to locate a subset of negative entities efficiently. That is to say, starting with a random proposal $v \in \Vcal$, we only need to check whether $v \in \Acal_q^{\Gcal}$, rather than to enumerate the entire $\Acal_q^{\Gcal}$. Inspired by bidirectional search, our key insight is to obtain a node cut (formally defined in Def. \ref{def:nodecut}) on the query computation plan, \ie, a subset of nodes that cut all the paths between each leaf node and the root node. Then we perform bidirectional search. We first start the traversal from the leaves (anchors) to the node cut and cache the entities we obtained in traversal, which we term \emph{forward caching} (\Figref{fig:query}(C)). We then sample negative entities, traverse from the root to the node cut and verify whether they are true negatives by checking the overlap of the cached entities and the traversed set. We term the second process \emph{backward verification} (\Figref{fig:query}(D)).
+
+
+\begin{definition}[Node cut]\label{def:nodecut}
+	A node cut $c_q$ of a query $q$ is a set of nodes in the computation plan, such that every path between anchor node (leaf) and answer node (root) contains exactly one node in $c_q$. By definition a node cut is minimal, meaning that no subset of $c_q$ can be a node cut.
+\end{definition}
+
+
+We illustrate this idea in~\Figref{fig:query}. Given a two-hop query ``\textit{Who co-authored papers with Canadian Turing Award winners?}'', we set the node after the intersection operation (red node) as the single node in the node cut. Then we can obtain the set of ``Canadian Turing Award winners'' via \textit{forward traversal} and cache the intermediate results (\ie, \texttt{Bengio}). 
+% 
+Overall this process requires $O(C)$ computation/memory cost, where $C$ is the degree of the KG. 
+% 
+Then given a candidate negative entity $v$, one can spend $O(C)$ cost to verify whether the set of co-authors of $v$ overlaps with the cached entities in the node cut.
+In our implementation (\secref{sec:more_opt} for more details) we propose constant number of candidate negative entities, thus the overall computation cost would be $O(C)$, which is a reduction of square root from $O(C^2)$ using exhaustive traversal. 
+
+Next, we calculate the computation cost for any given node cut $c_q$, and then we propose an efficient algorithm to find the optimal node cut, \ie, one with the lowest cost in bidirectional search.
+
+Given a reasoning path $P_{(v_a, V_?)} = [v_0 = v_a, v_1, \ldots, v_t = V_?]$ in the query computation plan that starts from an anchor node (leaf) $v_a \in \Vcal_q$ and ends at the answer node (root) $V_?$, for a node cut $c_q$, by definition there exists a unique node $v_i \in c_q \cap P_{(v_a, V_?)}$. Then the worst-case computation/memory cost for negative sampling for reasoning path $P_{(v_a, V_?)}$ can be estimated as $\texttt{cost}(c_q, P_{(v_a, V_?)}) = \max\cbr{C^{i}, C^{t-i}}$, \ie, the maximum cost of forward traversal or backward verification. The optimal scheduling is recast as 
+\begin{eqnarray}
+	\min_{c_q} \quad & \max_{v_a \in \Vcal_q} \texttt{cost}(c_q, P_{(v_a, V_?)}) \nonumber \\
+	\quad & \st \,\, c_q \text{ is a node cut of } q. \label{eq:optimal_sheduling}
+\end{eqnarray}
+As the computation plan is a tree, we propose to solve the above optimization problem with dynamic programming (DP). We define three functions $u(v)$, $s(v)$, $o(v)$ representing the number of relation projections from $v$ to the root $V_?$, the maximum length of path from $v$ to any anchor, and the optimal cost of resolving all the reasoning paths that include $v$ in the best plan. We can derive the dependency of the three functions recursively, solve the dynamic program in a linear time w.r.t. $|q|$, and construct the node cut using the function $o(\cdot)$. We provide the details in \appref{app:cut_dp}. Example query structures and their corresponding optimal node cuts are shown in \Figref{fig:query_tree}\footnote{Although query structures considered in current literature are small enough to find the optimal cut with brute force, our DP significantly improves efficiency when query structures are large.}.

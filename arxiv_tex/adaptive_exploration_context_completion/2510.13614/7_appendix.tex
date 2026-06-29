@@ -1,0 +1,1240 @@
+
+\newcommand{\Dep}{\mathrm{D}}
+
+% \clearpage
+\newpage
+\appendix
+
+\section{Algorithm}\label{appendix:alg}
+
+
+\subsection{Temporal Grounding}\label{appendix:alg:analysis}
+We present the comprehensive algorithmic procedure for temporal grounding (Section \ref{sec:method:grounding}) in Algorithm \ref{algorithm:analysis}.
+
+
+
+\subsection{Tree of Time Reasoning}\label{appendix:alg:controller}
+We present the comprehensive algorithmic procedure for
+Tree of Time hierarchical reasoning (Section \ref{sec:recursion}) in Algorithm \ref{algorithm:controller}.
+
+
+
+
+% \newpage
+\subsection{Temporal Evidence Retrieval and Pruning}\label{appendix:alg:execution}
+We present the comprehensive algorithmic procedure for temporal evidence retrieval and pruning (Section \ref{sec:retrieval}) in Algorithm \ref{algorithm:execution}.
+
+\subsection{Experience Memory}\label{appendix:alg:memory}
+We present the comprehensive algorithmic procedure for experience memory (Section \ref{sec:memory}) in Algorithm \ref{algorithm:memory}.
+
+\begin{algorithm}[h]
+{
+{
+\SetVline
+\small
+\caption{{\small{TemporalGrounding}}}\label{algorithm:analysis}
+
+\Input{Question $Q$, TKG $\mathcal{G}$, experience pool $\mathcal{E}_{pool}$, limits $D_{\max}, W_{\exp}$}
+\Output{Subquestion tree $\mathcal{T}_Q$, indicators $\{\Ind_i\}$, topic entities $Topics$, type $\textsf{Type}(Q)$, subgraph $\mathcal{G}_Q$}
+
+% \vspace{1mm}
+% \CmtState{\\Entity detection \& linking}
+\CmtState{\\$Keywords \leftarrow \textsf{NER}(Q)$; $Cand \leftarrow \textsf{LinkToKG}(Keywords,\mathcal{G})$}{LLM extraction + DRM alignment}
+\State{$Topics \leftarrow \textsf{Disambiguate}(Q,Cand)$}
+
+\CmtState{\\$\mathcal{G}_Q \leftarrow \textsf{BuildTemporalSubgraph}(Topics,\mathcal{G}, D_{\max})$}{bounded $D_{\max}$-hop temporal neighborhood}
+% \State
+
+% \CmtState{\\Temporal type classification (experience-guided)}{}
+\CmtState{\\$\mathcal{E}_{type} \leftarrow \textsf{GetTypeExp}(\mathcal{E}_{pool}, Q, W_{\exp})$}{Temporal type classification}
+\State{$\textsf{Type}(Q) \leftarrow \textsf{Prompt}_{\text{TypeSelect}}(Q, \mathcal{E}_{type})$}
+
+
+\State{\textbf{Return} $\mathcal{T}_Q,\{\Ind_i\}, Topics, \textsf{Type}(Q), \mathcal{G}_Q$}
+}
+}
+\end{algorithm}
+\begin{algorithm}[h]
+{
+{
+\SetVline
+\small
+\caption{{\small{TreeofTimeReasoning}}}\label{algorithm:controller}
+
+\Input{indicators $\{\Ind_i\}$, subgraph $\mathcal{G}_Q$, topics $Topics$, experience pool $\mathcal{E}_{pool}$, limits $D_{\max}, B_{\max}, W_{\max}, W_{\exp}$}
+\Output{Local answers/paths per node; updated tree}
+
+% \vspace{1mm}
+
+% \CmtState{\\Hierarchical decomposition (experience-guided)}{}
+\State{$\mathcal{E}_{decomp} \leftarrow \textsf{GetDecompExp}(\mathcal{E}_{pool}, Q, W_{\exp}, \textsf{Type}(Q))$}
+\If{$\exists$ compatible plan in $\mathcal{E}_{decomp}$}{
+  \State{$\mathcal{T}_Q \leftarrow \textsf{ReusePlan}(\mathcal{E}_{decomp}, Q, Topics)$}
+}
+  \State{\textbf{else} $\mathcal{T}_Q \leftarrow \textsf{Prompt}_{\text{Decompose}}(Q, \mathcal{E}_{decomp}, \textsf{Type}(Q))$}
+
+% \CmtState{\\Bounds propagation \& indicator extraction}{turn $Q$ into $\langle x?,R,y?,\tau;\mathcal{C}_{time}\rangle$}
+% \State{$\mathcal{T}_Q \leftarrow \textsf{PropagateBounds}(\mathcal{T}_Q)$}
+\State{$\{\Ind_i\} \leftarrow \textsf{ExtractIndicators}(\mathcal{T}_Q)$}
+\ForEach{$(q_i,\Ind_i) \in \textsf{TraverseRootToLeaf}(\mathcal{T}_Q)$}{
+  % \CmtState{\\Memory-first reuse}{fast path if sufficient}
+  \State{$(\hat{a},\hat{P},\texttt{sufficient}) \leftarrow \textsf{MemoryLookupAndTest}(q_i,\Ind_i,\mathcal{E}_{pool})$}
+  \State{\textbf{if} $\texttt{sufficient}$ \textbf{then} \textbf{continue}}
+
+  % \CmtState{\\Experience-guided toolkit selection}{multiple tool calls allowed}
+  \State{$\mathcal{E}_{tool} \leftarrow \textsf{GetToolkitExp}(\mathcal{E}_{pool}, q_i,\Ind_i, \textsf{Type}(Q), W_{\exp})$}
+  \State{$\mathcal{T}_i \leftarrow \textsf{Prompt}_{\text{ToolkitSelect}}(\mathcal{T}_\theta, \Ind_i, q_i, \mathcal{E}_{tool})$}
+
+  % \CmtState{\\Execute over KG via Execution Layer}{parallel per toolkit}
+  \State{$(C_i, S_i) \leftarrow \textsf{TemporalRetrieveAndPrune}(\mathcal{G}_Q, q_i,\Ind_i, Topics, \mathcal{T}_i, \mathcal{E}_{pool}, W_{\max})$}
+
+  % \CmtState{\\LLM aggregation + sufficiency test}{debate--vote then verify}
+  \State{$(a_i, P_i, \texttt{sufficient}) \leftarrow \textsf{DebateVoteAndTest}(q_i,\Ind_i,C_i)$}
+
+  \If{$\neg \texttt{sufficient}$}{
+    \If{$\textsf{DepthOK}~\land~\textsf{BranchOK}$}{
+      \State{$\{q_{new}\},\{\Ind_{new}\} \leftarrow \textsf{RefineOrDecompose}(q_i,\Ind_i,C_i)$}
+      \State{$\textsf{UpdateTree}(\mathcal{T}_Q,\{q_{new}\},\{\Ind_{new}\})$}
+    }
+  }
+    \State{\textbf{else} $\textsf{WriteBackIfSuccess}(\mathcal{E}_{pool}, q_i,\Ind_i, a_i, P_i, \mathcal{T}_Q)$}
+}
+\State{\textbf{Return} \{$a_i$\}, \{$p_i$\}, $\mathcal{T}_Q$}
+}
+}
+\end{algorithm}
+
+
+% \newpage
+% \subsection{Analysis Layer}\label{appendix:alg:analysis}
+% We detail the initialization and question decomposition procedure with indicator generation in Algorithm \ref{algorithm:analysis}.
+% % \vspace{-3mm}
+% \begin{algorithm}[h]
+% {
+% {
+% \SetVline
+% \small
+% \caption{{\small{Initialize \& Decompose (Analysis Layer)}}}\label{algorithm:analysis}
+
+% \Input{Question ($Q$), TKG ($\mathcal{G}$), maximum depth and branch($D_{\max}, B_{\max}$), experience pool ($\mathcal{E}_{pool}$)}
+% \Output{Subquestion tree ($\mathcal{T}_Q$), indicator set ($\{\Ind_i\}$), topic entities ($Topics$)}
+
+% \vspace{1mm}
+% % \CmtState{\\Topic entity linking}{NER $\rightarrow$ KG mapping with semantic/time-aware disambiguation}
+% \State{$Keywords \leftarrow \textsf{NER}(Q)$; $Cand \leftarrow \textsf{LinkToKG}(Keywords,\mathcal{G})$}
+% \State{$Topics \leftarrow \textsf{Disambiguate}(Q,Cand)$}
+
+% \vspace{1mm}
+% % \CmtState{\\Question typing \& ICL retrieval}{Type predicts temporal intent; ICL pulls top-$k$ prior workflows}
+% % \State{$t^\star \leftarrow \textsf{PredictType}(Q)$}
+% % \State{$Exem \leftarrow \textsf{TopK\_E}(Q; \text{type}=t^\star,\text{entity/time signature})$}
+
+% \State{$\mathcal{E}_{type} \leftarrow $ GetTypeExperience($\mathcal{E}_{pool},Q,$ W$_{exp}$)
+% \\$\text{type} \leftarrow \textsf{Prompt$_{\text{TypeSelectBasedExp}}$}(Q, \mathcal{E}_{type})$}
+
+% \State{$\mathcal{E}_{decomp} \leftarrow $ GetDecompExperience($\mathcal{E}_{pool},Q,$ W$_{exp}$)}
+% \If{
+% $\exists$ compatible plan $\in \mathcal{E}_{Decomp}$} {
+% \State{$\mathcal{T}_Q \leftarrow \textsf{ReusePlan}(\mathcal{E},Q,Topics)$
+% } }
+
+
+  
+% \State{\textbf{else} $\mathcal{T}_Q \leftarrow \textsf{Prompt$_{\text{LLMDecompose}}$}(Q, \mathcal{E}_{decomp}$, type)}
+
+
+% % \vspace{1mm}
+% % \CmtState{\\Binding \& normalization}{Propagate temporal bounds; normalize day/month granularity}
+% \CmtState{\\$\mathcal{T}_Q \leftarrow \textsf{PropagateBounds}(\mathcal{T}_Q)$; $\{\Ind_i\} \leftarrow \textsf{ExtractIndicators}$}{\textbf{Turn $Q$ into $\langle x?,R,y?,\tau;\mathcal{C}_{time}\rangle$ constraints}}}
+
+% % \vspace{1mm}
+% \State{\textbf{Return} $\mathcal{T}_Q,\{\Ind_i\},Topics$}
+
+% }
+% \end{algorithm}
+
+% \newpage    
+% % \subsection{Analysis Layer}\label{appendix:alg:analysis}
+% % We detail the initialization and decomposition procedure with indicator generation in Algorithm \ref{algorithm:analysis}.
+% \newpage
+
+
+
+\begin{algorithm}[h]
+{
+{
+\SetVline
+\small
+\caption{{\small{TemporalRetrieveAndPrune}}}\label{algorithm:execution}
+
+\Input{Subquestion $(q_i,\Ind_i)$, topics $Topics$, selected toolkits $\mathcal{T}_i$, experience pool $\mathcal{E}_{pool}$, subgraph $\mathcal{G}_Q$, limits $W_{\max}, W_{\exp}, D_{\max}$}
+\Output{Pruned candidates $C_i$, selected seeds $S_i$}
+
+% \vspace{1mm}
+% \CmtState{\\Seed selection (experience-augmented)}{}
+\State{$\mathcal{E}_{seed} \leftarrow \textsf{GetSeedExp}(\mathcal{E}_{pool}, q_i,\Ind_i, W_{\exp})$}
+\State{$S_i \leftarrow \textsf{Prompt}_{\text{SeedSelect}}(Topics,\Ind_i,q_i,\mathcal{E}_{seed})$; $C \leftarrow \emptyset$}
+
+% \CmtState{\\Hybrid retrieval: graph + embedding}{parallel over $\mathcal{T}_i$}
+% \State{$}/
+\ForEach{$T_\theta \in \mathcal{T}_i$ \textbf{in parallel}}{
+  \State{$C \leftarrow C \cup \textsf{TreeBasedTemporalPathRetrieval}(\mathcal{G}_Q, T_\theta,\Ind_i,S_i,D_{\max})$}
+  \State{$C \leftarrow C \cup \textsf{DenseEmbedRetrieve}(\Ind_i, T_\theta, \textsf{Docu}(\mathcal{G}_Q))$}
+}
+
+% \CmtState{\\Temporal-first pruning}{strict time filter + monotone check}
+\State{$\widetilde{C} \leftarrow \{\,p \in C \mid p \vDash \mathcal{C}_{time}(\Ind_i) \land \textsf{Monotone}(p)\,\}$}
+
+% \CmtState{\\Semantic–temporal re-ranking}{keep Top-$W_1$}
+\ForEach{$p \in \widetilde{C}$}{
+  \State{$s_{\text{sem}}(p) \leftarrow \textsf{SemanticDRM}(\Ind_i,p)$}
+  \State{$s_{\text{prox}}(p) \leftarrow \exp(-|t(p)-t(\Ind_i)|/\sigma)$}
+  \State{$Score(p) \leftarrow \lambda_{\text{sem}} s_{\text{sem}}(p) + \lambda_{\text{prox}} s_{\text{prox}}(p)$}
+}
+\State{$\widetilde{C} \leftarrow \textsf{SelectTopPathandSort}(\widetilde{C}, W_1)$}
+
+% \CmtState{\\LLM-aware selection}{final Top-$W_{\max}$ for reasoning}
+\State{$C_i \leftarrow \textsf{Prompt}_{\text{SelectPath}}(\widetilde{C}, q_i,\Ind_i, W_{\max})$}
+
+\State{\textbf{Return} $C_i, S_i$}
+
+\vspace{2mm}
+\textbf{Procedure} \textsf{TreeBasedTemporalPathRetrieval}$(\mathcal{G}_Q, T_\theta, \Ind_i, S_i, D_{\max})$\\
+\SetVline
+\small
+\State{$\text{StartList}, \mathcal{C}_{time}, D_{\text{pred}} \leftarrow \textsf{ExtractInfo}(T_\theta,\Ind_i,S_i)$}
+\State{$D \leftarrow 1$; $\text{Paths} \leftarrow \emptyset$; $\text{Frontier} \leftarrow \{(s, t_0, [])~|~s \in \text{StartList},~t_0=\textsf{InitTime}(\mathcal{C}_{time})\}$}
+\While{$D \le D_{\max}$}{
+  \State{$\text{NewFrontier} \leftarrow \emptyset$}
+  \ForEach{$(v,t_{\text{last}},P) \in \text{Frontier}$}{
+    \ForEach{$(v \xrightarrow{r,t_e} u) \in \textsf{ExpandOneHop}(\mathcal{G}_Q, v, T_\theta)$}{
+      \If{$\neg \textsf{Monotone}(t_{\text{last}}, t_e)$}{\textbf{continue}}
+      \State{$P' \leftarrow P \,\Vert\, (v \xrightarrow{r,t_e} u)$; $\text{Paths} \leftarrow \text{Paths} \cup \{P'\}$}
+      \State{$\text{NewFrontier} \leftarrow \text{NewFrontier} \cup \{(u,t_e,P')\}$}
+    }
+  }
+  \If{$|\text{NewFrontier}| > W_{\max}$}{\State{$\text{NewFrontier} \leftarrow \textsf{RelevantPruning}(\text{NewFrontier},\Ind_i,W_{\max})$}}
+  \State{$\text{Frontier} \leftarrow \text{NewFrontier}$; $D \leftarrow D{+}1$}
+}
+\State{\textbf{Return} $\text{Paths}$}
+}
+}
+\end{algorithm}
+
+
+\begin{algorithm}
+{
+{
+\SetVline
+\small
+\caption{{\small{Experience Memory}}}\label{algorithm:memory}
+
+\Input{Experience pool $\mathcal{E}_{pool}$, query object (question or sub-question), indicator $\Ind$, type label $\tau$, buffer size $K$}
+\Output{Matched exemplars $\mathcal{E}_{match}$ (optional), updated pool}
+
+% \vspace{1mm}
+% \CmtState{\\Unified embedding + metadata index}{per-question and per-indicator embeddings, type labels, hit counts}
+\State{$e_{\text{q}} \leftarrow \textsf{Encode}(q)$; $e_{\Ind} \leftarrow \textsf{Encode}(\Ind)$}
+\State{$\mathcal{E}_{match} \leftarrow \textsf{ANN\_Search}(\mathcal{E}_{pool}, [e_{\text{q}},e_{\Ind}],~\text{filter: type}=\tau,~\text{top-}K)$}
+\State{$\textsf{RankBy}(\lambda_{\text{sim}}\cdot\text{sim} + \lambda_{\text{hit}}\cdot\text{hit\_count})$}
+\State{\textbf{Return} $\mathcal{E}_{match}$}
+
+\vspace{1mm}
+% \CmtState{\\Write-back on success}{trajectories, selected toolkits, paths, sufficiency flags}
+\textbf{Procedure} \textsf{WriteBackIfSuccess}$(\mathcal{E}_{pool}, q,\Ind,a,P)$\\
+\SetVline
+\small
+\State{$\textsf{Store}(q,\Ind,a,P,\tau, \text{embeddings}=[e_{\text{q}},e_{\Ind}], \text{sufficient}=\texttt{true})$}
+\State{$\textsf{UpdateBufferStats}(q,\Ind)$}
+
+\vspace{1mm}
+% \CmtState{\\Memory-first lookup with sufficiency check}{used by controller}
+\textbf{Procedure} \textsf{MemoryLookupAndTest}$(q,\Ind,\mathcal{E}_{pool})$\\
+\SetVline
+\small
+\State{$Hist \leftarrow \textsf{Retrieve}(q,\Ind, \text{filter: type}=\tau)$}
+\ForEach{$(\hat{a},\hat{P}) \in Hist$}{
+  % \If{$\textsf{Sufficient}(q,\Ind,\hat{a},\hat{P})$}{\State{\textbf{Return} $\hat{a},\hat{P},\texttt{sufficient}=\texttt{true}$}}
+  \State{\textbf{if} $\textsf{Sufficient}(q,\Ind,\hat{a},\hat{P})$ \textbf{then} \textbf{Return} $\hat{a},\hat{P},\texttt{sufficient}=\texttt{true}$ }
+}
+
+
+
+\State{\textbf{Return} $\bot,\bot,\texttt{sufficient}=\texttt{false}$}
+}
+}
+\end{algorithm}
+
+
+% \newpage
+
+
+
+\begin{table*}[h]
+\centering
+\caption{Multi-granularity temporal reasoning on Hits@1. Best in each column is in \textbf{bold}.}
+
+\label{tab:multi_granularity}
+\resizebox{0.8\linewidth}{!}{
+\begin{tabular}{lccccccccc}
+\toprule
+\multirow{2}{*}{\textbf{Model}} &
+\multicolumn{3}{c}{\textbf{Equal}} &
+\multicolumn{3}{c}{\textbf{Before/After}} &
+\multicolumn{3}{c}{\textbf{Equal-Multi}} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+& \textbf{Day} & \textbf{Month} & \textbf{Year}
+& \textbf{Day} & \textbf{Month} & \textbf{Year}
+& \textbf{Day} & \textbf{Month} & \textbf{Year} \\
+\midrule
+BERT            & 4.9  & 10.3 & 13.6 & 15.0 & 16.4 & 17.5 & 6.4  & 10.2 & 9.0  \\
+DistillBERT     & 4.1  & 8.7  & 11.3 & 16.0 & 15.0 & 18.6 & 9.6  & 12.7 & 8.9  \\
+ALBERT          & 6.9  & 8.2  & 13.2 & 22.1 & 27.7 & 30.8 & 10.3 & 14.4 & 14.4 \\
+\midrule
+EmbedKGQA       & 20.0 & 33.6 & 21.8 & 39.2 & 51.8 & 51.1 & 14.5 & 32.1 & 26.3 \\
+CronKGQA        & 42.5 & 38.9 & 33.1 & 37.5 & 47.4 & 45.0 & 29.5 & 33.3 & 25.1 \\
+MultiQA         & 44.5 & 39.3 & 35.0 & 37.9 & 54.8 & 52.5 & 30.8 & 32.1 & 28.3 \\
+\midrule
+\textbf{MemoTime w/ DeepSeek-V3}   & 85.6 & \textbf{85.1} & 92.3 & 81.4 & 77.4 & 82.4 & 60.0 & 55.3 & 53.2 \\
+\textbf{MemoTime w/ GPT-4-Turbo}   & \textbf{85.8} & 85.0 & \textbf{93.8} & \textbf{92.5} & \textbf{86.2} & \textbf{94.1} & \textbf{68.4} & \textbf{70.4} & \textbf{64.4} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+\begin{table*}[h]
+\caption{Efficiency analysis of \text{MemoTime} on \text{MultiTQ}.}
+\label{tab:multitq_efficiency}
+\centering
+\resizebox{0.8\linewidth}{!}{
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{} & \textbf{Overall} & \textbf{After–First} & \textbf{Before–Last} & \textbf{Equal–Multi} & \textbf{First/Last} & \textbf{Before/After} & \textbf{Equal} \\
+\midrule
+\textbf{Average Depth }     & 1.37 & 2.12 & 2.00 & 1.57 & 1.00 & 1.54 & 1.04 \\
+\textbf{Average Branch }    & 2.64 & 3.91 & 3.94 & 3.05 & 2.00 & 2.78 & 2.01 \\
+\textbf{Average LLM Calls } & 8.75 & 11.55 & 11.49 & 9.88 & 7.42 & 9.10 & 7.32 \\
+\textbf{Running Time (s)}   & 43.11 & 58.11 & 57.89 & 48.86 & 35.70 & 45.34 & 35.42 \\
+\bottomrule
+\end{tabular}}
+\vspace{5mm}
+\end{table*}
+
+
+
+% \subsection{Overall Workflow}\label{appendix:alg:overall}
+% We present the comprehensive algorithmic procedure for overall workflow (Section \ref{sec:method}) in Algorithm \ref{algorithm:overall-workflow}.
+
+
+% \begin{algorithm}
+% {
+% {
+% \SetVline
+% \small
+% \caption{{\small{Overall Workflow}}}\label{algorithm:overall-workflow}
+
+% \Input{Question ($Q$), TKG ($\mathcal{G}$), experience pool ($\mathcal{E}_{pool}$), limits ($D_{\max}, B_{\max}, W_{\max}$)}
+% \Output{Final answer ($A$), global reasoning path ($Paths_{\text{global}}$)}
+
+% \vspace{1mm}
+% \CmtState{\\$\mathcal{T}_Q,\{\Ind_i\}, Topics, \textsf{Type}(Q), \mathcal{G}_Q \leftarrow \textsf{TemporalGrounding}(Q,\mathcal{G},\mathcal{E}_{pool})$}{\textbf{Phase~1: Temporal Grounding}}
+
+% \CmtState{\\$AnsList \leftarrow []$; $PathList \leftarrow []$; $D \leftarrow 1$; $B \leftarrow 1$}{\textbf{Phase~2: Tree of Time Reasoning}}
+
+% \ForEach{$(q_i,\Ind_i) \in \textsf{TraverseRootToLeaf}(\mathcal{T}_Q)$}{
+%   \State{$(\hat{a},\hat{P},\texttt{sufficient}) \leftarrow \textsf{MemoryLookupAndTest}(q_i,\Ind_i,\mathcal{E}_{pool})$}
+%   \If{$\texttt{sufficient}$}{
+%     \State{$AnsList \!\leftarrow\! AnsList \cup [\hat{a}]$; $PathList \!\leftarrow\! PathList \cup [\hat{P}]$; \textbf{continue}}
+%   }
+%     \CmtState{\\$\mathcal{E}_{tool}\leftarrow\textsf{GetToolkitExp}(\mathcal{E}_{pool}, q_i,\Ind_i,\textsf{Type}(Q), W_{\exp})$}
+%     {\textbf{Phase~2: experience-guided toolkit selection}}
+%   \State{$\mathcal{T}_i \leftarrow \textsf{Prompt}_{\text{ToolkitSelect}}(\mathcal{T}_\theta, \Ind_i, q_i, \mathcal{E}_{tool})$}
+
+%   \CmtState{\\$(C_i, S_i) \leftarrow \textsf{TemporalRetrieveAndPrune}(\mathcal{G}_Q, q_i,\Ind_i, Topics, \mathcal{T}_i, \mathcal{E}_{pool}, W_{\max})$}{\textbf{Phase~3: Temporal Evidence Retrieval \& Pruning}}
+
+%   \CmtState{\\$(a_i, P_i, \texttt{sufficient}) \leftarrow \textsf{DebateVoteAndTest}(q_i,\Ind_i,C_i)$}{\textbf{Phase~2: sufficiency \& aggregation}}
+
+%   \If{$\neg \texttt{sufficient}$ \textbf{ and } $D < D_{\max}$ \textbf{ and } $B < B_{\max}$}{
+%     \State{$\{q_{new}\},\{\Ind_{new}\} \leftarrow \textsf{RefineOrDecompose}(q_i,\Ind_i, C_i)$}
+%     \State{$\textsf{UpdateTree}(\mathcal{T}_Q,\{q_{new}\},\{\Ind_{new}\})$; $D \leftarrow D{+}1$; \\$B \leftarrow B{+}|\{q_{new}\}|{-}1$; \textbf{continue}}
+%   }
+
+%   \State{$AnsList \!\leftarrow\! AnsList \cup [a_i]$; $PathList \!\leftarrow\! PathList \cup [P_i]$}
+
+% }
+% \CmtState{\\$(A, Paths_{\text{global}}) \leftarrow \textsf{SynthesizeAndGlobalCheck}(AnsList, PathList)$}{\textbf{Phase~2: global coherence \& answer synthesis}}
+
+% \CmtState{\\$\textsf{UpdateExperience}(\mathcal{E}_{pool}, \mathcal{T}_Q,\{\Ind_i\}, Paths_{\text{global}}, A)$}{\textbf{Phase~4: Memory write-back}}
+
+% \State{\textbf{Return} $A, Paths_{\text{global}}$}
+
+
+% }
+% }
+% \end{algorithm}
+
+
+% % \newpage
+
+
+% \newpage
+% ~
+% \newpage
+
+
+\vspace{5mm}
+\section{Additional Experiments}
+\label{appendxi:add_exp}
+
+
+\subsection{Multi-Granular Temporal QA Analysis}
+\label{appendxi:mutlti-}
+
+We further evaluate \mot on temporal reasoning tasks that require distinguishing and aligning facts across different temporal granularities, including day, month, and year levels. 
+This setting examines whether models can adapt to diverse temporal resolutions and maintain consistent reasoning performance.  
+As shown in Table~\ref{tab:multi_granularity}, traditional pre-trained and embedding-based baselines exhibit significant degradation as the temporal resolution becomes finer or when multiple granularities are combined.
+For example, while MultiQA achieves 44.5\% accuracy on the Equal–Day level, its performance drops sharply to 28.3\% on Equal–Multi–Year, indicating that these models struggle to maintain chronological consistency when reasoning across mixed time scales.
+
+In contrast, \mot consistently achieves strong and stable results across all granularities and operators, reaching up to 94.1\% Hits@1 on Before/After–Year and maintaining 70.4\% under the most complex Equal–Multi–Month setting.
+The consistent improvement across both fine-grained and compound temporal tasks demonstrates that \mot effectively adapts to the diversity of temporal reasoning requirements.  
+This robustness is mainly attributed to two key components: (1) operator-aware decomposition, which dynamically adjusts reasoning depth and retrieval scope according to the temporal operator, and (2) temporal path construction, which enforces monotonic timestamp progression and co-aligns evidence across multiple resolutions.
+Together, these mechanisms enable unified and faithful temporal reasoning while preserving interpretability across heterogeneous granularities.
+
+
+
+% color theme
+\definecolor{HeadBG}{HTML}{F3F6FF}
+\definecolor{RowAlt}{HTML}{FAFBFD}
+\definecolor{BadgeBlue}{HTML}{E6F0FF}
+\definecolor{BadgeGreen}{HTML}{E9F7EF}
+\definecolor{BadgeOrange}{HTML}{FFF4E6}
+\definecolor{BadgeGray}{HTML}{F2F2F2}
+
+% badge helpers
+\newcommand{\badgeblue}[1]{\colorbox{BadgeBlue}{\strut\;\footnotesize #1\;}}
+\newcommand{\badgegreen}[1]{\colorbox{BadgeGreen}{\strut\;\footnotesize #1\;}}
+\newcommand{\badgeorange}[1]{\colorbox{BadgeOrange}{\strut\;\footnotesize #1\;}}
+\newcommand{\badgegray}[1]{\colorbox{BadgeGray}{\strut\;\footnotesize #1\;}}
+
+% compact table spacing
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.18}
+
+\begin{table*}
+\centering
+\caption{MemoTime toolkit library with purposes, key parameters, and operator mappings.}
+\label{tab:toolkits-color}
+\resizebox{0.8\linewidth}{!}{%
+\begin{tabular}{l l l l}
+\rowcolor{HeadBG}
+\toprule
+\textbf{Toolkit} & \textbf{Purpose} & \textbf{Key parameters} & \textbf{Operator mapping} \\
+\midrule
+\rowcolor{RowAlt}
+OneHop & One-hop neighbors with temporal filters 
+& entity, direction, after/before, limit 
+& \badgegray{seed} \;\badgeblue{local} \\
+AfterFirst & First Nth event after a cutoff 
+& entity, after, relation\_filter, limit=N 
+& \badgegreen{after\_first} \\
+\rowcolor{RowAlt}
+BeforeLast & Last Nth event before a cutoff 
+& entity, before, relation\_filter, limit=N 
+& \badgeorange{before\_last} \\
+BetweenRange & Events within a time window 
+& entity, between=(start,end), granularity 
+& \badgeblue{during}\; \badgeblue{between} \\
+\rowcolor{RowAlt}
+DayEvents & Global events on a specific date 
+& date, relation\_filter, limit 
+& \badgeblue{same-day}\; \badgegray{snapshot} \\
+Month/YearEvents & Global events in a month/year 
+& month or year, relation\_filter, limit 
+& \badgeblue{same-month}\; \badgeblue{same-year} \\
+\rowcolor{RowAlt}
+DirectConnection & Direct edges between two entities 
+& entity1, entity2, direction, time filters 
+& \badgegray{pairwise}\; \badgeblue{validate} \\
+Timeline & Chronological sequence for an entity 
+& entity, direction, after/before, limit 
+& \badgegreen{ordering}\; \badgeblue{stitch} \\
+\bottomrule
+\end{tabular}%
+}
+\vspace{5mm}
+\end{table*}
+
+% \newpage
+% \vspace{-3mm}
+\subsection{Efficiency Analysis}
+\label{appendix:exp:efficiency}
+
+To comprehensively evaluate the efficiency of \mot, we conduct three analyses on the MultiTQ dataset: LLM calls cost analysis, running time analysis, and computational cost analysis. 
+Table~\ref{tab:multitq_efficiency} presents the averaged statistics across different question types, providing insights into reasoning efficiency and structural scalability.
+
+\myparagraph{LLM calls cost analysis}
+To measure the efficiency of utilizing LLMs, we analyze the average number of LLM calls required to complete a reasoning cycle across different question types. 
+As shown in Table~\ref{tab:multitq_efficiency}, MemoTime performs an average of 8.75 calls per question, demonstrating its lightweight decomposition and reasoning pipeline. 
+For simple operator types such as Equal and First/Last, the number of calls remains low (7–7.5), corresponding to a single reasoning round without recursive decomposition. 
+In contrast, complex composite operators including After–First and Before–Last require deeper temporal validation, resulting in approximately 11.5 LLM calls. 
+These results demonstrate that MemoTime maintains efficient reasoning, even for multi-hop and temporally constrained queries, by avoiding redundant invocations through structured decomposition and memory reuse.
+
+\myparagraph{Running time analysis}
+To further assess inference efficiency, we examine the average running time per question for different temporal types. 
+The overall average runtime of MemoTime is 43.11 seconds per question, indicating an effective balance between retrieval and reasoning processes. 
+Operator-specific analysis shows that single-hop or non-nested operators such as Equal and First/Last complete within approximately 35 seconds, whereas multi-hop operators like After–First and Before–Last require additional retrieval and temporal alignment, increasing the runtime to around 58 seconds. 
+Despite these additional steps, MemoTime preserves scalability by dynamically pruning irrelevant temporal paths and parallelizing evidence collection within each hierarchical layer.
+
+
+
+\myparagraph{Computational cost analysis}
+To evaluate the structural efficiency of temporal reasoning, we analyze the average recursion depth and branching factor, which jointly characterize the complexity of decomposition and search. 
+MemoTime exhibits a compact reasoning structure, with an average recursion depth of 1.37 and branching factor of 2.64, indicating efficient but expressive reasoning behavior. 
+As shown in Table~\ref{tab:multitq_efficiency}, composite operators such as After–First and Before–Last require deeper reasoning hierarchies (depth around 2) and broader exploration (branch factor close to 4), whereas simpler operators such as Equal and First/Last remain shallow and nearly linear (depth near 1, branch factor around 2). 
+These results demonstrate that MemoTime dynamically adjusts its computational footprint according to the temporal operator’s semantic complexity, achieving consistent temporal alignment while maintaining efficient reasoning performance.
+
+
+\subsection{Case Study: Temporal Interpretability and Faithful Reasoning}
+\label{sec:casestudy-temporal}
+To demonstrate how \mot performs interpretable and temporally faithful reasoning,
+in this section, we present case studies across different temporal question types in Tables~\ref{tab:case_after_first_final}--\ref{tab:case_between_final}.
+Each case study illustrates how complex temporal questions are decomposed into sub-questions with structured indicators, toolkit selections, and retrieved factual quadruples. 
+Through examples involving diverse operators such as \text{afterNfirst}, \text{beforeNlast}, and \text{between}, we show how \mot incrementally constructs temporal reasoning chains that maintain monotonic time ordering, respect operator-specific constraints, and yield consistent answers. 
+These examples highlight how the proposed framework ensures transparency and temporal faithfulness throughout the reasoning process, producing clear, explainable evidence trails that align with human-understandable logical steps.
+
+% \newpage
+\section{Toolkit Library}
+\label{sec:toolkit}
+
+We implement eight specialized temporal retrieval toolkits exposing a unified interface with normalized parameters.
+Table \ref{tab:toolkits-color} outlines their core purposes, key parameters, and corresponding temporal operators. 
+The tools are composable and operator-aware under temporal constraints. They cover the majority of temporal reasoning patterns required for multi-hop question answering.
+
+
+
+
+
+
+\section{Experiment Details}
+\label{appen:dataset_details}
+
+
+\myparagraph{Experiment Datasets}
+\label{exp:Experiment datasets}
+Previous studies have revealed that the widely used \text{CronQuestions} dataset~\cite{minMultihopReadingComprehension2019} contains spurious correlations that models can exploit to achieve inflated accuracy~\cite{sharma2022twirgcn}. 
+Following the analysis in~\cite{T4}, we therefore evaluate \mot on two more reliable and temporally challenging benchmarks: \text{MultiTQ}~\cite{TKGQA} and \text{TimeQuestions}~\cite{jia2021complex}. 
+\text{MultiTQ} is the largest publicly available Temporal Knowledge Graph Question Answering (TKGQA) dataset, constructed from the ICEWS05–15 event database, which records politically and socially significant events with precise timestamps. 
+It consists of more than 500K question–answer pairs, covering 15 years of temporal scope. 
+Each question is automatically generated from event triples $(h, r, t, \tau)$ and further refined to ensure diversity in natural language phrasing. 
+The dataset supports multiple temporal granularities (year, month, and day), with questions distributed across over 3,600 calendar days. 
+\text{MultiTQ} encompasses a wide range of temporal reasoning operators, including \text{before}, \text{after}, \text{equal}, \text{first}, and \text{last}, and contains both \text{single-hop} and \text{multi-hop} reasoning cases that require combining multiple temporal relations to derive the final answer.
+In contrast, \text{TimeQuestions} is a smaller but linguistically richer benchmark designed to test compositional and relational temporal reasoning. 
+It contains around 16K manually curated questions spanning four reasoning categories: \text{Explicit}, \text{Implicit}, \text{Temporal}, and \text{Ordinal}. 
+Unlike \text{MultiTQ}, it uses only yearly granularity and focuses on questions that involve reasoning over alignment and temporal order rather than precise timestamps. 
+Each question is grounded in Wikidata events and entities, with linguistic templates textasizing contextual reasoning, event sequencing, and temporal comparisons across multiple entities.
+The detailed statistics of both datasets, including splits by reasoning type and dataset size, are summarized in Table~\ref{tab:datasets_stats_compact_2col}.
+
+% \newpage
+
+\myparagraph{Baselines}
+We compare \mot against a comprehensive set of baselines covering three major methodological categories: pre-trained language models, knowledge graph embedding methods, and LLM-based reasoning methods. 
+
+\text{On \text{MultiTQ}}, we include:
+(1) Pre-trained language models (PLMs) such as BERT~\cite{devlin2019bert} and ALBERT~\cite{lan2019albert}, which are fine-tuned for QA over temporal contexts;
+(2) Embedding-based temporal KGQA methods, including EmbedKGQA~\cite{saxena2020improving}, CronKGQA~\cite{saxena2021question}, and MultiQA~\cite{chen2023multi}, which leverage temporal embeddings to align question representations with time-stamped entity triples;
+(3) LLM-based in-context learning (ICL) approaches, such as direct instruction prompting (IO), KG-RAG~\cite{ARI}, ReAct-KB~\cite{yao2022react,ARI}, ARI~\cite{ARI}, and TempAgent~\cite{qianyihu-etal-2025-time}, which combine TKG and reasoning via ChatGPT or similar models.
+
+\text{On \text{TimeQuestions}}, we evaluate:
+(1) Static KGQA baselines, including PullNet~\cite{sun2019pullnet}, Uniqorn~\cite{pramanik2024uniqorn}, and GRAFT-Net~\cite{sun2018open}, which operate on non-temporal knowledge graphs;
+(2) Temporal KGQA baselines, including CronKGQA~\cite{saxena2021question}, TempoQR~\cite{mavromatis2022tempoqr}, EXAQT~\cite{jia2021complex}, and LGQA~\cite{liu2023local};
+(3) LLM-based methods, including instruction prompting (IO) and two fine-tuned reasoning models: GenTKGQA~\cite{gao2024two}, which fine-tunes TKG with LLaMA2-7B, and TimeR$^4$~\cite{T4}, which couples a jointly fine-tuned retriever with ChatGPT reasoning.
+
+For each baseline, we adopt the reported performance values from their original publications to ensure comparability under consistent evaluation settings. 
+Following~\cite{tog1.0sun2023think, tog2.0ma2024think, pogtan2025paths}, we use \text{exact match accuracy} (Hits@1) as the principal evaluation metric. 
+Recall and F1 scores are not used since knowledge sources are not limited to
+document databases \cite{tog1.0sun2023think, tog2.0ma2024think}.
+
+\myparagraph{Experiment Implementation}
+All experiments are conducted using \text{GPT-4-Turbo} as the primary reasoning backbone for \mot. 
+To validate the generality and plug-and-play adaptability of our framework, we further instantiate \mot with several alternative LLMs, including \text{DeepSeek-V3}, Qwen3-Next-80B-A3B-Instruct (\text{Qwen3-80B}), \text{Qwen3-32B}, \text{Qwen3-8B}, and \text{Qwen3-4B}. 
+These models represent a diverse spectrum of capacities and architectural scales, allowing us to evaluate how \mot performs under different model sizes and decoding behaviors.
+Following prior work~\cite{pogtan2025paths, tog1.0sun2023think}, the temperature is set to $0.4$ during the evidence exploration phase to encourage reasoning diversity, and to $0$ during the final answer generation stage to ensure deterministic output.The maximum generation length is 256 tokens.
+% For the dense retrieval module (DRM), we employ \text{Sentence-BERT}~\cite{devlin2019bert}
+Sentence-BERT \cite{devlin2019bert} is utilized as dense retrieval module (DRM).
+For temporal path construction, we set $W_{\max}=3$, $D_{\max}=3$, $W_1=80$, and $\lambda_{\mathrm{sem}}=0.6$.
+During the experience memory phase, we use $\lambda_{\mathrm{sim}}=0.6$, $\lambda_{\mathrm{hit}}=0.4$, and $W_{\mathrm{exp}}=10$.
+All experiences are dynamically learned from verified reasoning traces, with five predefined exemplars used for cold-start initialization.
+The database buffer size is set to 200 for efficiency.
+The complete code implementation of \mot is publicly available.\footnote{\url{https://github.com/SteveTANTAN/Memotime}.}
+
+
+
+
+\vspace{5mm}
+% Requires: \usepackage{booktabs,multirow}
+\begin{table}[h]
+\centering
+\caption{Statistics of \text{MultiTQ} and \text{TimeQuestions}.}
+\label{tab:datasets_stats_compact_2col}
+\resizebox{0.8\linewidth}{!}{
+\begin{tabular}{l l r r r}
+\toprule
+\multicolumn{2}{l}{\textbf{Category}} & \textbf{Train} & \textbf{Dev} & \textbf{Test} \\
+\midrule
+\multicolumn{5}{c}{\textbf{MultiTQ}} \\
+\midrule
+\multirow{3}{*}{\text{Single}}
+  & Equal        & 135{,}890 & 18{,}983 & 17{,}311 \\
+  & Before/After & 75{,}340  & 11{,}655 & 11{,}073 \\
+  & First/Last   & 72{,}252  & 11{,}097 & 10{,}480 \\
+\cmidrule(l){1-5}
+\multirow{3}{*}{\text{Multiple}}
+  & Equal-Multi  & 16{,}893 & 3{,}213 & 3{,}207 \\
+  & After-First  & 43{,}305 & 6{,}499 & 6{,}266 \\
+  & Before-Last  & 43{,}107 & 6{,}532 & 6{,}247 \\
+\cmidrule(l){1-5}
+\multicolumn{2}{l}{\textbf{Total (MultiTQ)}} & \textbf{386{,}787} & \textbf{57{,}979} & \textbf{54{,}584} \\
+\midrule
+\multicolumn{5}{c}{\textbf{TimeQuestions}} \\
+\midrule
+\multicolumn{2}{l}{Explicit} & 2{,}724 & 1{,}302 & 1{,}311 \\
+\multicolumn{2}{l}{Implicit} & 651     & 291     & 292     \\
+\multicolumn{2}{l}{Temporal} & 2{,}657 & 1{,}073 & 1{,}067 \\
+\multicolumn{2}{l}{Ordinal}  & 938     & 570     & 567     \\
+\cmidrule(l){1-5}
+\multicolumn{2}{r}{\textbf{Total (TimeQuestions)}} & \textbf{6{,}970} & \textbf{3{,}236} & \textbf{3{,}237} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+
+\begin{table*}[h]
+\centering
+\caption{Case study of  interpretability
+and temporal faithfulness reasoning for “After the 2008 Olympics, which country was the first to sign an environmental treaty with \textbf{China}?”}
+\label{tab:case_after_first_final}
+\resizebox{1\linewidth}{!}{
+\begin{tabularx}{0.97\textwidth}{@{}p{4.3cm}X@{}}
+\toprule
+\textbf{Question} & After the \textbf{2008 Olympics}, which country was the \textbf{first} to sign an environmental treaty with China? \\
+\textbf{Temporal Type} & \textbf{afterNfirst} (requires $t_2>t_1$ and $\min(t_2)$) \\
+\textbf{Topic Entities} & [Olympics 2008, China] \\
+\toprule
+\textbf{Overall Indicator} &
+\begin{minipage}[t]{\linewidth}
+Edges: $(\text{\textbf{Olympics 2008}},\,\text{opening},\,?x,\,t_1)$, $(?y,\,\text{sign environmental treaty},\,\text{\textbf{China}},\,t_2)$ \\
+Constraints: $t_2>t_1$, $\text{after\_first}(t_2,t_1)$ \\
+Time vars: $[t_1, t_2]$\vspace{2pt}
+\end{minipage} \\
+\toprule
+\textbf{Q1} & \textbf{When was the 2008 Olympics held (opening anchor)?} \\
+\textbf{Selected Seed} & [Olympics 2008] \\
+\textbf{Indicator (quadruple)} & $(\text{Olympics 2008},\,\text{opening},\,?x,\,t_1)$ \\
+\textbf{Time vars} & $[\text{same\_year}(t_1, 2008)]$ \\
+\textbf{Toolkit \& Params} & \texttt{OneHop}(entity = Olympics 2008, after = 2008-01-01, before = 2009-01-01) \\
+\textbf{Retrieved Facts} & 
+\textbf{$(\text{Olympics 2008},\,\text{opening},\,\text{Beijing},\,\mathbf{2008\!-\!08\!-\!08})$};\\
+& $(\text{Olympics 2008},\,\text{closing},\,\text{Beijing},\,2008\!-\!08\!-\!24)$ \\
+\textbf{Sub-answer} & $t_1 = \mathbf{2008\!-\!08\!-\!08}$ (use opening as temporal anchor; ?x = Beijing) \\
+\midrule
+\textbf{Q2} & \textbf{After $\mathbf{2008\!-\!08\!-\!08}$, which country first signed an environmental treaty with China?} \\
+\textbf{Selected Seed} & [China] \\
+\textbf{Indicator (quadruple)} & $(?y,\,\text{sign environmental treaty},\,\text{China},\,t_2)$ \\
+\textbf{Time vars} & $[\text{after}(t_2,\text{2008-08-08}), \text{after\_first}(t_2,\text{2008-08-08})]$ \\
+\textbf{Toolkit \& Params} & \texttt{AfterFirst}(entity = China, after = \text{2008-08-08}, relation\_filter = sign environmental treaty) \\
+\textbf{Retrieved Facts} &
+\textbf{$(\text{Japan},\,\text{sign\_treaty\_env},\,\text{China},\,\mathbf{2009\!-\!02\!-\!10})$}; \\
+& $(\text{Korea},\,\text{sign\_treaty\_env},\,\text{China},\,2009\!-\!07\!-\!18)$; \\
+& $(\text{Germany},\,\text{sign\_treaty\_env},\,\text{China},\,2010\!-\!03\!-\!02)$ \\
+\textbf{Sub-answer} & \textbf{Japan}, $t_2 = 2009\!-\!02\!-\!10$ (earliest valid time after \text{2008-08-08}) \\
+\toprule
+\textbf{Temporal Reasoning Chain} &
+\textbf{Olympics 2008} $\xrightarrow[\text{2008-08-08}]{\text{opening}}$ Beijing 
+$\;\;\leadsto\;\;$ \textbf{Japan} $\xrightarrow[\text{2009-02-10}]{\text{sign\_treaty\_env}}$ \textbf{China} (\textbf{after\_first} \text{2008-08-08}). \\
+\textbf{Temporal Faithfulness} & All facts satisfy $t_2>t_1$; $\min(t_2)=2009$-02-10; monotonic ordering verified. \\
+\textbf{Final Answer} & \textbf{Japan}. \\
+\textbf{Response} &
+“Anchoring $t_1$ at 2008-08-08 (opening of the Olympics), the earliest post-anchor treaty signing with China is by \textbf{Japan} on 2009-02-10, earlier than Korea (2009-07-18) and Germany (2010-03-02). Hence, the \text{after first} constraint selects Japan.” \\
+\bottomrule
+\end{tabularx}}
+\end{table*}
+
+
+
+\begin{table*}[t]
+\centering
+\caption{Case study of interpretability
+and temporal faithfulness reasoning for “Who was the last leader to visit \textbf{Beijing} before 2010?”}
+\label{tab:case_before_last_final}
+\begin{tabularx}{0.97\textwidth}{@{}p{4.3cm}X@{}}
+\toprule
+\textbf{Question} & Who was the last leader to visit \textbf{Beijing} before 2010? \\
+\textbf{Temporal Type} & \textbf{beforeNlast} (requires $t_1<2010$ and $\max(t_1)$) \\
+\textbf{Topic Entities} & [Beijing, leader] \\
+\toprule
+\textbf{Overall Indicator} &
+\begin{minipage}[t]{\linewidth}
+Edges: $(?x,\,\text{visit},\,\text{\textbf{Beijing}},\,t_1)$ \\
+Constraints: $t_1<2010$, $\text{before\_last}(t_1, 2010)$ \\
+Time vars: $[t_1]$\vspace{2pt}
+\end{minipage} \\
+\toprule
+\textbf{Q1} & \textbf{Which leaders visited Beijing before 2010?} \\
+\textbf{Selected Seed} & [Beijing] \\
+\textbf{Indicator (quadruple)} & $(?x,\,\text{visit},\,\text{Beijing},\,t_1)$ \\
+\textbf{Time vars} & $[t_1<2010]$ \\
+\textbf{Toolkit \& Params} & \texttt{Before}(entity = Beijing, before = 2010-01-01, relation\_filter = visit) \\
+\textbf{Retrieved Facts} &
+$(\text{Barack Obama},\,\text{visit},\,\text{Beijing},\,{2009\!-\!11\!-\!15})$; \\
+& 
+$(\text{Gordon Brown},\,\text{visit},\,\text{Beijing},\,2009\!-\!08\!-\!10)$; \\
+& 
+$(\text{Angela Merkel},\,\text{visit},\,\text{Beijing},\,2008\!-\!12\!-\!05)$ \\
+\textbf{Sub-answer} & Candidate set = [Obama 2009-11-15, Brown 2009-08-10, Merkel 2008-12-05]. \\
+\midrule
+\textbf{Q2} & \textbf{Among them, who visited most recently before 2010?} \\
+\textbf{Selected Seed} & [Candidate leaders] \\
+\textbf{Indicator (quadruple)} & $(?x,\,\text{visit},\,\text{Beijing},\,t_1)$ \\
+\textbf{Time vars} & $[\text{before}(t_1,2010),\;\text{last}(t_1)]$ \\
+\textbf{Toolkit \& Params} & \texttt{FirstLast}(mode = last, relation\_filter = visit, before = 2010-01-01, sort = desc, limit = 1) \\
+\textbf{Retrieved Facts} &
+\textbf{$(\mathbf{Barack\,Obama},\,\text{visit},\,\text{Beijing},\,\mathbf{2009\!-\!11\!-\!15})$} \\
+\textbf{Sub-answer} & \textbf{Barack Obama}, $t_1 = 2009$-11-15 (latest valid before 2010). \\
+\toprule
+\textbf{Temporal Reasoning Chain} &
+\textbf{Barack Obama} $\xrightarrow[\text{2009-11-15}]{\text{visit}}$ \textbf{Beijing} (\textbf{before\_last} 2010). \\
+\textbf{Temporal Faithfulness} & All events satisfy $t_1<2010$; $\max(t_1)=2009$-11-15; temporal order monotonic. \\
+\textbf{Final Answer} & \textbf{Barack Obama}. \\
+\textbf{Response} &
+“Filtering visits to Beijing with $t_1<2010$ yields three leaders; the most recent timestamp (2009-11-15) corresponds to \textbf{Barack Obama}, fulfilling the \text{before last} constraint.” \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+
+\newpage
+\begin{table*}[t]
+\centering
+\caption{Case study of interpretability
+and temporal faithfulness reasoning for “Before the 2010 Summit, which leader visited Beijing last?”}
+\label{tab:case_before_last_final}
+\begin{tabularx}{0.97\textwidth}{@{}p{4.3cm}X@{}}
+\toprule
+\textbf{Question} & Before the \textbf{2010 Summit}, which leader visited \textbf{Beijing} last? \\
+\textbf{Temporal Type} & \textbf{beforeNlast} (requires $t_2<t_1$ and $\max(t_2)$) \\
+\textbf{Topic Entities} & [2010 Summit, Beijing] \\
+\toprule
+\textbf{Overall Indicator} &
+\begin{minipage}[t]{\linewidth}
+Edges: $(\text{\textbf{Leader}},\,\text{visit},\,\text{\textbf{Beijing}},\,t_2)$, $(\text{\textbf{2010 Summit}},\,\text{held\_in},\,?x,\,t_1)$ \\
+Constraints: $t_2<t_1$, $\text{before\_last}(t_2,t_1)$ \\
+Time vars: $[t_1, t_2]$\vspace{2pt}
+\end{minipage} \\
+\toprule
+\textbf{Q1} & \textbf{When was the 2010 Summit held?} \\
+\textbf{Selected Seed} & [2010 Summit] \\
+\textbf{Indicator (quadruple)} & $(\text{2010 Summit},\,\text{held\_in},\,?x,\,t_1)$ \\
+\textbf{Time vars} & $[\text{specific\_year}(t_1, 2010)]$ \\
+\textbf{Toolkit \& Params} & \texttt{OneHop}(entity = 2010 Summit, after = 2010-01-01, before = 2011-01-01) \\
+\textbf{Retrieved Facts} & 
+\textbf{$(\text{2010 Summit},\,\text{held\_in},\,\text{Toronto},\,\textbf{2010-06-26})$} \\
+\textbf{Sub-answer} & $t_1 = \textbf{2010-06-26}$ (used as upper temporal boundary) \\
+\midrule
+\textbf{Q2} & \textbf{Before \text{2010-06-26}, which leader visited Beijing last?} \\
+\textbf{Selected Seed} & [Beijing] \\
+\textbf{Indicator (quadruple)} & $(?y,\,\text{visit},\,\text{Beijing},\,t_2)$ \\
+\textbf{Time vars} & $[\text{before}(t_2,\text{2010-06-26}), \text{before\_last}(t_2,\text{2010-06-26})]$ \\
+\textbf{Toolkit \& Params} & \texttt{BeforeLast}(entity = Beijing, before = \text{2010-06-26}, relation\_filter = visit) \\
+\textbf{Retrieved Facts} &
+\textbf{$(\textbf{Barack Obama},\,\text{visit},\,\text{Beijing},\,\textbf{2009-11-15})$}; \\
+& $(\text{Gordon Brown},\,\text{visit},\,\text{Beijing},\,\text{2009-08-10})$; \\
+& $(\text{Angela Merkel},\,\text{visit},\,\text{Beijing},\,\text{2008-12-05})$ \\
+\textbf{Sub-answer} & \textbf{Barack Obama}, $t_2 = \text{2009-11-15}$ (latest valid time before \text{2010-06-26}) \\
+\toprule
+\textbf{Temporal Reasoning Chain} &
+\textbf{Barack Obama} $\xrightarrow[\text{2009-11-15}]{\text{visit}}$ \textbf{Beijing} 
+$\;\;\leadsto\;\;$ \textbf{2010 Summit} $\xrightarrow[\text{2010-06-26}]{\text{held\_in}}$ Toronto 
+(\textbf{before\_last} \text{2010-06-26}). \\
+\textbf{Temporal Faithfulness} & All facts satisfy $t_2<t_1$; $\max(t_2)=2009-11-15$; monotonic order verified. \\
+\textbf{Final Answer} & \textbf{Barack Obama}. \\
+\textbf{Response} &
+“Anchoring $t_1$ at 2010-06-26 (2010 Summit), the last recorded visit to Beijing before this date was by \textbf{Barack Obama} on 2009-11-15. Earlier visits (Gordon Brown 2009-08-10, Angela Merkel 2008-12-05) confirm Obama as the before\_last case.” \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+\newpage
+
+
+\begin{table*}[t]
+\centering
+\caption{Case study of interpretability
+and temporal faithfulness reasoning for “How many times did the \textbf{UN} hold a climate summit before 2020?”}
+\label{tab:case_count_final}
+\begin{tabularx}{0.97\textwidth}{@{}p{4.3cm}X@{}}
+\toprule
+\textbf{Question} & How many times did the \textbf{UN} hold a climate summit before 2020? \\
+\textbf{Temporal Type} & \textbf{count + before} (requires $t_1<2020$ and aggregation over events) \\
+\textbf{Topic Entities} & [UN, climate summit] \\
+\toprule
+\textbf{Overall Indicator} &
+\begin{minipage}[t]{\linewidth}
+Edges: $(\text{\textbf{UN}},\,\text{hold},\,\text{Summit},\,t_1)$ \\
+Constraints: $t_1<2020$, $\text{topic}(\text{Summit})=\text{climate}$ \\
+Time vars: $[t_1]$\vspace{2pt}
+\end{minipage} \\
+\toprule
+\textbf{Q1} & \textbf{Which climate summits were held by the UN before 2020?} \\
+\textbf{Selected Seed} & [UN] \\
+\textbf{Indicator (quadruple)} & $(\text{UN},\,\text{hold},\,\text{Summit},\,t_1)$ \\
+\textbf{Time vars} & $[t_1<2020]$ \\
+\textbf{Toolkit \& Params} & \texttt{Before}(entity = UN, before = 2020-01-01, relation\_filter = hold, keyword = climate) \\
+\textbf{Retrieved Facts} &
+$(\text{UN},\,\text{hold},\,\text{ClimateSummit09},\,\mathbf{2009\!-\!12\!-\!07})$; \\
+& 
+$(\text{UN},\,\text{hold},\,\text{ClimateSummit13},\,\mathbf{2013\!-\!11\!-\!11})$; \\
+& 
+$(\text{UN},\,\text{hold},\,\text{ClimateSummit15},\,\mathbf{2015\!-\!12\!-\!05})$; \\
+& 
+$(\text{UN},\,\text{hold},\,\text{ClimateSummit19},\,\mathbf{2019\!-\!09\!-\!21})$; \\
+& 
+$(\text{UN},\,\text{hold},\,\text{ClimateSummit21},\,2021\!-\!11\!-\!01)$ \\
+\textbf{Sub-answer} & Valid events before 2020 = 4 (2009, 2013, 2015, 2019). \\
+\midrule
+\textbf{Q2} & \textbf{Count all valid events that occurred before 2020.} \\
+\textbf{Selected Seed} & [Filtered summits from Q1] \\
+\textbf{Indicator (quadruple)} & $(\text{UN},\,\text{hold},\,\text{ClimateSummit\_i},\,t_1)$ \\
+\textbf{Time vars} & $[\text{count}(t_1<2020)]$ \\
+\textbf{Toolkit \& Params} & \texttt{Count}(filter = $t_1<2020$) \\
+\textbf{Retrieved Facts} & Total = 4 events before 2020. \\
+\textbf{Sub-answer} & \textbf{4 climate summits held before 2020.} \\
+\toprule
+\textbf{Temporal Reasoning Chain} &
+\textbf{UN} $\xrightarrow[\text{2009–2019}]{\text{hold}}$ ClimateSummit\_i (\textbf{4 instances before 2020}). \\
+\textbf{Temporal Faithfulness} & All timestamps $t_1<2020$; aggregation respects strict temporal filter. \\
+\textbf{Final Answer} & \textbf{4 climate summits.} \\
+\textbf{Response} &
+“Filtering UN-held climate summits before 2020 yields four valid temporal events (2009, 2013, 2015, 2019).  
+All satisfy $t_1<2020$, ensuring temporally faithful counting.” \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+\newpage
+
+\begin{table*}[t]
+\centering
+\caption{Case study of interpretability
+and temporal faithfulness reasoning for “Between the 2015 Conference and the 2018 Summit, which company collaborated with Microsoft?”}
+\label{tab:case_between_final}
+\begin{tabularx}{0.97\textwidth}{@{}p{4.3cm}X@{}}
+\toprule
+\textbf{Question} & Between the \textbf{2015 Conference} and the \textbf{2018 Summit}, which company collaborated with \textbf{Microsoft}? \\
+\textbf{Temporal Type} & \textbf{between} (requires $t_1 < t_3 < t_2$ and bounded interval) \\
+\textbf{Topic Entities} & [2015 Conference, 2018 Summit, Microsoft] \\
+\toprule
+\textbf{Overall Indicator} &
+\begin{minipage}[t]{\linewidth}
+Edges: $(\text{\textbf{2015 Conference}},\,\text{held in},\,?x,\,t_1)$, $(\text{\textbf{2018 Summit}},\,\text{held in},\,?y,\,t_2)$, $(?z,\, \\ \text{collaborate with},\,\text{\textbf{Microsoft}},\,t_3)$ \\
+Constraints: $t_1 < t_3 < t_2$, $\text{between}(t_3,[t_1,t_2])$ \\
+Time vars: $[t_1, t_2, t_3]$\vspace{2pt}
+\end{minipage} \\
+\toprule
+\textbf{Q1} & \textbf{When was the 2015 Conference held?} \\
+\textbf{Selected Seed} & [2015 Conference] \\
+\textbf{Indicator} & $(\text{2015 Conference},\,\text{held in},\,?x,\,t_1)$ \\
+\textbf{Toolkit \& Params} & \texttt{OneHop}(entity = 2015 Conference, after = 2015-01-01, before = 2016-01-01) \\
+\textbf{Retrieved Facts} & 
+\textbf
+{$(\text{2015 Conference},\,\text{held\_in},\,\text{New York},\,\textbf{2015-09-10})$} \\
+\textbf{Sub-answer} & $t_1 = \textbf{2015-09-10}$ \\
+\midrule
+\textbf{Q2} & \textbf{When was the 2018 Summit held?} \\
+\textbf{Selected Seed} & [2018 Summit] \\
+\textbf{Indicator} & $(\text{2018 Summit},\,\text{held in},\,?y,\,t_2)$ \\
+\textbf{Toolkit \& Params} & \texttt{OneHop}(entity = 2018 Summit, after = 2018-01-01, before = 2019-01-01) \\
+\textbf{Retrieved Facts} & 
+\textbf{$(\text{2018 Summit},\,\text{held\_in},\,\text{Singapore},\,\textbf{2018-11-22})$} \\
+\textbf{Sub-answer} & $t_2 = \textbf{2018-11-22}$ \\
+\midrule
+\textbf{Q3} & \textbf{Between $t_1$ and $t_2$, which company collaborated with Microsoft?} \\
+\textbf{Selected Seed} & [Microsoft] \\
+\textbf{Indicator} & $(?z,\,\text{collaborate with},\,\text{Microsoft},\,t_3)$ \\
+\textbf{Time vars} & $[\text{between}(t_3,[t_1,t_2])]$ \\
+\textbf{Toolkit \& Params} & \texttt{BetweenRange}(entity = Microsoft, between = ($t_1$, $t_2$), relation\_filter = collaborate with) \\
+\textbf{Retrieved Facts} &
+\textbf{$(\textbf{NVIDIA},\,\text{collaborate\_with},\,\text{Microsoft},\,\textbf{2016-05-20})$;} \\ &
+\textbf{$(\textbf{OpenAI},\,\text{collaborate\_with},\,\text{Microsoft},\,\textbf{2018-03-14})$;} \\ &
+$(\text{Apple},\,\text{collaborate\_with},\,\text{Microsoft},\,\text{2019-02-10})$ \\
+\textbf{Sub-answer} & \textbf{NVIDIA} (2016-05-20) and \textbf{OpenAI} (2018-03-14), both satisfying $t_1<t_3<t_2$ \\
+\toprule
+\textbf{Temporal Reasoning Chain} &
+\textbf{2015 Conference} $\xrightarrow[\text{2015-09-10}]{\text{held\_in}}$ New York 
+$\;\;\leadsto\;\;$ \textbf{NVIDIA} $\xrightarrow[\text{2016-05-20}]{\text{collaborate\_with}}$ \textbf{Microsoft} 
+$\;\;\leadsto\;\;$ \textbf{OpenAI} $\xrightarrow[\text{2018-03-14}]{\text{collaborate\_with}}$ \textbf{Microsoft} 
+$\;\;\leadsto\;\;$ \textbf{2018 Summit} $\xrightarrow[\text{2018-11-22}]{\text{held\_in}}$ Singapore. \\
+\textbf{Temporal Faithfulness} & All facts satisfy $t_1 < t_3 < t_2$; valid interval reasoning confirmed. \\
+\textbf{Final Answer} & \textbf{NVIDIA}, \textbf{OpenAI}. \\
+\textbf{Response} &
+“Anchoring the 2015 Conference at 2015-09-10 and the 2018 Summit at 2018-11-22, the companies collaborating with Microsoft within this interval are \textbf{NVIDIA} (2016) and \textbf{OpenAI} (2018). Both satisfy the temporal between constraint.” \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+\clearpage
+% \thispagestyle{empty}
+% \null
+\newpage
+\onecolumn
+
+
+
+\section{Prompts}\label{appendix:prompt}
+In this section, we detail the prompts required for our main experimental procedures.
+
+% =====================================================
+% 1. TEMPORAL TYPE CLASSIFICATION
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    \vspace{2mm}
+    \centering
+    \begin{tcolorbox}[title=Temporal Type Classification Prompt Template]
+        \small
+Given a natural-language question that may include explicit dates, relative temporal expressions, or comparative phrases, your task is to classify it into \text{exactly one} supported temporal type that best represents its temporal intent and logical operator.  
+If multiple categories appear possible, choose the \text{most specific operator-sensitive} type.
+
+Supported temporal types (single label only):  
+\texttt{equal, before, after, during, between, first, last, beforeNlast, afterNfirst, count, comparison.}
+
+% \text{Successful Examples}:
+
+\vspace{5pt}
+\text{Experience Examples}:
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Question\}
+
+A:
+    \end{tcolorbox}
+    \vspace{2mm}
+\end{minipage}
+\end{center}
+\noindent
+The \texttt{\{In-Context Few-shot\}} examples are retrieved from \text{experience memory}, representing previously successful classification traces.  
+They guide the model in identifying the temporal operator patterns (e.g., “first Y after Z”) and selecting the most appropriate category.
+
+\vspace{6mm}
+
+% =====================================================
+% 2. QUESTION TREE CONSTRUCTION
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    \centering
+    \vspace{2mm}
+    \begin{tcolorbox}[title=Question Tree Construction Prompt Template]
+        \small
+Given a temporal question and its classified type \texttt{\{Question\_Type\}}, your task is to decompose it into a structured reasoning tree that contains complete subquestions, indicators, explicit temporal constraints, and time variables.  
+
+Map the question to its most relevant decomposition pattern according to its temporal operator and structural characteristics.  
+Generate subquestions that reflect key reasoning steps, construct indicators for entity–relation–time tuples,  
+and specify explicit temporal constraints (e.g., \texttt{t2 > t1}, \texttt{before(t2, t1)}).  
+Each subquestion must be a complete, grammatically correct sentence, and all time variables should preserve monotonic order (\(t_1 \leq t_2 \leq ... \leq t_n\)).  
+Use \texttt{?x}, \texttt{?y} for unknown entities and \texttt{t1}, \texttt{t2} for time variables.  
+Represent indicators as \texttt{Entity1 --[relation]--> Entity2 (t)}.  
+Return the output strictly in the following format:
+
+\begin{verbatim}
+Subquestions: [sub1, sub2, ...]
+Indicators:   [edge1, edge2, ...]
+Constraints:  [constraint1, constraint2, ...]
+Time_vars:    [t1, t2, ...]
+\end{verbatim}
+
+% \text{Successful Examples}:
+
+
+\vspace{5pt}
+\text{Experience Examples}:
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Question\}
+
+A:
+    \end{tcolorbox}
+\end{minipage}
+\end{center}
+\vspace{3mm}
+
+\noindent
+The \texttt{\{Question\_Type\}} is obtained from the temporal classification stage.  
+Each retrieved example in \texttt{\{In-Context Few-shot\}} illustrates how similar questions were decomposed into substeps, indicators, and constraints, guiding the model to align with proven reasoning patterns.
+
+\vspace{6mm}
+
+% =====================================================
+% 3. SEED SELECTION
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    \vspace{2mm}
+    \centering
+    \begin{tcolorbox}[title=Seed Selection Prompt Template]
+        \small
+Given a subquestion, its reasoning indicator, the topic entities, and optional contextual or temporal hints, your task is to select a concise set of \text{seed entities} to initialize retrieval.  
+Prefer specific, high-yield entities that anchor reasoning paths; avoid overly broad categories.  
+If multiple options exist, choose the \text{minimal} set that best covers the intended reasoning target.
+
+\vspace{5pt}
+\text{Experience Examples}:
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Subquestion\}
+
+Think Indicator: \{Think\_Indicator\}
+
+Available Topic Entities: \{Available\_Entities\}
+
+Context Info (optional): \{Context\_Info\}
+
+Time Hints (optional): \{Time\_Hints\}
+
+A:
+    \end{tcolorbox}
+\end{minipage}
+\end{center}
+\vspace{3mm}
+
+\noindent
+Seed selection prompts guide the retrieval initialization phase in Section \ref{sec:retrieval}.  
+The examples retrieved from memory illustrate successful entity anchors for similar subquestions, enabling the model to leverage prior reasoning experience when determining where to begin exploration.
+
+% \vspace{6mm}
+
+% \vspace{6mm}
+
+% =====================================================
+% 5. EXPERIENCE-GUIDED TOOLKIT SELECTION
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    \vspace{2mm}
+    \centering
+    \begin{tcolorbox}[title=Experience-Guided Toolkit Selection Prompt Template]
+        \small
+Given a subquestion, its reasoning indicator, temporal type, and contextual information, your task is to select the most suitable temporal toolkit(s) for solving it.  
+Multiple toolkits may be selected if the reasoning requires combined temporal operations.
+
+You should identify which toolkit(s) align with the temporal operator and reasoning goal of the question.  
+Recommend the most appropriate toolkit configuration(s), specifying both parameters and reasoning rationale.  
+
+
+
+Available toolkits with descriptions: \{Available\_toolkits\}
+
+Expected Output (JSON):
+\begin{verbatim}
+{ "selected_toolkits": [ {"original_name": "ToolkitName", "reasoning": "Reason statement", "priority": 1
+"parameters": {"entity1": "...", "entity2": "...", "limit": "Number", ...}}] }
+\end{verbatim}
+
+\vspace{5pt}
+\text{Experience Examples}:
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Subquestion\}
+
+Think Indicator: \{Think\_Indicator\}
+
+Temporal Type: \{Question\_Type\}
+
+Seed Info: \{Seed\_Info\}
+
+Time Hints: \{Time\_Hints\}
+
+A:
+    \end{tcolorbox}
+\end{minipage}
+\end{center}
+\vspace{3mm}
+
+\noindent
+When a similar trace exists in the experience pool, MemoTime retrieves exemplar toolkit configurations as few-shot examples.  
+Otherwise, the model enters a \text{cold-start} mode and infers a configuration from the question structure and temporal hints.  
+Each selected toolkit represents a specific reasoning pattern (e.g., event ordering, interval comparison, timeline construction).
+
+\vspace{6mm}
+
+% =====================================================
+% 6. MULTI-TOOLKIT DEBATE–VOTE
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    \vspace{2mm}
+    \centering
+    \begin{tcolorbox}[title=Multiple Toolkits Debate–Vote Prompt Template]
+        \small
+
+
+
+Given a subquestion and the outputs generated by multiple temporal toolkits, your task is to evaluate and compare their results to determine which toolkit provides the most \text{accurate}, \text{temporally faithful}, and \text{semantically consistent} answer. 
+Each toolkit represents a distinct reasoning or retrieval strategy, and their outputs may vary in completeness, reliability, and explanatory depth.
+
+The evaluation process compares all toolkit outputs across several complementary dimensions.  
+Each candidate answer is assessed for its \text{relevance} to the subquestion, \text{temporal faithfulness} to the given time constraints, and \text{path validity} within the temporal knowledge graph.  
+The model further considers \text{evidence completeness}, \text{semantic consistency}, and the \text{adequacy} of each toolkit’s configuration and parameters.  
+When multiple valid but conflicting answers arise, preference is given to the one exhibiting stronger temporal grounding, clearer provenance, and greater explanatory transparency.  
+Through this comparative reasoning, the model identifies the toolkit whose output demonstrates the most coherent, temporally consistent, and well-supported reasoning chain.
+
+
+
+
+\text{Expected Output (JSON):}
+\begin{verbatim}
+{
+    "winning_toolkit": <integer>,
+    "winning_answer": {
+        "entity": "<string>", "time": "<YYYY[-MM[-DD]] or Unknown>",
+        "path": ["head", "relation", "tail"], "score": <float>, "reason": "<concise selection rationale>"
+  },
+  "evaluation": { 
+    "criteria_scores": {
+        "toolkit_1": {"relevance": <0-1>, "accuracy": <0-1>, "completeness": <0-1>} 
+        "toolkit_2": {"relevance": <0-1>, "accuracy": <0-1>, "completeness": <0-1>} 
+        ...//include all evaluated toolkits },
+    "overall_winner": "<Toolkit number>", "reasoning": "<short comparative analysis across toolkits>" }
+}
+\end{verbatim}
+
+\vspace{5pt}
+\text{Successful Examples:}  
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Subquestion\}  
+
+Toolkit Results: \{Collected\_Results\}  
+
+A:
+    \end{tcolorbox}
+    \vspace{2mm}
+\end{minipage}
+\end{center}
+
+\noindent
+This prompt is used at the \text{debate–vote stage}, where MemoTime aggregates and evaluates the outputs from all executed temporal toolkits.  
+The model receives structured evidence from each toolkit—including reasoning paths, timestamps, parameters, and explanatory notes—and performs comparative reasoning according to the defined evaluation process.  
+The decision prioritizes \text{temporal faithfulness}, \text{evidence completeness}, and \text{semantic consistency}, ensuring that the final selected answer is both contextually grounded and logically coherent across all candidate toolkits.
+\vspace{3mm}
+
+% =====================================================
+% 4. LLM-AWARE PATH SELECTION
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    % \vspace{2mm}
+    \centering
+    \begin{tcolorbox}[title=LLM-aware Selection Prompt Template]
+        \small
+Given the main question, a chain of thought generated by the LLM that considers all entities, a set of split subquestions, and their retrieved knowledge graph paths, your task is to score the candidate paths and identify the \text{top three} that are most likely to contain the correct evidence for the question.
+
+\vspace{5pt}
+\text{Successful Examples}:
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Query\}
+
+Think Indicator: \{Think\_Indicator\}
+
+Candidate Paths: \{Candidate\_Paths\}
+
+A:
+    \end{tcolorbox}
+\end{minipage}
+\end{center}
+\vspace{3mm}
+
+\noindent
+This prompt lets the LLM act as a reasoning critic, ranking candidate paths using patterns learned from previous reasoning examples.  
+The \texttt{\{In-Context Few-shot\}} samples come from successful path selections in prior tasks, demonstrating how to evaluate relevance, temporal ordering, and completeness.
+
+
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+\vspace{2mm}
+\centering
+\begin{tcolorbox}[title=Sufficiency Evaluation Prompt Template]
+\small
+Given a question (or subquestion), its candidate answer(s), retrieved evidence paths, and reasoning context, your task is to determine whether the information provided is \text{sufficient and consistent} to answer the target question.
+
+You should evaluate in two modes:
+\begin{itemize}[leftmargin=10pt]
+    \item \textbf{Local (Subquestion) Sufficiency}: Assess whether the retrieved evidence and reasoning path for this subquestion are adequate to support the proposed answer.  
+    If sufficient, respond \{True\} and restate the answer; otherwise respond \{False\}, provide a short explanation, and specify one corrective action from \texttt{\{Decompose, Refine, Retrieval Again\}}.
+    \item \textbf{Global (Full Question) Sufficiency}: Assess whether the entire reasoning trajectory, including all subquestions, intermediate answers, and aggregated evidence, is coherent and complete enough to answer the main question.  
+    If sufficient, respond \{True\} and provide the final answer; otherwise respond \{False\} with a reason and one corrective action from the same set.
+\end{itemize}
+
+\vspace{5pt}
+\text{Successful Examples:}  
+\texttt{\{In-Context Few-shot\}}
+
+\vspace{5pt}
+Q: \{Question / Subquestion\}  
+
+Candidate Answer(s): \{Answer\_Entity / Final\_Answer\}  
+
+Evidence Paths: \{Evidence\_Paths\}  
+
+Reasoning Context / Trajectory: \{Subquestions\_and\_Answers\}  
+
+A:
+\end{tcolorbox}
+\end{minipage}
+\end{center}
+
+\vspace{3mm}
+
+\noindent
+This unified prompt template supports both \text{local} and \text{global} sufficiency evaluation.  
+At the local level, it determines whether each reasoning step is self-contained and evidence-supported.  
+At the global level, it verifies that the overall reasoning chain forms a temporally consistent, logically complete path leading to the correct final answer.
+% =====================================================
+% 9. QUESTION ANSWERING GENERATION
+% =====================================================
+\begin{center}
+\begin{minipage}{0.9\columnwidth}
+    \vspace{2mm}
+    \centering
+    \begin{tcolorbox}[title=Question Answering Generation Prompt Template]
+        \small
+Given the main question, a reasoning chain of thought think indicator, and the complete reasoning global trajectory (all solved split questions, step answers, aggregated reasoning paths, and used toolkits for each split question),  
+your task is to generate the final answer using the provided knowledge paths and your own reasoning.
+You should ensure that the final answer is logically consistent with the reasoning trajectory and fully supported by the retrieved paths.  
+If multiple candidate entities are equally valid (e.g., simultaneous events or co-occurring facts), list all of them.
+
+
+\vspace{5pt}
+\text{Successful Examples}:
+\texttt{\{In-Context Few-shot\}}
+\vspace{5pt}
+
+Q: \{Main\_Question\}
+
+Think Indicator: \{Think\_Indicator\}
+
+Global Trajectory Summary: \{SolvedQuestions,\_Answers,\_and\_Proofs\}
+
+A:
+    \end{tcolorbox}
+\end{minipage}
+\end{center}
+
+\vspace{3mm}
+\noindent
+This final prompt synthesizes all previous reasoning and evidence into a natural-language answer.  
+The exemplars demonstrate how previous successful reasoning trajectories were concluded, ensuring the generated answer remains temporally faithful, complete, and well-grounded.
+
+

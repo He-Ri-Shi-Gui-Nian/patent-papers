@@ -1,0 +1,475 @@
+\documentclass[10pt]{article} % For LaTeX2e
+%\usepackage{tmlr}
+% If accepted, instead use the following line for the camera-ready submission:
+%\usepackage[accepted]{tmlr}
+% To de-anonymize and remove mentions to TMLR (for example for posting to preprint servers), instead use the following:
+\usepackage[preprint]{tmlr}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{etoolbox}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\AtBeginEnvironment{algorithmic}{\let\AND\relax}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{graphicx}
+
+% Author-defined commands
+\newcommand{\rev}[1]{#1}
+
+\title{Interference-Aware K-Step Reachable Communication in Multi-Agent Reinforcement Learning}
+
+% Authors must not appear in the submitted version. They should be hidden
+% as long as the tmlr package is used without the [accepted] or [preprint] options.
+% Non-anonymous submissions will be rejected without review.
+
+\author{%
+\begin{tabular*}{\linewidth}{@{}l@{\extracolsep{\fill}}r@{}}
+  \textbf{Ziyu Cheng}$^{1*}$       & 23371427@buaa.edu.cn \\
+  \textbf{Jinsheng Ren}$^{*\dagger}$ & rjs17@tsinghua.org.cn \\
+  \textbf{Zhouxian Jiang}           & zhouxianjiang96@gmail.com \\
+  \textbf{Chenzhihang Li}           & li\_chenzhihang@bit.edu.cn \\
+  \textbf{Rongye Shi}$^{2}$         & shirongye@buaa.edu.cn \\
+  \textbf{Bin Liang}                & bliang@tsinghua.edu.cn \\
+  \textbf{Jun Yang}                 & yangjun603@tsinghua.edu.cn \\
+\end{tabular*}\\[0.4em]
+\small $^{1}$School of Software, Beihang University\quad
+$^{2}$School of Artificial Intelligence, Beihang University}
+
+% The \author macro works with any number of authors. Use \AND 
+% to separate the names and addresses of multiple authors.
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\def\month{03}  % Insert correct month for camera-ready version
+\def\year{2026} % Insert correct year for camera-ready version
+\def\openreview{\url{https://openreview.net/forum?id=XXXX}} % Insert correct link to OpenReview for camera-ready version
+
+
+\begin{document}
+
+
+\maketitle
+\footnotetext[1]{$^{*}$Equal contribution. $^{\dagger}$Corresponding author.}
+\setcounter{secnumdepth}{2}
+
+\begin{abstract}
+Effective communication is pivotal for addressing complex collaborative tasks in multi-agent reinforcement learning (MARL). Yet, limited communication bandwidth and dynamic, intricate environmental topologies present significant challenges in identifying high-value communication partners. Agents must consequently select collaborators under uncertainty, lacking a priori knowledge of which partners can deliver task-critical information. To this end, we propose Interference-Aware $K$-Step Reachable Communication (IA-KRC), a novel framework that enhances cooperation via two core components: (1) a $K$-Step reachability protocol that confines message passing to physically accessible neighbors, and (2) an interference-prediction module that optimizes partner choice by minimizing interference while maximizing utility. Compared to existing methods, IA-KRC enables substantially more persistent and efficient cooperation despite environmental interference. Comprehensive evaluations confirm that IA-KRC achieves superior performance compared to state-of-the-art baselines, while demonstrating enhanced robustness and scalability in complex topological and highly dynamic multi-agent scenarios.
+\end{abstract}
+
+\section{Introduction}
+Multi-Agent Reinforcement Learning (MARL) enables collaborative decision-making through interactions between multiple agents and their environment. This paradigm has demonstrated significant potential in autonomous driving \citep{chen2025multi}, game AI \citep{vinyals2019grandmaster}, UAV coordination \citep{liao2025heterogeneous}, where effective inter-agent communication is crucial for successful cooperation. However, practical constraints in communication bandwidth and system scalability make fully-connected communication infeasible \citep{zhu2024survey}, necessitating efficient distributed communication strategies \citep{hu2024learning}. This raises a fundamental research question: How to identify the most valuable communication partners in complex multi-agent systems? Prior work \citep{siedler2021power} shows that poor partner selection can not only diminish cooperation benefits but may actually degrade overall system performance. Moreover, real-world environments often possess complex topologies and exhibit highly dynamic group behaviors, further complicating the identification of high-value communication targets.
+
+Existing approaches for selecting communication partners mainly rely on neighborhood-based constraints. \citet{huttenrauch2019deep, jiang2018learning} use Euclidean distance as the selection criterion, considering spatially nearby agents as potential communication partners. However, in complex environments, Euclidean distance often significantly overestimates actual reachability, resulting in inefficient communication. As shown in Figure~\ref{fig:fig1} (a), when obstacles are present, agents A and B may have a small Euclidean distance (blue dashed line) but be separated by a long traversable path (yellow arrow path), hindering effective cooperation. To overcome this limitation, other works have proposed visual perception-based approaches that establish communication links only between agents with direct line of sight (green region) \citep{chen2021multi, baker2019emergent} (Figure~\ref{fig:fig1} (b)). While this method more accurately reflects physical connectivity, it remains limited in complex environments where agents may fail to detect nearby partners that are occluded from view.
+
+Moreover, existing methods often overlook the interference caused by adversarial dynamics and interactions among agents, which can lead to ineffective cooperation even when agents are close neighbors. For instance, enemy attacks can create high-risk zones that severely disrupt the cooperation of friendly agents, thereby significantly increasing the cost of cooperation. As illustrated in Figure~\ref{fig:fig1}(c), the red high-risk zone severely disrupts communication between agents A and B, forces them to take a detour to cooperate, resulting in prohibitively high path transition costs. This observation underscores the critical importance of dynamic interference modeling for effective collaborator selection. While recent work by \citet{naderializadeh2020graph} attempts to address this challenge using graph neural networks (GNNs) to infer cooperative structures and implicitly capture adversarial interference through end-to-end learning, such approaches typically exhibit limited scalability and performance degradation in large-scale multi-agent scenarios~\citep{gogineni2023scalability}.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.7\linewidth]{Fig1.pdf}
+  \caption{Limitations of common neighborhood constraints in MARL communication. (a) Euclidean distance may misrepresent actual accessibility: agents A and B appear close (blue dashed line) but are separated by a long traversable path (yellow arrow); (b) Vision-based constraints capture physical proximity better but miss reachable agents hidden from view; (c) Even with direct visibility, hostile interference (red region) can block cooperation, forcing detours (yellow arrows). }
+  \label{fig:fig1}
+\end{figure}
+
+This paper posits that high-value communication should occur between agents that are both physically reachable and experience minimal interference, thereby enabling sustained and effective collaboration. To this end, we propose the Interference-Aware $K$‑step Reachable Communication (IA-KRC), which consists of two modules as shown in Figure~\ref{fig:IA-KRC_arch}. \textbf{$K$‑step Reachable Communication}: This module restricts communication to agents that are mutually reachable within $K$ movement steps. This definition considers agents' actual mobility capabilities in complex environments, providing a more accurate characterization of neighborhood relationships compared to Euclidean distance or line-of-sight metrics. \textbf{Interference-Prediction Module}: This component evaluates potential interference from agents beyond the $K$-step neighborhood, including adversarial interference and cooperative conflicts. By integrating these predictions, IA-KRC can further identify low-interference, high-value communication partners within the reachable domain. Furthermore, we develop an IA-KRC-based learning algorithm that efficiently identifies high-value communication and optimizes policy learning in an end-to-end framework.
+
+\begin{figure*}[htbp]
+  \centering
+  \includegraphics[width=1.0\linewidth]{figure2.png} % <-- 替换为图 2 的路径
+  \caption{Overview of IA-KRC framework for MARL communication. The K‑step Reachability Module restricts communication to agents within a physically reachable domain based on shortest transition distance. The Interference Prediction Module evaluates potential conflicts or adversarial effects, selecting low-interference partners. Combined, these modules enable dynamic grouping and robust leader–follower collaboration in complex environments.}
+  \label{fig:IA-KRC_arch}
+\end{figure*}
+
+We validate IA-KRC in challenging multi-agent combat scenarios constructed within the StarCraft Multi-Agent Challenge (SMACv2) framework \cite{samvelyan19smac}, featuring dense obstacles and maze-like topologies. Under our self-play framework against strong baselines including CommFormer, Euclid, Vision, RL-Vision, MAPPO, and QMIX, IA-KRC achieves a win rate advantage of at least 4.58× and up to 31.56×. \rev{This significant advantage stems from IA-KRC's ability to achieve sustained and effective cooperation in topologically complex and interference-laden environments.} 
+
+\section{Related Work}
+\textbf{Learning to communicate in MARL.} Effective communication is critical for collaboration in MARL. However, under bandwidth and scalability constraints, determining \emph{whom to communicate with} becomes a central challenge.
+
+Traditional metrics such as Euclidean distance or line-of-sight visibility often fail to accurately capture the constraints of communication relevant neighborhoods. Recent efforts learn communication topology end-to-end using attention mechanisms or GNNs \cite{naderializadeh2020graph, hu2024learning, niu2021multiagent, su2020counterfactual}, such as introducing personalized peer-to-peer communication via learned message routing policies \cite{meng2024pmac}. Although powerful in small-scale settings, these models lack explicit spatial priors (e.g., physical reachability), do not account for dynamic interference, and often scale poorly with the number of agents \cite{christianos2021scaling}. Beyond spatial cues, some methods explore semantic-level grouping \cite{10.5555/3237383.3238080}, or employ self-supervised learning for message aggregation \cite{guan2022efficient}, but these struggle with dynamic spatial feasibility in topologically constrained tasks. Furthermore, recent advances learn communication graphs via differentiable architecture search and graph–transformer hybrids \cite{zhang2025bridging, inala2020neurosymbolic}, or adopt multi-level asynchronous communication for sequential coordination \cite{ding2024multi}, to obtain dynamic, sparse topologies with scalable routing. While these methods improve communication efficiency through learned selection, aggregation, or hierarchical policies, most operate on abstract feature spaces without explicitly grounding communication in physical environmental constraints, and consequently may be less effective when spatial accessibility and dynamic physical interference fundamentally constrain collaboration. Our work addresses these limitations by introducing a more faithful spatial foundation for communication learning: we explicitly model both multi-step physical reachability and dynamic environmental interference as structural priors for communication, enabling robust partner selection in physically grounded, dynamic environments.
+
+\textbf{The concept of $K$-Step reachability} is well-established in single-agent reinforcement learning, where it primarily serves to constrain the selection of subgoals~\cite{nachum2018data, vezhnevets2017feudal}. Our work represents the first application of reachability constraints within multi-agent systems, specifically for the purpose of selecting communication partners. A critical limitation of prior approaches is their difficulty in scaling to multi-agent settings. This is because the inherent interference in such environments—arising from teammate motion, opponent behaviors, and evolving policies~\cite{lowe2017multi}—means that relying solely on reachability is insufficient to guarantee sustained and effective cooperation. Addressing this gap, our paper introduces, for the first time, an interference-aware formulation of $K$-Step reachability. While some works have modeled influence or interference~\cite{jiang2020Graph, omidshafiei2022multiagent}, these concepts have not been integrated with reachability to guide communication. Our approach closes this gap by jointly modeling physical reachability and dynamic interference, enabling robust partner selection in physically grounded, dynamic environments.
+
+\section{Preliminaries}
+In this work, we consider the cooperative MARL scenario formulated as a decentralized partially observable Markov decision process (Dec-POMDP)~\citep{oliehoek2016concise}, a common framework for modeling cooperation among multiple autonomous agents under uncertainty. Formally, a Dec-POMDP is described as a tuple $\langle \mathcal{S},\mathcal{A},\mathcal{O},\mathcal{P},r,\gamma,N\rangle$, where $\mathcal{S}$ represents the global state space shared by all agents, $\mathcal{A}=\mathcal{A}_{1}\times\mathcal{A}_{2}\times\cdots\times\mathcal{A}_{N}$ is the joint action space of $N$ agents, and $\mathcal{O}$ is the observation space available to each agent. Let $\mathcal{N} = \{1, \dots, N\}$ denote the set of agents. The state transition probability $\mathcal{P}(s'\mid s,a)\colon \mathcal{S}\times\mathcal{A}\times\mathcal{S}\to[0,1]$ specifies the probability of transitioning to state $s'$ from state $s$ given joint action $a$. The global reward function $r(s,a)\colon \mathcal{S}\times\mathcal{A}\to\mathbb{R}$ defines the common objective for all agents. The discount factor $\gamma\in[0,1)$ determines the relative importance of future rewards. Each agent $i$ independently receives a local observation $o_{i}$ based on an observation function $O(s,i)\colon \mathcal{S}\times\{1,\ldots,N\}\to\mathcal{O}$. 
+
+To facilitate effective decentralized cooperation, agents are partitioned into cooperative groups, where each group $g \in G$ consists of a leader and several followers. Each group $g$ maintains a joint action-observation history $\boldsymbol{\tau}_g$ and learns a shared group policy $\pi_{g}(\mathbf{a}_g\mid\boldsymbol{\tau}_g)\colon \mathcal{T}^{|g|}\to\Delta(\mathcal{A}_g)$, where $\mathcal{T}^{|g|}$ denotes the space of joint histories for agents in group $g$, $\mathcal{A}_g$ is the joint action space of the group, and $\Delta(\mathcal{A}_g)$ is the probability simplex over $\mathcal{A}_g$. Our goal is to efficiently resolve leader election and follower assignment. 
+
+\section{Method}
+The objective of IA-KRC is to facilitate sustained and effective cooperation by ensuring that communication occurs between agents that are not only physically reachable but also subject to minimal interference. As illustrated in Figure~\ref{fig:IA-KRC_arch}, the IA-KRC framework comprises two main components: the $K$-Step Reachability Module and the Interference Prediction Module. The former quantifies the physical path accessibility between agents, restricting communication to those in close proximity. The latter assesses the potential communication interference that other agents may impose on a target agent. By integrating these two modules, IA-KRC enables the selection of reliable, long-term cooperative partners within a neighborhood by filtering for low-interference candidates.
+
+The principle of $K$‑step reachability dictates that an agent must be able to reach the state of another agent within \(K\) time steps. In this context, conventional proximity metrics like Euclidean distance are inadequate, as they often fail to capture the underlying topological structure of MDPs. To address this, we introduce the concept of the shortest transition distance as a more suitable metric for evaluating reachability between agents. In a stochastic MDP, the number of steps required for a transition is not deterministic. Consequently, we define shortest transition distance by minimizing the expected first-hitting time over the set of all possible policies, as formally presented in Definition 1.
+
+\textbf{Definition 1.} Let \(x_1, x_2 \in \mathcal{X}\) be two agent states. Then, shortest transition distance from \(x_1\) to \(x_2\) is defined as:
+\[
+d_{st}(x_1, x_2) := \min_{\pi \in \Pi} \mathbb{E}[T_{x_1, x_2} | \pi] = \min_{\pi \in \Pi} \sum_{t=0}^{\infty} t P(T_{x_1, x_2} = t | \pi),
+\]
+where \(\Pi\) is the complete policy set and \(T_{x_1, x_2}\) denotes the first hit time from \(x_1\) to \(x_2\).
+
+Considering the topological complexity, we do not assume the environment is reversible; that is, \(d_{st}(x_1, x_2)\) is not necessarily equal to \(d_{st}(x_2, x_1)\). Therefore, shortest transition distance is a quasi-metric, as it does not satisfy symmetry.
+Shortest transition distance measures the time steps required to transition from state \(x_1\) to \(x_2\) in the most efficient manner, and it has been a subject of study in several works on single-agent reinforcement learning~\citep{chebotarev2020hitting,zhang2020generating}. However, in multi-agent environments, selecting communication partners based solely on this distance is insufficient. This is because actions from other agents can interfere with cooperation, even when two agents are in close proximity. For instance, cooperative agents working together to unlock mechanisms can reduce shortest transition distance, while adversarial agents may block critical pathways, rendering the shortest transition routes practically unreachable. To address this, our proposed Interference Prediction Module explicitly measures the cost of cooperation. Accordingly, the interference-aware shortest transition distance is defined as follows.
+
+\textbf{Definition 2.} Let \(C(T_{x_1,x_2}=t|\pi)\) be the cooperation cost incurred when the first-hitting time from \(x_1\) to \(x_2\) is \(t\) under policy \(\pi\). We assume \(C(T_{x_1,x_2}=t|\pi)\ge 0\). Then, the interference-aware shortest transition distance is defined as:
+\[
+d_{IA}(x_1, x_2) := \min_{\pi \in \Pi} \sum_{t=0}^{\infty} t P(T_{x_1,x_2}=t|\pi) \times C(T_{x_1,x_2}=t|\pi).
+\]
+
+Based on the interference-aware shortest transition distance, we introduce the notion of interference-aware $K$‑step reachable region to bound the communication scope among agents.
+
+\textbf{Definition 3.} Let \(x_1 \in \mathcal{X}\). Then, the interference-aware $K$-Step reachable region of \(x_1\) is defined as:
+\[
+\mathcal{S}_{IA}(x_1, K) := \{x_2 \in \mathcal{X} \mid d_{IA}(x_1, x_2) \le K\}.
+\]
+
+\subsection{Computing $K$‑step reachability using multi-layer map}
+
+Although the interference-aware reachable region has been formally defined, evaluating shortest transition distance $d_{\text{st}}(s_1,s_2)$ between any two agent remains non-trivial. In a non-stationary MARL environment, the distance calculated at time $t$ can become invalid at $t\!+\!n$: moving agents or obstacles may block the previously optimal path, forcing $d_{\text{st}}$ to change (see Figure~\ref{fig:figure_time}). Re-computing all pairwise distances every step is prohibitively expensive, while caching past results is unreliable because their validity quickly decays. Some prior works have attempted to utilize multi-layer perceptrons to record and store state neighborhood information~\citep{paraskevopoulos2017finding}. However, MLPs struggle to fit non-stationary data, rendering this approach ineffective in our context.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[t]{0.49\columnwidth}
+    \centering
+    % Fixed height container for alignment
+    \begin{minipage}[c][6cm][c]{\linewidth}
+      \centering
+      \includegraphics[width=\linewidth,height=6cm,keepaspectratio]{figure_time}
+    \end{minipage}
+    \caption{Impact of time-varying regulation rules on shortest transition distance. Red line: door state changing over time; yellow arrow: shortest transition path.}
+    \label{fig:figure_time}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.49\columnwidth}
+    \centering
+    % Fixed height container for alignment
+    \begin{minipage}[c][6cm][c]{\linewidth}
+      \centering
+      \includegraphics[width=\linewidth,height=6cm,keepaspectratio]{figure_map}
+    \end{minipage}
+    \caption{Illustration of the multi-layer map used to compute $K$-Step reachability.}
+    \label{fig:figure_map}
+  \end{subfigure}
+  \caption{Illustration of the time-varying regulation (a) and the multi-layer map structure (b).}
+  \label{fig:time_and_map}
+\end{figure}
+
+To avoid unnecessary global updates, our approach first detects where the environment has actually changed and then refreshes distances only for those local regions. Empirically, shortest transition distances evolve on distinct time scales: obstacle-induced changes are slow, environmental rule-based changes (e.g., door states as shown in Figure~\ref{fig:figure_time}) occur at a moderate rate, whereas \rev{agent state changes and adversarial interference alter transition costs almost instantly.} We therefore introduce a multi-layer map (Figure~\ref{fig:figure_map}) that separates information by its rate of change, in which each layer records elements that change on different time scales, thereby allowing us to quickly localize the environmental regions where changes have occurred.
+
+The multi-layer map serves as an abstract representation of the multi-agent environment, comprising three mutually decoupled layers. The Geometric Layer stores static elements and extremely slowly changing dynamic elements, updated through agent observations. The Regulation Layer stores environmental rule-based information, such as the opening and closing of doors and changes in traffic lights in real‑world scenarios. This rule-based information evolves at a moderate rate and is updated \rev{based on the actual transitions of agents within the environment}. The Interference Layer stores adversarial interference information of entities, dynamically generating real-time interference potential fields from the stored information to precisely track these most rapidly changing attributes. By monitoring the confidence levels of all layers and updating information below confidence thresholds, the map achieves asynchronous updates. \textbf{Rather than replicating the full environment, this abstraction discretizes and models only the essential dynamic factors, enabling efficient tracking of non-stationary elements}. Details are provided in the Appendix.
+
+By maintaining the multi-layer map, we can efficiently compute shortest transition distance between any pair of states at any time without requiring agents to execute actions in the actual environment to measure distances. Only when changes are detected in a specific layer (Geometric, Regulation, or Interference) \rev{is that layer incrementally refreshed. We only recompute distances for agent pairs within $K$ steps of the updated regions in each layer, thus avoiding expensive global updates}. At computation time, the three layers are aggregated into a unified graph representation $\mathcal{G}^{(t)} = \text{Aggregate}(\mathcal{G}_{\text{geo}}^{(t)}, \mathcal{G}_{\text{reg}}^{(t)}, \mathcal{G}_{\text{int}}^{(t)})$, where $\mathcal{G}_{\text{geo}}^{(t)}$, $\mathcal{G}_{\text{reg}}^{(t)}$, and $\mathcal{G}_{\text{int}}^{(t)}$ denote the Geometric, Regulation, and Interference layer graphs at time $t$, respectively. Given the states of two agents, \rev{the shortest path can be computed by applying any shortest path algorithm on the aggregated graph $\mathcal{G}^{(t)}$. In this work, we employ Dijkstra's algorithm~\citep{dijkstra1959note}}, denoting its policy as \(\pi_D\). In this regard, the distance defined in Definition 2 can be implemented as follows:
+
+\[
+d_{IA}(x_1, x_2 | \mathcal{G}^{(t)}) := \sum_{t=0}^{\infty} t P(T_{x_1,x_2}=t|\pi_D, \mathcal{G}^{(t)}) \times C(T_{x_1,x_2}=t|\pi_D, \mathcal{G}^{(t)}).
+\]
+
+\subsection{Computing Cooperation Cost with an Interference Potential Field}
+
+In the course of agent cooperation, interference from other agents or environmental entities is unavoidable, undermining the stability and persistence of collaboration. Particularly in multi-agent game-theoretic scenarios, actions such as attacks or threats from adversarial agents frequently disrupt the cooperative process. Consequently, considering cooperation cost becomes crucial for selecting high-value partners for interaction.
+
+To quantify the cooperation cost, \(C(T_{s_1,s_2}=t|\pi_D)\), we require a method that can both evaluate cumulative interference along arbitrary paths in real-time and capture the threat directions and intentions of interference sources, while maintaining interpretability in the decision-making process. To this end, we propose the directional interference potential field.
+Unlike traditional isotropic potential fields~\citep{khatib1986real}, our design features two key innovations: (1) directional modeling: dynamically capturing the forward threat angles of interference sources through the effective interference distance \(d_{\text{eff}}\); and (2) intent prediction: utilizing a neural network to predict attack intent vectors, enabling the potential field to adapt to dynamic adversarial behaviors. This potential field quantifies the interference strength exerted by each entity on its surrounding region, while the cooperation cost is the cumulative effect of superimposing the interference fields of all entities.For the interference potential field of a single entity \(e_i\), the interference intensity at state \(x\) is denoted as \(I(x \mid e_i)\). We adopt a direction-aware exponential decay model~\citep{goldsmith2005wireless}:
+\[
+I(x \mid e_i) := I_{\text{base}} \, \mathrm{e}^{-\, d_{\text{eff}} \, \lambda_{\text{base}}},
+\]
+where the key directional modulation term is:
+\[
+d_{\text{eff}} = d_{\text{actual}} (1 + \alpha (1 - \cos(\theta))).
+\]
+
+Here, \(I_{\text{base}}\) is sampled from the agent's real-time state (e.g., health and attack power). Among these parameters, \(\theta\) is the angle between the neural network's predicted attack intent direction and the actual position, \(\alpha\) modulates the directional influence strength, \(d_{\text{actual}}\) is the Euclidean distance, and \(\lambda_{\text{base}}\) is the base decay rate of the potential field's strength. When the interference source's intent is directed toward a position (\(\theta \to 0\)), \(d_{\text{eff}}\) decreases and interference intensifies; when the intent is directed away (\(\theta \to \pi\)), interference weakens. This design endows the partner selection process with clear physical meaning: by avoiding paths with high directional interference to reduce cooperation cost, thereby achieving interpretable minimal-interference partner selection.Let \(I(x)\) denote the total interference strength at state \(x\), and \(I(x|e_i)\) be the interference from entity \(e_i\) (for \(i \in [1, n]\)) at state \(x\). Then, we have:
+\[
+I(x) = \sum_{i=1}^{n} I(x|e_i).
+\]
+The cooperation cost is then defined as the average per-step cost along the trajectory:
+\[
+\begin{gathered}
+C(T_{x_1,x_2}=t|\pi_D, \mathcal{G}^{(t)})
+= \frac{1}{t}\sum_{x \in S(T_{x_1,x_2}=t|\pi_D, \mathcal{G}^{(t)})} [1 + I(x)], \text{\quad for } t>0;\quad C(T=0):=0.
+\end{gathered}
+\]
+where \(S(T_{x_1,x_2}=t|\pi_D)\) denotes the set of states on the t-step trajectory from \(x_1\) to \(x_2\) under policy \(\pi_D\). In the absence of interference \((I(x)=0)\), \(d_{IA}\) reduces to the expected path length \(\mathbb{E}[T]\).
+The value of \(I_{\text{base}}\) is computed based on real-time sampling of the agent's current state (e.g., health and attack power). The term \(d_{\text{eff}}\) is optimized using a neural network that predicts a vector of attack intent~\citep{casas2018intentnet}. This network is trained via supervised learning to minimize the angular error between its predicted attack direction and the agent's actual trajectory. The resulting angle is then used as \(\theta\) to compute the interference distance. Details are provided in the Appendix.
+
+\subsection{MARL with IA-KRC}
+
+Building upon the previously established multi-layer map and interference potential field, we design a dynamic grouping mechanism based on interference-aware distance. Agents are partitioned into multiple cooperative groups, where each group consists of a core leader and several followers. Within each group, we employ the QMIX value decomposition framework for training.
+
+The process begins with leader election. To align leader selection with the communication horizon and reduce global dependence, we adopt a K-neighborhood centrality. For each agent $i$, we define the reachable neighbor count
+\[
+N_i^{(K)} = |\{j \in \mathcal{N}:\, d_{IA}(x_i, x_j) \le K\}|,
+\]
+\rev{where $|\cdot|$ denotes the cardinality of a set.} Larger $N_i^{(K)}$ indicates that agent $i$ can coordinate with more teammates within the $K$-step reachable domain, making it a better candidate for centralized communication and reducing isolated agents. We designate as leaders the top-$M$ agents with the highest $N_i^{(K)}$ scores, where $M$ is a predefined number of leaders.
+
+Once the set of leaders is established, each non-leader agent (follower) determines its candidate leaders using the same $K$-step criterion; a leader is a candidate only if $d_{IA}(x_{\text{follower}}, x_{\text{leader}}) \le K$. To promote load balancing, the follower then affiliates with the candidate leader whose group is currently the smallest. This affiliation approach maintains balanced group sizes, mitigating resource centralization, and enhancing overall coordination efficiency.
+
+Following group formation, we employ the QMIX value decomposition framework to train each group. Each group $g \in G$ learns a cooperative policy, where $G$ denotes the set of all cooperative groups. This is achieved by training a group-specific joint action-value function $Q_{\text{tot}}^g$ to minimize the temporal difference (TD) loss, summed over all groups:
+\[ \mathcal{L}(\theta) = \sum_{g \in G} \mathbb{E}_{(\boldsymbol{\tau}_g, \mathbf{a}_g, r, \boldsymbol{\tau}'_g) \sim B} \left[ (y_g^{\text{tot}} - Q_{\text{tot}}^g(\boldsymbol{\tau}_g, \mathbf{a}_g; \theta))^2 \right]. \]
+Here, $y_g^{\text{tot}} = r + \gamma \max_{\mathbf{a}'_g} Q_{\text{tot}}^g(\boldsymbol{\tau}'_g, \mathbf{a}'_g; \theta^-)$ is the TD target based on the global reward $r$, $\boldsymbol{\tau}_g$ and $\mathbf{a}_g$ are the joint history and action for group $g$, $B$ is the replay buffer, and $\theta$ and $\theta^-$ are the parameters for the online and target networks, respectively. For more details, please see the Appendix.
+
+\begin{figure}[!htbp]
+\centering
+\begin{minipage}[t]{0.26\textwidth}
+    \centering
+    \begin{subfigure}[t]{\linewidth}
+        \centering
+        \includegraphics[width=3.6cm,height=4cm]{figure4a}
+        \caption{Dense‑Obstacle Map.}
+        \label{fig:fig4a}
+    \end{subfigure}
+    
+    \vspace{1em}
+    
+    \begin{subfigure}[t]{\linewidth}
+        \centering
+        \setlength{\fboxsep}{0pt}
+        \setlength{\fboxrule}{0.4pt}
+        \fbox{\includegraphics[width=3.6cm,height=4cm]{figure4b}}
+        \caption{Maze‑Structure Map.}
+        \label{fig:fig4b}
+    \end{subfigure}
+    \caption{Custom SMACv2 maps. White regions denote obstacles.}
+    \label{fig:figure4}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.72\textwidth}
+    \centering
+    \begin{subfigure}[t]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth,height=4cm]{figure5a}
+        \caption{Dense‑Obstacle Map.}
+        \label{fig:fig5a}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth,height=4cm]{figure5b}
+        \caption{Maze‑Structure Map.}
+        \label{fig:fig5b}
+    \end{subfigure}
+    
+    \vspace{1em}
+    
+    \begin{subfigure}[t]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth,height=4cm]{figure7.png}
+        \caption{Group Scales.}
+        \label{fig:group_scaling_new}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\linewidth}
+        \centering
+        \includegraphics[width=\linewidth,height=4cm]{figure6}
+        \caption{Standard 8m map.}
+        \label{fig:figure6}
+    \end{subfigure}
+    \caption{Learning curves of IA-KRC and baselines over 2.0M steps. (a) Dense‑Obstacle. (b) Maze‑Structure. (c) Win rate across scales. (d) Standard 8m. (a)-(c): self-play; (d): built-in AI.}
+    \label{fig:figure5_6}
+\end{minipage}
+\end{figure}
+
+\section{Experiments}
+
+We designed experiments to systematically address the following research questions about IA-KRC's effectiveness, scalability, underlying mechanisms, and generalizability:
+\begin{itemize}
+    \item RQ1: (Effectiveness) Does IA-KRC outperform the main baselines in dynamic environments?
+    \item RQ2: (Scalability and Structure) How does IA-KRC perform across different team scales and what kind of cooperative structures does it learn?
+    \item RQ3: (Mechanism) What are the relative contributions of the two modules in IA-KRC to the overall performance?
+    \item RQ4: (Generalization) Can IA-KRC retain its advantage in scenarios without complex topology?
+\end{itemize}
+To answer these questions, unlike existing methods that rely on built-in AI as evaluation baselines, we develop a self-play framework: within the same environment, two teams using different algorithms engage in adversarial play while updating their policies online. We adopt this setup because the built-in AI of the standard SMACv2 environment does not support topological occlusion (vision and attacks are not blocked by obstacles), and its closed-source nature makes rule modifications infeasible, making it difficult to validate cooperative performance under complex topologies. We provide environment and rule details in the supplementary material. The number of surviving agents at the end of each episode determines the winner. The horizon for the $K$-Step reachability domain is empirically set to $K=9$ unless otherwise stated. All experiments are repeated 5 times with different random seeds.
+
+\subsection{Comparative Performance in Complex Topologies}
+\paragraph{Experimental Setup.} 
+To evaluate the effectiveness of IA-KRC in highly dynamic and topologically complex environments, we construct two custom SMACv2 maps (Figure~\ref{fig:figure4}). Figure~\ref{fig:figure4} (a) depicts a symmetrical layout with dense obstacles, requiring complex path planning. Figure~\ref{fig:figure4} (b) adopts a maze-like structure that creates narrow corridors and communication bottlenecks. These maps are specifically designed to amplify the challenges of decentralized coordination and test the adaptability of different communication mechanisms.
+
+We compare IA-KRC against the following baseline methods, among which DPP, Euclid, SOG(Vision), SOG(RL-Vision), and CommFormer adopt the leader-follower framework for agent grouping:
+
+\begin{itemize}
+    \item \textbf{DPP}~\cite{yang2020multi} groups agents by computing a similarity matrix to ensure diversity.
+    \item \textbf{Euclid}~\cite{huttenrauch2019deep} uses Euclidean distance between agents as the basis for grouping.
+    \item \textbf{SOG(Vision)}~\cite{shao2022self} forms groups based on mutual visibility, selects leaders randomly.
+    \item \textbf{SOG(RL-Vision)}~\cite{shao2022self} elects leaders via reinforcement learning as an extension of the SOG(Vision) method. 
+    \item \textbf{MAPPO}~\cite{yu2022surprising} a centralized-training, decentralized-execution variant of PPO.
+    \item \textbf{QMIX}~\cite{rashid2020monotonic} a representative value decomposition approach with a monotonic mixing network for cooperative MARL.
+    \item \textbf{CommFormer}~\cite{hu2024learning} employs a graph neural network to learn communication topology end-to-end via the Gumbel-Softmax technique.
+\end{itemize}
+
+\vspace{-6pt}
+\paragraph{Results and Analysis.} 
+The learning curves in Figure~\ref{fig:figure5_6} clearly demonstrate IA-KRC's advantages in both environments. Table~\ref{tab:fw_hw_combined} reports, for each method, the Dense-side and Maze-side metrics side-by-side (all metrics refer to IA-KRC): FW (final win rate), HW/S (highest win rate/step), and FL (final loss rate), all within 2.0M steps. Since draws can occur in the self-play setting, FW alone may not fully quantify algorithm effectiveness; we therefore also report FL to enable more comprehensive performance comparison.
+
+\begingroup
+\setlength{\textfloatsep}{6pt}
+\setlength{\intextsep}{6pt}
+\begin{table*}[!htbp]
+\centering
+ \footnotesize
+ \setlength{\tabcolsep}{6pt}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}} l|ccc|ccc @{} }
+\toprule
+\textbf{Method} & \multicolumn{3}{c|}{\textbf{Dense-Obstacle Map}} & \multicolumn{3}{c}{\textbf{Maze-Structure Map}} \\
+\midrule
+& \textbf{FW} & \textbf{HW/S} & \textbf{FL} & \textbf{FW} & \textbf{HW/S} & \textbf{FL} \\
+\midrule
+ DPP        & 88.37 $\pm$ 3.12 & 88.37 $\pm$ 3.45 / 0.87M & 2.8 $\pm$ 1.3 & 69.63 $\pm$ 4.28 & 69.63 $\pm$ 4.10 / 2.00M & 15.2 $\pm$ 1.2 \\
+ Euclid     & 78.81 $\pm$ 2.76 & 83.51 $\pm$ 2.94 / 0.61M & 2.7 $\pm$ 1.2 & 77.89 $\pm$ 3.31 & 77.89 $\pm$ 3.05 / 1.99M & 6.3 $\pm$ 1.3 \\
+ SOG(Vision)     & 83.51 $\pm$ 2.67 & 83.51 $\pm$ 2.43 / 1.99M & 2.6 $\pm$ 1.1 & 72.73 $\pm$ 3.88 & 72.73 $\pm$ 3.40 / 1.99M & 15.0 $\pm$ 1.1 \\
+ SOG(RL-Vision)  & 81.11 $\pm$ 3.01 & 83.60 $\pm$ 2.58 / 0.49M & 7.5 $\pm$ 1.4 & 62.68 $\pm$ 4.90 & 62.68 $\pm$ 4.21 / 2.00M & 3.8 $\pm$ 1.1 \\
+ CommFormer & 79.37 $\pm$ 2.25 & 79.37 $\pm$ 2.77 / 1.99M & 7.6 $\pm$ 1.5 & 70.40 $\pm$ 3.56 & 70.40 $\pm$ 3.12 / 1.99M & 15.1 $\pm$ 1.2 \\
+ MAPPO      & 77.79 $\pm$ 2.64 & 77.79 $\pm$ 2.64 / 2.01M & 13.2 $\pm$ 1.6 & 81.15 $\pm$ 2.8 & 81.15 $\pm$ 2.82 / 2.01M & 3.1 $\pm$ 1.2 \\
+ QMIX       & 88.12 $\pm$ 2.51 & 88.12 $\pm$ 2.51 / 2.01M & 7.6 $\pm$ 1.4 & 71.98 $\pm$ 2.6 & 71.98 $\pm$ 2.69 / 2.00M & 3.1 $\pm$ 1.1 \\
+ \bottomrule
+\end{tabular*}
+\caption{Final cumulative win rate (FW), highest cumulative win rate (HW) within 2.0M steps for Dense-Obstacle and Maze-Structure maps. Additionally, we report final failure rate (FL) corresponding to FW.}
+\label{tab:fw_hw_combined}
+\end{table*}
+\endgroup
+
+On the Dense‑Obstacle Map (Figure~\ref{fig:figure5_6} (a)), IA-KRC achieves final win rates no lower than 77.79\% (vs MAPPO), with peaks of 88.37\% (vs DPP) and 88.12\% (vs QMIX), demonstrating strong late-stage advantage and sustained adaptability.
+On the Maze‑Structure Map (Figure~\ref{fig:figure5_6} (b)), IA-KRC remains ahead under harder topology: its final win rate ranges from 62.68\% (vs SOG(RL-Vision)) to 81.15\% (vs MAPPO), and it maintains stable margins over Euclid, SOG(Vision), CommFormer, and QMIX.
+
+Across both settings, we observe a recurring failure mode in baseline methods: the emergence of \textit{isolated agents} that receive little to no valuable messages, leading to fragmented coordination. This often results in an \textit{avalanche effect}, where early elimination of unsupported agents cascades into total team failure. IA-KRC mitigates this by explicitly modeling both reachability and interference, dynamically selecting communication peers who are both accessible and strategically viable, thus maintaining cohesive and resilient collaboration throughout the episode.
+
+
+\subsection{Scaling and Structure Study of Multi-Agent Collaboration in IA-KRC}
+
+The two central dimensions of multi-agent collaboration are scale and group structure. Scale determines the effectiveness and efficiency of collaboration, whereas organizational structure governs how information is routed, how leader–follower roles are assigned, and whether stable, high‑value coalitions can form under environmental dynamics. A mature collaboration framework should preserve a clear organizational form and stable performance at any scale—especially at large scale. Accordingly, this section examines dimensions—scale and organizational structure—and investigates how IA‑KRC leverages explicit reachability and interference modeling to sustain high‑quality communication and robust coordination as the collaboration setting varies in scale and organization.
+
+\textbf{Scaling study.} To assess scalability, we conduct 2.0\,M-step self-play experiments against SOG(Vision) across team sizes of 3v3, 6v6, 12v12, and 18v18. As shown in Figure~\ref{fig:figure5_6} (c), IA-KRC achieves 65\% (6v6), 86\% (12v12) and 79\% (18v18) by 2.0\,M steps. Notably, the 3v3 scenario peaks at approximately 63\% near 1.25\,M steps before declining to roughly 56\% by 2.0\,M steps. This occurs because small team sizes enable both methods to converge toward similar near-optimal grouping structures, thereby reducing IA-KRC's relative advantage. As team size increases, the combinatorial space of group configurations expands factorially. Under this complexity, conventional methods struggle to consistently identify high-quality subgroups, whereas IA-KRC—leveraging reachability filtering and interference-aware priors—systematically constructs robust structures, thereby amplifying its performance advantage at scale.
+
+To further understand this scalability advantage, we conducted a quantitative analysis of the computational complexity in the leader-follower framework. We measured the total computation counts for leader election and follower assignment across varying team sizes (from 4 to 64 agents) on a 64×64 map with obstacles and adversaries. As shown in Figure~\ref{fig:complexity_structure}, since our algorithm only computes information within the $K$-step neighborhood for each agent, the computational complexity remains low. The total computation count grows approximately linearly with team size $N$, while the per-agent computation remains nearly constant.
+
+\begin{figure}[!htbp]
+\centering
+\begin{minipage}[t]{0.49\textwidth}
+    \centering
+    \vspace{0pt}
+    \includegraphics[height=4.6cm,width=\linewidth,keepaspectratio]{figure_scale.png}
+    \caption{Total computation counts (blue) and computations per agent (red) for leader election and follower assignment.}
+    \label{fig:complexity_structure}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.49\textwidth}
+    \centering
+    \vspace{0pt}
+    \begin{minipage}[c][4.6cm][c]{\linewidth}
+    \centering
+    \begin{subfigure}[t]{0.32\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figure_Structure_a_.png}
+        \caption*{IA-KRC}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.32\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figure_Structure_b_.png}
+        \caption*{SOG(Vision)}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.32\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figure_Structure_c_.png}
+        \caption*{Euclid}
+    \end{subfigure}
+    \end{minipage}
+    \caption{Group structure visualization: (a), (b), and (c) correspond to different algorithms; nodes with same color in same group; star=leader; red=isolated.}
+    \label{fig:structure_abc}
+\end{minipage}
+\end{figure}
+
+\textbf{Structure study.} Beyond scale, we further examine how organizational structure affects cooperation quality. Building on the mainstream hierarchical leader–follower framework \citep{soni2018formation, sheng2022learning}, we compare alternative leader-election strategies and follower-assignment policies, and quantitatively evaluate the resulting group structures. We adopt two criteria: (1) the proportion of isolated agents, defined as the fraction of timesteps at which an agent has degree 0 in the communication graph, capturing the risk of the avalanche effect; and (2) algebraic connectivity (\( \lambda_{2} \)), the second-smallest eigenvalue of the Laplacian of each group's communication graph—larger \( \lambda_{2} \) indicates stronger connectivity, smoother information flow, and greater robustness \citep{fiedler1973algebraic, mohar1991laplacian}. For completeness, the algebraic connectivity is formally defined as:
+\[
+\lambda_{2}(L) = \min_{x \ne 0,\, x^{\top} \mathbf{1} = 0} \frac{x^{\top} L x}{x^{\top} x}.
+\]
+Here, \(L = D - A\) is the unnormalized Laplacian of the communication graph, where \(A\) is the adjacency matrix and \(D\) is the degree matrix; \(x\) is any nonzero vector with \(x^{\top}\mathbf{1}=0\) orthogonal to the all-ones vector \(\mathbf{1}\).
+As shown in Table~\ref{tab:group_metrics}, IA-KRC exhibits a markedly lower isolated-agent ratio than competing methods and achieves a higher mean \(\lambda_2\) with substantially lower variance, indicating reasonable grouping under complex topology that effectively mitigates the avalanche effect, while demonstrating stronger information connectivity and stable group structures that improve transmission efficiency and yield superior training outcomes. Figure~\ref{fig:structure_abc} visualizes the grouping structures of different methods: SOG(Vision) contains many isolated agents, Euclid causes unbalanced resource allocation and inefficient grouping (e.g., cross-obstacle coordination), whereas IA-KRC strikes a better balance and discovers higher-quality structures. SOG(RL-Vision) reduces variance by learning leader selection, yet vision-based modeling limitations still yield more isolated agents and less efficient groupings. CommFormer learns group assignments via graph neural networks but struggles to quickly discover suitable structures in large, complex environments, resulting in many isolated agents and low spectral connectivity; nevertheless, its inductive bias maintains relatively low variance and comparatively stable structures. Overall, IA-KRC consistently outperforms baselines in the Maze environment;
+
+
+
+\begin{figure}[!htbp]
+\centering
+\begin{minipage}[t]{0.48\textwidth}
+    \centering
+    \vspace{0pt}
+    \small
+    \setlength{\tabcolsep}{3pt}
+    \begin{tabular}{lccc}
+    \toprule
+    \textbf{Method} & \textbf{Iso Rate} & \textbf{$\lambda_{2}$ mean} & \textbf{$\lambda_{2}$ var} \\
+    \midrule
+     IA-KRC     & 0.0058 & 0.4622 & 0.0125 \\
+     SOG(Vision)     & 0.2090 & 0.2221 & 0.2295 \\
+     SOG(RL-Vision)  & 0.2009 & 0.2287 & 0.1242 \\
+     Euclid     & 0.1823 & 0.2647 & 0.2198 \\
+     CommFormer & 0.6316 & 0.0220 & 0.0714 \\
+     \textcolor{white}{.} & \textcolor{white}{.} & \textcolor{white}{.} & \textcolor{white}{.} \\
+    \bottomrule
+    \end{tabular}
+    \captionof{table}{Isolated-agent ratio (Iso Rate), mean algebraic connectivity (\( \lambda_{2} \)), and its variance (var) in Maze (12v12, 1000 groupings).}
+    \label{tab:group_metrics}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+    \centering
+    \vspace{0pt}
+    \small
+    \begin{tabular}{lcc}
+    \toprule
+    \textbf{Model Variant} & \textbf{$K$} & \textbf{FW} \\
+    \midrule
+     (A) IA-KRC & 9 & \textbf{83.63 $\pm$ 2.71} \\
+     (B) $K$-Step Variant & 3 & 75.48 $\pm$ 3.02 \\
+     (C) $K$-Step Variant & 6 & 79.89 $\pm$ 2.95 \\
+     (D) $K$-Step Variant & 12 & 73.66 $\pm$ 3.87 \\
+     (E) Without interference & 9 & 74.67 $\pm$ 3.15 \\
+     (F) Without $K$-Step & None & 65.53 $\pm$ 4.76 \\
+    \bottomrule
+    \end{tabular}
+    \captionof{table}{FW of IA-KRC ablation variants on the Dense‑Obstacle Map at 2.0M training steps, under self-play against Vision.}
+    \label{tab:ablation}
+\end{minipage}
+\end{figure}
+
+\subsection{Ablation Study of IA-KRC Mechanisms}
+    To assess the contributions of IA-KRC's two core components, we conducted ablation studies on the Dense‑Obstacle scenario. Specifically, we vary the reachability horizon $K$ in four settings ($K = 3, 6, 9, 12$) to investigate its impact on collaboration range and prediction stability. In addition, we evaluate the effect of disabling the interference prediction module and disabling the $K$‑step reachability module (replaced by Euclidean distance) respectively, to assess its role in partner selection under dynamic disturbances and complex topologies. All ablation variants were trained in our self-play setting against the SOG(Vision) baseline; Table~\ref{tab:ablation} reports the IA-KRC variants' final win rate under this setup.
+
+\textbf{Impact of $K$‑step horizon.}  
+Table~\ref{tab:ablation} shows that final performance at 2.0M steps improves as K increases from 3 (75.48\%) to 6 (79.89\%), peaking at K=9 (83.63\%), but then decreases at K=12 (73.66\%). This confirms a nonmonotonic relationship between horizon length and coordination quality. Smaller horizons such as K=3 restrict collaboration to immediate neighbors, limiting access to valued teammates farther away. This leads to lower final performance, though early results remain competitive. A moderate horizon (K=6) provides a balance of reach and stability, whereas K=9 maximizes midrange partner selection without overextending predictive uncertainty. When K increases to 12, noise accumulation in long-range cost estimates and diffuse communication graphs causes performance degradation in later stages. These results indicate that a constrained communication radius is essential for stable and effective grouping under uncertainty.
+
+
+\textbf{Impact of interference prediction and $K$-Step reachability.}  
+Model (E), which disables interference prediction while keeping K=9, reaches a final win rate of 74.67\%—nearly 9 points lower than the full model. The gap widens as training progresses, as distinguishing safe from risky partners becomes critical. Without interference modeling, agents over-commit to unreliable links (e.g., enemy threats or congestion hotspots).
+
+Model (F), which disables the $K$‑Step reachability module (replacing it with a Euclidean‑distance criterion), attains a final win rate of 65.53\%, about 18 points lower than the full model. Because $K$‑step reachability degenerates into Euclidean distance, the assessment of actual accessibility becomes overly optimistic in dense‑obstacle environments; also, the Euclidean metric weakens the constraining effect of interference prediction on the true transition cost.
+
+By contrast, the full IA‑KRC—combining interference‑aware partner selection with a $K$‑step reachability constraint on the communication domain—effectively avoids high‑cost links, yielding more cohesive and resilient communication structures and markedly stronger late‑stage performance and robustness.
+
+The ablation confirms that both the K-Step horizon and interference modeling are indispensable. Horizon length provides temporal foresight, whereas interference prediction safeguards spatial reliability. Together they enable IA-KRC to form high-utility groups, outperforming methods based on proximity or visibility.
+
+\subsection{Generalization to Standard Obstacle-Free Environments}
+
+To verify generalization, we evaluated IA-KRC on the obstacle-free SMACv2 8m scenario, which lacks topological constraints. We train against the built-in AI instead of using the self-play framework. All experiments were conducted on a lightweight training platform equipped with an AMD Ryzen 9 7945HX CPU, 32GB RAM, and an NVIDIA RTX 4060 GPU. We compared IA-KRC with QMIX, MAPPO, SOG, dpp, and CommFormer, with all algorithm parameters set to the default configurations provided by the authors in their open-source implementations.
+As shown in Figure~\ref{fig:figure5_6} (d), even in this simplified environment where no obstacles exist and communication complexity is significantly reduced, IA-KRC maintains clear superiority, achieving faster convergence and attaining a win rate second only to CommFormer. However, under the same training conditions, CommFormer's architecture is overly "heavyweight," with training time exceeding IA-KRC by more than 4 times; in comparison, IA-KRC incurs only approximately 19\% additional training time relative to other baseline algorithms. This demonstrates that IA-KRC achieves a superior balance between computational efficiency and performance.
+
+In obstacle-free settings, the $K$-Step reachability constraint typically approximates Euclidean distance under continuous, isotropic motion, while aligning with Manhattan or Chebyshev metrics under grid-based motion primitives. Nonetheless, IA-KRC continues to outperform baseline algorithms, indicating that its advantage stems not only from geometric constraints but also from its interference-aware modeling mechanism. The dynamic influence map enables agents to effectively capture crowding, conflict zones, and temporal instability among teammates—dynamic interference factors that significantly affect collaboration even in environments without physical obstacles.
+In contrast, the SOG and DPP method exhibits prolonged exploration phases, limiting improvements in coordination efficiency. CommFormer demonstrates rapid growth and strong performance but suffers from excessive resource consumption, restricting its practical applicability. MAPPO and QMIX perform reasonably in the 8m setting but overall remain inferior to IA-KRC. These results fully confirm that IA-KRC's core mechanisms—reachability filtering and interference prediction—generalize effectively beyond complex topologies, providing robust and significant performance advantages even in environments with minimal structural constraints.
+
+\section{Conclusion}
+We proposed IA-KRC, a hierarchical communication mechanism for multi-agent reinforcement learning that integrates $K$-Step reachability and interference-aware modeling to form effective, low-conflict collaboration structures. Central to our approach is a multi-layer map framework that decouples slow-changing environmental topology from rapidly evolving agent adversarial dynamics, ensuring real-time computation of interference-aware $K$-step reachable distances to enable effective cooperation. 
+
+Extensive experiments across diverse SMACv2 scenarios validate the effectiveness and generality of IA-KRC. In complex environments with Dense‑Obstacle and Maze‑Structure settings, IA-KRC consistently outperformed baselines such as CommFormer and MAPPO, converging faster and achieving higher win rates. Even in the standard 8m scenario without obstacles, IA-KRC maintained an advantage over Euclidean baselines, highlighting its robust generalization beyond structural complexity. These results demonstrate that IA-KRC is not only effective under spatial constraints but also excels in capturing behavioral interference in open environments. 
+
+\bibliography{ref}
+\bibliographystyle{tmlr}
+
+\appendix
+\input{appendix}
+
+\end{document}

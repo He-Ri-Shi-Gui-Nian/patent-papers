@@ -1,0 +1,668 @@
+
+
+% \section{Experimental Results}
+
+% \begin{table}[h!]
+% \centering
+% \caption{Baselines on WikiData (KBQA).}
+% \begin{tabular}{lrr}
+% \toprule
+%  & \textbf{EM} & \textbf{F1} \\
+% \midrule
+% Llama-3.2-3B-Instruct & 56.9 & 61.27 \\
+% Llama-3.2-3B-Instruct (SFT) & 80.7 & 84.23 \\
+% Llama-3.1-8B-Instruct & 77.7 & 82.09 \\
+% Llama-3.1-8B-Instruct (SFT 1k) & 82.0 & 85.9 \\
+% Llama-3.1-8B-Instruct (SFT 1k, new) & 80.24 & 83.92 \\
+% Llama-3.1-8B-Instruct (SFT 80k, bigger model, intermediate superv. signal) & 90.1 & 93.19 \\
+% Llama-3.1-8B-Instruct (SFT 80K, PASS@16) & 94.1 & 96.38 \\
+% Llama-3.1-8B-Instruct (Our RL training, progressive threshold) & 84.87 & 90.81 \\
+% Llama-3.3-70B-Instruct & 84.65 & 87.7 \\
+% DeepSeek-R1 & 38.45 & 44.95 \\
+% DeepSeek-V3 & 77.75 & 80.5 \\
+% Beam Retrieval (FT. \textbf{SOTA}, distractor setting)~\cite{zhang-etal-2024-exploring-best}\href{https://arxiv.org/pdf/2308.08973} & 88.47 & 90.87 \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+
+% \begin{table}[h!]
+% \centering
+% \caption{Pre-Server-deletion Results}
+% \begin{tabular}{lrr}
+% \toprule
+%  & \textbf{EM} & \textbf{F1} \\
+% \midrule
+% Llama-3.1-8B-Instruct, in-context few-shot learning & 77.7 & 82.09 \\
+% Llama-3.1-8B-Instruct, SFT & 82.0 & 85.9 \\
+% Llama-3.1-8B-Instruct, SFT + RL & 84.87 & 90.81 \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+% \begin{table}[h!]
+% \centering
+% \caption{Post-Server-deletion Results (also fix the date-format issues)}
+% \begin{tabular}{lrr}
+% \toprule
+%  & \textbf{EM} & \textbf{F1} \\
+% \midrule
+% % Llama-3.1-8B-Instruct-SFT & 77.7 & 82.09 \\
+% Llama-3.1-8B-Instruct, SFT & 84.14 & 90.16 \\
+% Llama-3.1-8B-Instruct, SFT + RL(pause@68K/160K) & 85.93  & 91.61 \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+
+
+% Yihong: RAG papers have a very chaotic comparison now. All comparisons are not fair. It is not required to compare with other models in the same dataset.
+
+% By Muzhi: The Beam Retrieval one can't be directly compared to others. This is not only due to the distractor setting it adopts, but also due to the context it leverages. ~\cite{zhang-etal-2024-exploring-best} utilizes ``textual'' corpus, instead of KG, which is NOT a KBQA solution in nature. 
+
+
+
+% \begin{table}[h!]
+% \centering
+% \caption{Qwen2.5-7B-Instruct Result}
+% \begin{tabular}{llrr}
+% \toprule
+%  & Dataset & \textbf{EM} & \textbf{F1} \\
+% \midrule
+% % Llama-3.1-8B-Instruct-SFT & 77.7 & 82.09 \\
+% Few-shot & HotpotQA & 17.06 & 29.53 \\
+% Warmup & HotpotQA & 35.58 & 45.70 \\
+% Warmup + Online & HotpotQA & - & - \\
+% Warmup + Offline & HotpotQA & - & - \\
+% \midrule
+% Few-shot & 2WIKI & 57.49 & 62.31 \\
+% Warmup & 2WIKI & 73.05 & 78.89 \\
+% Warmup + Online & 2WIKI & 79.28 & 85.50 \\
+% Warmup + Offline & 2WIKI & 79.55 & 85.72 \\
+% \midrule
+% Few-shot & 2WIKI-Text & - & - \\
+% Warmup & 2WIKI-Text & - & - \\
+% Warmup + Online & 2WIKI-Text & - & - \\
+% Warmup + Offline & 2WIKI-Text & - & - \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+
+% \color{purple}
+% \begin{itemize}
+%     \item Why PPO is engineering feasible in our case? 
+%     \item Explain reward? from rejection sampling? 
+%     \item Direct sampling from Optimal is better? Why $\{0, 1\}$ reward?
+% \end{itemize}
+% \color{black}
+
+\section{Problem Definition}
+\label{probelm_definition}
+The MHQA task involves answering a complex question $q$ by performing multi-step reasoning over multiple pieces of supporting contexts $\mathcal{C}=\{c_1, c_2, \cdots, c_{|\mathcal{C}|}\}$ to derive the final answer $A_q$. Based on the form of supporting contexts, MHQA can be further breakdown into two sub-tasks, text-based MHQA and Knowledge-based Question Answering~(KBQA).
+
+\paragraph{Text-based Multi-hop Question Answering}
+In text-based MHQA, the supporting contexts are paragraphs scatter in one single document or multiple passages. In practice, the text-based MHQA task has two different settings. The \textit{distractor} setting provides a pre-extracted set of supporting paragraphs $\mathcal{T}_q$ for each question $q$, which includes both relevant information and distractors. In contrast, under the \textit{full-corpus} setting, all questions share an open textual corpus $\mathcal{T}$ (e.g. Wikipedia). In this work, we focus on the \textit{full-corpus} setting, since it is closer to the real-world scenario. 
+
+\paragraph{Knowledge-based Question Answering}
+Under the setting of KBQA, the supporting contexts are retrieved from a knowledge graph~(KG). KGs consist a large set of entities~$\mathcal{E}$ and their relations~$\mathcal{R}$, typically represents as triples $\mathcal{T}$ in the form of $(e_h,r,e_t)$, where $e_h$ and $e_t$ denote the head and the tail entity, respectively, and $r$ is the relation connecting them. To answer a question $q$, the model needs to identify the topic entities mentioned in the question, and traverse the KG by chaining multiple triples together to obtain the final answer $A_q$.
+
+
+\section{Mathematical Proofs}
+\label{appendix_math_proof}
+\klapprox*
+\begin{proof}
+Recall that $\pi^*(\tau) = \frac{\exp(r(\tau)/\alpha)}{Z(\alpha)}$ and $Z(\alpha) = \int \exp(r(\tau)/\alpha) d\tau$, we have the following statement for $\pi^{>K}$:
+\begin{equation}
+    \pi^{>K}(\tau) = \frac{\exp (r(\tau)/\alpha)}{Z^{>K}(\alpha)} \; , \quad \text{where } Z^{>K}(\alpha) = \int_{\mathcal{T}} \mathds{1}(r>K) \exp (r(\tau')/\alpha) d\tau' \; ,
+\end{equation}
+where $\mathds{1}(r>K)$ is the characteristic function filtering out trajectories whose reward is less than $K$.
+The above statement tells that $\pi^{>K}$ is actually a conditional probability of $\pi^*$, i.e., $\pi^{>K}(\tau)=\pi(\tau | r(\tau)>K)$.
+Also, the above statement allows us to compute the KL divergence easily:
+\begin{equation}
+    \mathds{D}_{\text{KL}}(\pi^{>K} || \pi^*) = \log \frac{Z}{Z^{>K}} \; .
+\end{equation}
+Notably,
+\begin{equation}
+     Z^{>K} = \int_{r>K} \exp(r / \alpha) dr = (M-K)\exp(r'/\alpha) \; ,
+\end{equation}
+where $M = \sup (r) $ and the last equality is obtained by the mean value theorem.
+In summary, if $K < M - \frac{Z}{\exp(\delta) \exp(r'/\alpha)}$, then the proposition holds.
+
+\end{proof}
+
+
+
+\varapprox*
+\begin{proof}
+First, we expand the variance by regarding $\pi^{>K}$ as a distribution with respect to $r$.
+Note that all $\Var$ and $\E$ here are on $\pi^{>K}$ and $M=\sup(r)$.
+\begin{equation}
+    \Var[r] = \E \left[r - \E \left[ r \right] \right]^2 = \E \left[r^2 \right] - \E^2 \left[r \right] 
+    =\frac{\int^M_K r^2 \exp(r/\alpha) dr}{ \int^M_K \exp(r/\alpha)dr} - \left( \frac{\int^M_K r \exp(r/\alpha) }{\int^M_K \exp(r/\alpha)} \right)^2 \; .
+\end{equation}
+Note that we can expand the integral at $\alpha=0$ with a Taylor series:
+\begin{equation}
+    \begin{aligned}
+    \Var[r] =
+    \frac{e^{(K+M)/\alpha}(-2\alpha^2 + O(\alpha^6)) + \left( e^{(2K)/\alpha} + e^{(2M/\alpha)}\right)\left(\alpha^2 + O(\alpha^6) \right) + (K-M)^2(-e^{(K+M)/\alpha}) }{\left(e^{(K/\alpha)} - e^{(M/\alpha)} \right)^2} \; .
+    \end{aligned}
+\end{equation}
+% there is alpha in the numerator, so var is bounded by \alpha^2
+Notice the fact that $Z^{>K}(\alpha)=\alpha(\exp(M/\alpha) - \exp(K/\alpha))$, the proposition holds.
+\end{proof}
+
+
+ \section{Datasets and Metrics}
+ \label{appendix_datasets}
+% To evaluate the effectiveness of MyGO on complex question answering tasks, we adopt four representative datasets, 2WikiMultihopQA (2Wiki)~\cite{ho2020constructing}, QALD-10~\cite{QALD-10}, HotpotQA~\cite{yang2018hotpotqa}, and MuSiQue~\cite{trivedi2021musique}.
+% 2WikiMultiHopQA uses structured data (Wikidata) and unstructured data (Wikipedia) to create multi-hop question.
+% QALD-10 was initially used for Multilingual Question Answering over Knowledge Graphs
+% are KBQA datasets built upon Wikidata~\cite{Wikidata} knowledge graph,
+% HotpotQA features complex questions that necessitates reasoning across multiple documents,
+% MuSiQue consists 2-4 hop questions built upon five existing single-hop QA datasets.
+To evaluate MyGO's effectiveness on complex question answering, we employ four representative datasets: 2WikiMultihopQA (2Wiki)~\cite{ho2020constructing}, QALD-10~\cite{QALD-10}, HotpotQA~\cite{yang2018hotpotqa}, and MuSiQue~\cite{trivedi2021musique}.
+2Wiki utilizes both structured (Wikidata) and unstructured (Wikipedia) data to create multi-hop questions.
+QALD-10 was initially designed for Multilingual Question Answering over KG but late was widely used as a benchmark on KBQA \cite{ToG}.
+The other two datasets focus on multi-document and multi-hop reasoning. HotpotQA features complex questions requiring reasoning across multiple documents. MuSiQue consists of questions demanding two to four reasoning hops, constructed from five existing single-hop QA datasets.
+
+
+\section{Implementation Details}
+\label{appendix_implementation_detail}
+\subsection{Sampling Strategies}
+
+\paragraph{Reward Criterion}
+
+Ideally, we would use the ``correctness'' of predicted answers as the reward criterion.
+However, this ``correctness'' is not directly accessible in practice.
+The ground truths provided in QA task datasets are in fact the golden answers.
+The failure to achieve an exact match - a widely used metric in QA tasks - between the generated answer and the golden answer does not necessarily indicate the semantic ``incorrectness''.
+For example, for a question in HotpotQA ``\emph{John T. Mather Memorial Hospital is located in a village in what Suffolk County, New York town?}'', 
+the generated answer ``Brookhaven'' fails to achieve an exact match with the golden answer ``Town of Brookhaven'', which would be considered correct by a human judge.
+
+Therefore, we adopt the F1 score as our evaluation criterion
+ and consider a generated answer correct if it achieves a sufficiently high F1 score close to 1.
+
+Note that some works utilize more complicated non-standard criteria, e.g., LLM-as-Judge~\cite{ReSearch,sun2025zerosearch}, Cover Exact Match (CEM)~\cite{sun2025zerosearch, song2025r1}.
+Since this is not the main focus of this work, we simply follow the standard criterion widely used in previous works.
+
+
+
+\paragraph{Progressive Selection Threshold}
+
+As stated in section~\ref{sec:mygo} as well as the aforementioned, we aim to directly sample trajectories $\tau$ for $r(\tau) > K$ with a sufficiently large $K$.
+
+However, this might lead to very low sample efficiency when the current policy is not sufficiently strong or when the tasks are particularly challenging. As a compromise, we consider a progressive selection threshold defined as $K:= \max(K', (\bar{r}_n/(r_\text{sup} + 1))\cdot r_\text{sup})$, where $r_\text{sup}$ denotes $\sup_{\tau \in \mathcal{T}} r(\tau)$ and $\bar{r}_n$ represents the empirical average reward of the trajectories for a batch of $n$ questions at the first pass. 
+This approach balances both the difficulty of sampling satisfactory trajectories and the quality of the sampled trajectories. As the policy improves during the MyGO training procedure, $K$ will asymptotically grow to an acceptable value, thereby satisfying Proposition~\ref{propos_1}.
+
+\paragraph{Multiple-Attempt Sampling}
+
+For a batch of $n$ questions, 
+we would iteratively sample trajectories for them.
+For a question, the sampling procedure will stop if $m$ satisfying trajectories are sampled or reach the predetermined maximum sampling attempts.
+With vLLM engine~\cite{kwon2023efficient}, we could accelerate the sampling procedures in parallel efficiently with multi-threading/multi-processing.
+
+
+\subsection{Training}
+
+\paragraph{Online Off-policy Optimization}
+
+In MyGO, we primarily focus on online off-policy optimization. 
+Given a total of $N$ data examples (i.e., questions), we divide them into $T$ batches for $T$ update iterations.
+For each iteration, we sample trajectories (including answers) from $N/T$ questions to serve as pseudo-labels and optimize the models via MLE through a standard SFT pipeline (e.g., LLaMA-Factory~\cite{zheng2024llamafactory}).
+After completing one update iteration, we proceed to the next sampling iteration.
+
+Notably, due to the off-policy strategy, 
+we can parallelize the sampling and training processes after the first iteration, when a sufficient number of GPUs are available.
+
+
+
+\paragraph{Trajectory Selection for Training.}
+% Note that in Mujica, the planner and workers must work together to reach the final answer.
+% This process actually generates one trajectory of planner and several trajectories of workers.
+% In section~\ref{sec:mygo}, the term "trajectory" actually refers to planner's trajectory.
+% On the other hand, the dialoge history for each worker is very simple: a one-turn interaction between the environment and the worker.
+% The environment message consists of the question from planner and the passages from the retriever while workers' message contains its response.
+% If the reward of planner trajectory is above the threshold, we select the trajectory and asscociated worker's trajectories.
+In the Mujica framework, the planner and workers collaborate to reach the final answer. This interaction generates a single planner trajectory and multiple worker trajectories. It is important to clarify that in Section~\ref{sec:mygo}, the term "trajectory" specifically refers to the planner's trajectory. In contrast, the dialogue history for each worker is straightforward, comprising a single-turn interaction with the environment. The environment's message to the worker consists of the question from the planner and passages from the retriever, while the worker's message contains its response. If the reward associated with a planner trajectory exceeds a predefined threshold, that trajectory and its corresponding worker trajectories are selected as independent data for training.
+
+
+\paragraph{Training Advances from Pre-training/SFT.}
+Unlike other reinforcement learning techniques, MyGO's training process can be framed as supervised fine-tuning (SFT) using self-generated data and labels. Consequently, we can directly leverage existing training advancements from pre-training and SFT techniques, including optimizers, learning rate schedulers, and hyperparameter settings.
+
+
+
+
+\subsection{Hyperparameters and Configurations}
+
+\paragraph{Sampling.}
+For all environments and datasets, we sample a maximum of $m=3$ trajectories per question from a randomly selected subset of 20,000 questions from the training sets. The maximum number of sampling attempts is set to 16. During each iteration of the sampling process, we sample trajectories from 1,000 questions.
+
+
+\paragraph{Warmup.}
+To burn in the prompts, we introduce a warmup stage before performing MyGO, in which we use the few-shot model to randomly sample 300 trajectories with $\text{EM}=1$ from the training sets. We then fine-tune the pre-trained model with these trajectories following the same procedure as MyGO.
+
+\paragraph{Configuration.}
+
+Following the settings of regular SFT, we employ the AdamW optimizer~\cite{loshchilov2019decoupled} with a Cosine Annealing learning rate scheduler~\cite{loshchilov2017sgdr}. For the warmup phase, we configure the initial learning rate at 1e-5 and the minimum learning rate at 1e-6. In the MyGO training procedure, we set the initial learning rate to 5e-7 and the minimum learning rate to 1e-8.
+We leverage vLLM~\cite{kwon2023efficient} as our inference engine and LLaMA-Factory~\cite{zheng2024llamafactory} as our training framework.
+
+
+
+
+% \section{Comprehensive Comparison with Other Methods}
+% \label{appendix_comparision}
+% % Refer to CollabRAG paper to select relevant baselines. 
+% % https://arxiv.org/pdf/2504.04915
+% \begin{table}[h!]
+% \centering
+% \caption{Evaluation Results on Three Representative Multi-hop Question Answering Datasets. 
+% % * and $^\lozenge$ results are referred from corresponding papers~\cite{Collab-RAG} and~\cite{RAG-Star}.
+% }
+% \vspace{0.2cm}
+% % \resizebox{\textwidth}{!}{
+% % \setlength{\extrarowheight}{4pt}
+% \begin{tabular}{lllcccccc}
+% \toprule
+% \multicolumn{1}{c}{\multirow{2}{*}{\textbf{Method}}} & \multicolumn{1}{c}{\multirow{2}{*}{\textbf{Backbone}}} & \multicolumn{1}{c}{\multirow{2}{*}{\textbf{Retriever}}} & \multicolumn{2}{c}{\textbf{HotpotQA}}  & \multicolumn{2}{c}{\textbf{MuSiQue}}   & \multicolumn{2}{c}{\textbf{2Wiki}}      \\
+% \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} 
+% \multicolumn{1}{c}{}                        & \multicolumn{1}{c}{}                          & \multicolumn{1}{c}{}                           & \textbf{EM}            & \textbf{F1}            & \textbf{EM}            & \textbf{F1}            & \textbf{EM}             & \textbf{F1}            \\
+% \midrule
+% % Direct Inference                            & Qwen 2.5-7B                                   & -                                              & 19.2                      & -                               & 3.8    & -                          & 25.8                          & -                         \\
+% Direct Inference                            & Qwen 2.5-7B                                   & - & 18.3 & - & 3.1 & - & 25.0 & - \\
+% CoT & Qwen 2.5-7B & - & 9.2 & - & 2.2 & - & 11.1 & - \\
+% RAG                                         & Qwen 2.5-7B                                   & E5                                     &  29.9  & -                               & 5.8    & -                          & 23.5      & -                         \\
+% RAFT                                       & Llama 3.1-8B                                  & Dragon-Plus                                    & 41.0                      & 51.6                            & 13.8                       & 24.0                       & 39.4                          & 45.8                      \\
+% RaFe                                        & GPT 4o-mini                                   & Google Search                                  & 40.6                      & 55.4                            & 11.8                       & 23.8                       & 36.2                          & 39.3                      \\
+% HippoRAG                                    & GPT 3.5-turbo                                 & ColBERTv2                                      & \underline{45.7}                & \textbf{59.2}                   & 21.9                       & 33.3                       & 47.7                          & \underline{62.7}                      \\
+% Iter-RetGen                                 & Qwen 2.5-7B                                   & FlashRAG                                       & 34.4  & -                               & 8.7                        & -                          & 27.9                          & -                         \\
+% IRCoT                                       & Qwen 2.5-7B                                   & BM25                                           & 30.3  & -                               & 7.0                        & -                          & 21.6                          & -                         \\
+% % ReSP                                        & Llama 3-8B                                    & E5-base-v2                                     & \textbf{47.2}             &                       -                 & -                 & 38.3                          & -                   \\
+% IterDRAG                                    & Gemini 1.5                                    & Gecko 1B                                       & 38.4                & 49.8                            & \underline{22.6}                       & 35.0                       & 44.3                          & 54.6                      \\
+% \midrule
+% \textit{Concurrent works} & & & & & & & & \\
+% Search-o1                                   & Qwen 2.5-7B                                       & E5                                & 18.7                      & -                      & 5.8                       & -                       & 17.6                    & -             \\
+% Search-o1                                   & QwQ 32B                                       & Bing Web Search                                & 45.2                      & \underline{57.3}                      & 16.6                       & 28.2                       & 58.0                    & \textbf{71.4}             \\
+% Search-R1 & Qwen 2.5-7B & E5 & 37.0 & - & 14.6 & - & 41.4 & - \\
+% RAG-Gym                                     & Llama 3.1-8B                                  & bge-base + BM25                                & 44.1                      & 56.8                           & -                          & -                          & 50.2                          & 57.9            \\
+% ReSearch                                    & Qwen 2.5-7B                                   & FlashRAG                                     & 43.5                      & -                               & 22.3                       & -                          & 47.6                          & -                         \\
+% \midrule
+% \textit{Settings}         & & & \multicolumn{2}{c}{\textit{In-domain}} & \multicolumn{2}{c}{\textit{Out-of-domain}} & \multicolumn{2}{c}{\textit{In-domain}}  \\ 
+% \textbf{Mujica (few-shot)}                  & Qwen 2.5-7B                                   & bge-large-en-v1.5                              & 15.77 & 27.96 & 5.34   & 17.81  & 12.41    & 19.71 \\
+% \textbf{Mujica w/ warm up}                      & Qwen 2.5-7B                                   & bge-large-en-v1.5                              & 40.55                     & 52.35                           & N/A                        & N/A                        & \underline{50.18}                         & 56.25                     \\
+% \textbf{Mujica-MyGO}                        & Qwen 2.5-7B                                   & bge-large-en-v1.5                              & 41.54                     & 53.79                           & \textbf{26.11}             & \textbf{35.92}             & \textbf{53.17}                & 59.62               \\
+% \bottomrule
+% \end{tabular}
+% % }
+% \label{exp_baselines}
+% \end{table}
+
+% In order to comprehensively evaluate the performance of our proposed solution, we compare Mujica-MyGO with a series of RAG systems. Apart from direct inference with pretrained LLM~\cite{Qwen2}, we consider vanilla RAG~\cite{RAG}, RAFT~\cite{zhang2024raftadaptinglanguagemodel}, RAFe~\cite{RaFe}, HippoRAG~\cite{gutiérrez2024hipporag}, Iter-RetGen~\cite{Iter-RetRAG}, IRCoT~\cite{IRCoT}, IterDRAG~\cite{IterDRAG}, as well as compatitative concurrent solutions Search-o1~\cite{Search-o1}, RAG-Gym~\cite{RAG} and ReSearch~\cite{ReSearch}. %It is important to note that the performance of RAG solutions is heavily influenced by the selection of backbone LLM, retriever model, and knowledge corpus. 
+% %In general, larger backbone models and more complicated retrieval methods tend to yield better results. 
+% Considering the differences between the backbone LLMs and retrieval methods employed by each RAG system, it is inappropriate to compare the performance of different solutions solely based on their evaluation metrics.
+
+% Table~\ref{exp_baselines} presents the experimental results on three representative multi-hop question answering datasets. We have the following observations:
+
+% % Mujica-MyGO 是一个effective和efficient的 Multi-hop QA 解决方案。RAG 决provides 从模型大小上面做文章
+% Firstly, \textit{Mujica-MyGO is an effective and efficient multi-hop QA solution}. Despite leveraging a 7B Qwen2.5 LLM as its backbone, Mujica-MyGO achieves state-of-the-art performance on the MuSiQue and 2Wiki datasets and delivers competitive results on HotpotQA. 
+% % It should be acknowledged that some baseline methods outperform Mujica-MyGO on the HotpotQA dataset, 但这些方法，要么使用了larger scale LLM (such as GPT3.5, QwQ 32B) 作为baseline，要么利用了更复杂的retrieval method，(e.g., Gecko 1B and FlashRAG), 要么benefit from 更广的知识来源，例如Google Search和Bing Web Search. Most notably, 尽管同期工作ReSearch和RAG-Gym利用相近规模的backbone模型于HotpotQA上取得了较好的性能，它们在the rest of datasets上都显著的落后于我们to a large margin. 
+% % We shall emphasize that we adopt the official corpus released with the HotpotQA dataset. However, incorporating 
+% One may notice that some baseline methods outperform Mujica-MyGO on the HotpotQA dataset. However, these approaches typically rely on larger-scale backbone LLMs and/or more sophisticated retrieval methods. In general, larger backbone models (e.g., GPT and QwQ) tend to yield better results. 
+% %While concurrent work ReSearch~\cite{ReSearch} and RAG-Gym~\cite{RAG-Gym} achieve better performance on HotpotQA with similarly scaled backbone models, they fall behind Mujica-MyGO on the remaining datasets. 
+% In addition, incorporating advanced retrievers (e.g., HopRetriever~\cite{HopRetriever}, Dragon-plus~\cite{DRAGON}) or expanding the knowledge corpus via search engines (e.g., Google, Bing) can further enhance performance. Nevertheless, it is important to emphasize that improving retrieval is not the focus of this paper. In order to evaluate the effectiveness of the proposed method, we opt to adopt the official corpus released with the HotpotQA dataset~\cite{yang2018hotpotqa}.
+% %In addition, we notice that integrating advanced retrieval mechanisms, such as combining different types of retrievers~\cite{DRAGON} and leveraging structural coherence across Wikipedia passages~\cite{HopRetriever} usually yields better performance. 
+
+% %其次，Mujica是一个出色的multi-hop QA pipeline. Mujica w/ SFT variant 的结果表明，即使不经过expensived的RL，仅仅是少量的数据就可以使它consistently surpass基于question decomposition和iterative retrieval的CoT或传统RAG方法。We would like to attribute the advantages of our method from two perspectives. 首先，使用独立的worker处理retrieved context 有效的阻止了 irrelevant context 干扰planner conduct reasoning。其次，将subquestions formulated成一个directed acyclic graph充分考虑了不同subquestion之间的interdependency, ensure了reasoning coherence。% 然而凡事都具有两面性。复杂的question answering pipeline对LLM自身的指令跟随以及推理能力提出了挑战，使小规模的预训练难以在few-shot设定下取得理想的结果。
+% Secondly, \textit{Mujica shows to be an exceptional multi-hop QA pipeline}. The results of the Mujica w/ warm up variant demonstrate that even without relying on expensive reinforcement learning (RL), a small amount of fine-tuning data is sufficient for Mujica to outperform RAG baselines based on question decomposition and iterative retrieval. We attribute the advantages of our method to two key factors. On the one hand, the use of independent workers to process retrieved contexts effectively prevents irrelevant information from interfering with the planner's reasoning process. On the other hand, formulating subquestions into a DAG fully accounts for the interdependencies between subquestions, ensuring reasoning coherence throughout the pipeline. However, every approach has its trade-offs. As a complex question-answering pipeline, Mujica imposes substantial demands on the LLM's instruction-following and reasoning capabilities, making it difficult for small-scale pre-trained LLMs to achieve desirable results in few-shot settings.
+
+% \begin{table}[h!]
+% \centering
+% \caption{Comparison of Proximity Optimization-based Multi-hop QA Solutions.
+% }
+% \begin{tabular}{lcccc}
+% \toprule
+% \multicolumn{1}{c}{\textbf{Pipeline}} & \textbf{Post-training Method} & \textbf{HotpotQA} & \textbf{MuSiQue} & \textbf{2Wiki} \\
+% \midrule
+% Search-R1                    & PPO                  & 37.0     & 14.6    & 41.4  \\
+% RAG-Gym                      & PPO                  & \textbf{44.1}     & -       & 50.2  \\
+% ReSearch                     & GRPO                 & 43.5     & 22.3    & 47.6  \\
+% \midrule
+% \textbf{Mujica}                       & \textbf{MyGO}                 & 41.54    & \textbf{26.11}   & \textbf{53.17} \\
+% \bottomrule
+% \end{tabular}
+% \label{po_solutions}
+% \end{table}
+
+% Lastly, \textit{the experimental results reconfirm the effectiveness of MyGO}. Compared with ReSearch (using GRPO), Search-R1 and RAG-Gym (using PPO), Mujica-MyGO achieves comparable or even better performance across three datasets with the commonly adopted bge-large-en-v1.5 dense retriever~(see Table~\ref{po_solutions}). This demonstrates that MyGO simplifies GRPO and PPO without compromising performance on multi-hop QA tasks. Moreover, MyGO does not require additional resources to hold a reference model or to compute advantages, striking a great balance between efficiency and performance. 
+
+% Detailed comparisons between MyGO and other preference optimization algorithms (e.g., DPO, PPO, GRPO, etc.) across various tasks would be very interesting, however, this lies beyond the scope of this paper. We shall emphrasize that the focus of this paper is the multi-hop QA task. In our future works, we plan to extend our analysis to different reasoning tasks, including but not limited to mathematical problems, coding, and long-context reasoning.
+%相较于使用GRPO的ReSearch和使用PPO的Search-R1和RAG-Gym, 尽管是使用了常用的bge-large-en-v1.5 sentence transformer作为dense retriever，Mujica-MyGO在三个数据集上取得了相近甚至更佳的性能。这说明MyGO在简化GRPO和PPO的同时，并不会降低在multi-hop QA任务上的性能。与此同时，MyGO既不需要使用额外资源hold reference model并计算advantages，在效率和性能之间形成了恰当的平衡。需要注意的是, 详尽的对比MyGO与其他preference optimization algorithms (e.g. DPO, PPO, GRPO, etc.) 在不同任务上的表现是一项有趣的工作，但它go beyond the scope of this paper. 在这篇文章中，我们只讨论multi-hop QA这一项任务，在future work 中，我们计划对比这些方法在不同种类的reasoning task中, 例如数学推理，coding，long-context reasoning 的表现。
+
+
+
+%%%%%%%%%% 后面如果有时间补两个实验 %%%%%%%%%%
+% 1. worker把retrieve到的所有document都给回planner，我们预期这样performance会更差，因为更长的sequence让attention涣散。
+% 2. planner它不把问题弄成一个DAG，就一步一步做。这样做可能更慢（这个慢不一定是记录秒数的慢，而是iteration次数的变多也算慢），也可能 更差。
+
+% Lastly, MyGO is effective, 通过
+
+\section{Further Study: Offline MyGO?}
+\label{appendix_offline}
+Designing an offline variant of MyGO is straightforward: we can use the initial policy after warmup to sample all required trajectories. In this work, we present a preliminary attempt using Qwen on the 2Wiki-KG and 2Wiki-Text datasets.
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.48\linewidth}
+\centering
+\includegraphics*[width=\linewidth]{figures/2wiki_qwen_mrl_f1.pdf}
+\caption{F1 score on 2Wiki-KG training}
+\label{fig:first}
+\end{minipage}%
+\hfill%
+\begin{minipage}{0.48\linewidth}
+\centering
+\includegraphics*[width=\linewidth]{figures/2wiki_text_qwen_mrl_f1.pdf}
+\caption{F1 score on 2Wiki-Text training}
+\label{fig:second}
+\end{minipage}
+% \caption{Overall caption if needed}
+\label{fig:combined}
+\end{figure}
+
+
+% \begin{figure}
+%     \centering
+%     \includegraphics[width=0.5\linewidth]{figures/2wiki_qwen_f1.pdf.png}
+%     \caption{Caption}
+%     \label{fig:enter-label}
+% \end{figure}
+
+% \begin{figure}
+%     \centering
+%     \includegraphics[width=0.5\linewidth]{figures/2wiki_text_qwen_f1.png}
+%     \caption{Caption}
+%     \label{fig:enter-label}
+% \end{figure}
+
+
+\begin{table}[h!]
+
+\label{tab:online_vs_offline}
+\centering % Center the table on the page
+\renewcommand{\arraystretch}{1.1} % Increase row spacing for readability
+% \vspace{-1.9em}
+\caption{Mujica+MyGO w/ Qwen  Online v.s. Offline on 2Wiki-KG and 2Wiki-Text Environments.}
+\vspace{0.2cm}
+\label{tab:model_online_offline}
+% \vspace{1em}
+
+\begin{tabular}{@{}llcccc@{}} % @{} removes inter-column padding at edges
+\toprule
+\textbf{Type} & \textbf{Model} & \multicolumn{2}{c}{\textbf{2Wiki-KG}} & \multicolumn{2}{c}{\textbf{2Wiki-Text}} \\
+ 
+\cmidrule(lr){3-4} \cmidrule(lr){5-6} % Partial rules under the main dataset headers
+\textbf{Mujica+} &  & \textbf{EM} & \textbf{F1} & \textbf{EM} & \textbf{F1} \\
+\midrule
+\multirow{1}{*}{Few-Shot} & GPT-4.1 & 78.50 & 84.24 & 30.70  & 52.14 \\
+\midrule
+Few-Shot & \multirow{4}{*}{Qwen2.5-7B}& 57.49 & 62.31 & 12.41 & 19.71 \\
+WarmUp &  & 74.93 & 80.74 & 50.18 & 56.25 \\
+\cmidrule{0-0} 
+\cmidrule{3-6} 
+MyGO-Offline &  & 77.09 & 83.16 & 53.27 & 59.78 \\
+MyGO-Online &  & 77.63 & 84.15 & 53.17 & 59.62 \\
+\bottomrule
+\end{tabular}
+
+% \end{table}
+\end{table}
+
+
+We note that our goal is not to compare online and offline RL, 
+as this has been discussed in many prior works~\cite{tang2024understanding}.
+Instead, we just aim to present an alternative approach for implementing MyGO.
+
+From Proposition~\ref{propos_1}, we can expect that the quality of samples obtained from MyGO-offline and MyGO-online should be comparable, as both methods sample directly from an asymptotically optimal policy.
+The former uses a fixed threshold $K$, while the latter can dynamically and progressively increase $K$, which aligns more closely with Proposition~\ref{propos_1}.
+In the demonstration experiments (as shown in Table~\ref{tab:model_online_offline}), we observe that MyGO-Offline can also achieve outstanding performance, being slightly worse or comparable to MyGO-Online.
+This indirectly justifies the insight from Proposition~\ref{propos_1}.
+
+
+
+
+
+\section{Extended Related Works}
+\paragraph{MHQA with textual corpus.}
+Retrieval-based methods dominate the landscape of textual MHQA since supporting contexts from external corpora can effectively compensate for deficiencies in the inherent knowledge of language models and mitigate hallucinations. Traditional approaches primarily utilized sentence transformers~\cite{bgem3} for dense retrieval or BM25~\cite{BM25} for keyword matching. Recently, extensive research has focused on optimizing the QA pipeline, particularly through the decomposition of complex questions~\cite{IM-RAG,ReAct} and the iterative retrieval of relevant evidences in multiple steps~\cite{SelfRAG,ReSP,Iter-RetRAG,IRCoT}. Most notably, ReAct~\cite{ReAct} integrates retrieval actions into the reasoning trajectory exploration process, enabling dynamic interaction with external environments. IM-RAG~\cite{IM-RAG} optimizes multi-round retrieval and reasoning via reinforced learning. Search-o1~\cite{Search-o1} introduces an agentic RAG framework, empowering the language model to decide when to retrieve external knowledge and to refine retrieved contexts, achieving state-of-the-art performance.
+
+\paragraph{Knowledge-based question answering.} 
+Early approaches~\cite{lan-jiang-2020-query,SPARQL2021,KD-CoT} formulates KBQA as a semantic parsing task, focusing on extracting entities and relations from natural language questions and translating them into SPARQL statements capable of executing logical queries over KGs~\cite{TIARA,SymKGQA}. While these methods provide accurate and interpretable answers, they encountered significant limitations since SPARQL statements generated by language models often suffer from syntactic errors, including incorrect entity and relation labels as well as unexpected grammatical mistakes~\cite{DecAF,RoG,DoG}. Moreover, the incomplete nature of KGs~\cite{KGR3} can also lead to query failures, preventing these approaches from outputting correct answers. 
+
+Recently, researchers have shifted towards treating KBQA as an information retrieval~(IR) task, leveraging RAG and the advanced semantic understanding capabilities of LLMs to generate answers based on factual knowledge stored in KGs~\cite{RRA}. LLM-based KBQA methods can be generally categorized into two types: iterative exploration and subgraph reasoning. Iterative exploration methods~\cite{ToG,ToG2,ToG-I,KG-CoT,PoG,FiDeLiS,GoG,KARPA,Paths-over-Graph,BeamRetrieval,DoG} adopt a beam search-like strategy to retrieve the most relevant relations and neighboring entities, followed by pruning operations guided by LLMs. These methods exhibit strong traceability, enabling responsible and interpretable reasoning, but often come with the drawback of high computational complexity~\cite{FastToG}. Moreover, the absence of ground truth reasoning paths and intermediate nodes in most KBQA datasets limits the feasibility of applying SFT~\cite{RoG,GNN-RAG}. As a result, their performance is inevitably constrained by the inherent reasoning capabilities of LLMs. 
+In contrast, subgraph reasoning methods~\cite{RoG,GNN-RAG,SubgraphRAG,READS,GCR} retrieve all candidate reasoning paths related to the question from the local neighborhood of the topic entities and guide the LLM to generate answers based on these paths in a single step. This approach enable direct improvement of the LLM's in-context learning capabilities through SFT. Nevertheless, its effectiveness is often constrained by the quality of retrieved context, which typically cover only a subset of the knowledge required to address complex questions, omitting other critical information~\cite{PoG}. Furthermore, due to the incompleteness of KGs, the existence of relevant reasoning paths within the subgraph is not guaranteed. In such scenarios, LLM may hallucinate and produce incorrect answers.
+
+\paragraph{Simplifying Reinforcement Learning for LLM postraining.}
+Recent research has focused on simplifying RL algorithms for LLMs.
+For instance, GRPO~\cite{shao2024deepseekmath} simplifies PPO by replacing the value model with standard deviation.
+Similarly, ReMax~\cite{li2024remax} adapts VPO by using the logits of greedy decoding as a baseline for GAE.
+Other VPO modifications include RLOO~\cite{ahmadian2024back}, REINFORCE++\cite{hu2025reinforce++}, and GPG~\cite{chu2025gpg}.
+Another line of research replaces VPO with MLE through advanced sampling techniques. Within this category, RAFT~\cite{zhang2024raftadaptinglanguagemodel} selects the highest-reward trajectory within a group, while RAFT++~\cite{xiong2025minimalist} enhances this by incorporating rejection sampling. Both RAFT and RAFT++ can be viewed as specific instances of STaR~\cite{zelikman2022star}.
+MyGO aligns with this latter research direction. It selects trajectories using either a fixed or progressively improving threshold, a property ensuring that sampling approaches the optimal policy. We further provide a mathematical theory to explain the efficacy of this streamlined method.
+% In an extreme case, MyGO's approach converges with STaR.
+If we continue to simplify MyGO, it will converge to STaR~\cite{zelikman2022star}.
+However, our primary motivation stems from the goal of simplifying RL algorithms specifically for LLM agent training.
+
+
+
+
+
+\newpage
+\section{Working Examples}
+\label{appendix_working_examples}
+\begin{table}[h!]
+\caption{Prompt template of Planner for text-based multi-hop question answering}
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{p{\textwidth}}
+\toprule
+\textbf{\#\# System Prompts \#\#} \\
+**Your Task:** Answer the user's question thoroughly and accurately. \\
+
+Before answering, outline your plan and reasoning process within `\textless think\textgreater ' tags. This includes understanding the question, identifying needed information, and planning your search queries. \\
+
+You can use the search tool to get information. \\
+
+Please put your search query in `\textless search\textgreater ' tags, e.g., `\textless search\textgreater Who is the mother of Xawery Żuławski? \textless /search\textgreater ' \\
+
+Every `\textless search\textgreater ' tag only accepts one search query. \\
+
+But you can use multiple `\textless search\textgreater ' tags if needed. \\
+
+Note that your query should be explicit and specific. \\
+
+It is difficult to search a query with reference. \\
+
+For example, if you directly search `Who is the mother of the director of film Polish-Russian War', the search engine cannot find the information directly. \\
+
+You should make a plan to decompose the question into multiple sub-queries. \\
+
+Finally, integrate all the information and put your final answer within `\textless answer\textgreater ' tags. \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Question: Who succeeded the first President of Namibia? \\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater \\
+The question asks about the person who succeeded the first President of Namibia. \\
+1. I need to find who was the first President of Namibia. \\
+2. I need to find who succeeded the first President of Namibia. \\
+\textless /think\textgreater \\
+\textless search\textgreater Who was the first President of Namibia? \textless /search\textgreater \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Obs: Sam Nujoma was the first President of Namibia. \\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater \\
+Now I know that Sam Nujoma was the first President of Namibia. \\
+I need to find who succeeded Sam Nujoma. \\
+\textless /think\textgreater \\
+\textless search\textgreater Who succeeded Sam Nujoma? \textless /search\textgreater \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Obs: Hifikepunye Pohamba succeeded Sam Nujoma as the President of Namibia. \\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater \\
+The question asks about the person who succeeded the first President of Namibia. \\
+Sam Nujoma was the first President of Namibia. \\
+Hifikepunye Pohamba succeeded Sam Nujoma as the President of Namibia. \\
+I have all the information to answer the question. \\
+\textless /think\textgreater \\
+\textless answer\textgreater 
+Hifikepunye Pohamba 
+\textless /answer\textgreater \\
+\bottomrule
+\end{tabular}
+}
+\label{planner_text}
+\end{table}
+
+\begin{table}[h!]
+\caption{Prompt Template of Worker for Text-based Multi-hop Question Answering}
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{p{\textwidth}}
+\toprule
+\textbf{\#\# System Prompts \#\#} \\
+You will be given a question with a context. \\
+The context includes multiple passages labeled by index [x]. \\
+Your task is to select the most relevant passage from the context based on the question. \\
+Please state the reason why you choose the passage. Put your thinking process into the \textless think\textgreater ...\textless /think\textgreater tag. \\
+Put the index of the selected passage into the \textless select\textgreater ...\textless /select\textgreater tag. \\
+Based on the selected passage, you should answer the question. State the answer as a complete declarative sentence, mirroring the question structure. \\
+Put your answer into the \textless sentence\textgreater ...\textless /sentence\textgreater tag. \\
+If the passages have no information related to the question, put [-1] in the \textless select\textgreater ...\textless /select\textgreater tag \\
+and try your best to answer the question according to your knowledge in the \textless sentence\textgreater ...\textless /sentence\textgreater tag. \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Question: What college did Kyeon Mi-ri attend?\\
+Context:\\
+$[0]$ Kyeon Mi-ri graduated from Seoul Traditional Arts High School in 1983, then studied Dance at Sejong University. She made her acting debut in 1984, and has since become active in television dramas, most notably as the arrogant and ambitious Lady Choi in the 2003 period drama "Dae Jang Geum" (or "Jewel in the Palace"), which was a hit not only in Korea but throughout Asia. \\
+$[1]$ Shin Kyeong-nim was born on April 6, 1936 in North Chungcheong Province, South Korea. When he was young, Shin Kyong-rim frequented the people of Korea\'s rural villages and collected the traditional songs they sang. Much of his poetry represents a modernization of things he heard then Shin Kyeong-nim graduated in English Literature from Dongguk University, from which time he strove to become a creative writer. In 1955 and 1956, he made his formal literary debut with the publication of poems "Day Moon" (Natdal), "Reeds" (Galdae) and "Statue of Stone" (Seoksang). He taught elementary school in his hometown for a period of time, before moving to Seoul to work as an editor for Hyundae munhak and Donghwa Publishers. But his strong desire to create poetry continued. \\
+$[2]$ Paige Ackerson-Kiely received a BA in Asian Studies from the University of New Mexico in Albuquerque. Prior to this achievement, she attended Beloit College in Beloit, Wisconsin, Marmara University in Istanbul, and Birzeit University in Birzeit, Palestine. \\
+$[3]$ Han Seung-yeon was born on July 24, 1988, in Seoul, South Korea. She made her acting debut as a child actress in a bit part in "Dear Ends" (1993), "Summer Showers" (1995) and "Star in My Heart" (1997). She later left South Korea to study at Tenafly High School in New Jersey, United States. However, she withdrew from high school mid-course in order to pursue a singing career. After returning to South Korea, she debuted as a member of girl group Kara on March 29, 2007. During her time with the group, she passed a high school qualification exam, the College Scholastic Ability Test, and was accepted by Kyung Hee University, majoring in theater and film. \\
+$[4]$ Myo Min Zaw studied English at the University of Yangon, where he became active in the pro-democracy group All Burma Federation of Student Unions (ABFSU). In December 1996, he participated in a student protest, and following the closing of Burma's universities, remaining involved in the pro-democracy movement. \\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater 
+The question asks about what college Kyeon Mi-ri attended. \\
+Passage [0] clearly states that "Kyeon Mi-ri graduated from Seoul Traditional Arts High School in 1983, then studied Dance at Sejong University." \\
+So I select passage [0].
+\textless /think\textgreater \\
+\textless select\textgreater 
+[0]
+\textless /select\textgreater \\
+\textless sentence\textgreater
+Kyeon Mi-ri attended Sejong University.
+\textless /sentence\textgreater \\
+\bottomrule
+\end{tabular}
+}
+\label{worker_text}
+\end{table}
+
+\begin{table}[h!]
+\caption{Prompt Template of Planner for Knowledge-based Question Answering}
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{p{\textwidth}}
+\toprule
+\textbf{\#\# System Prompts \#\#} \\
+Your task is answering questions. You will be given a question and some candidate entities. You should first make a plan about how to solve this question. \\
+You can use the Search(entity, question) function to get information. \\
+Please think thoroughly and label the final answer with \textless answer\textgreater *** \textless /answer\textgreater . \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Question: Which film came out first, Blind Shaft or The Mask Of Fu Manchu? \\
+Candidate: [0] Blind Shaft [1] The Mask Of Fu Manchu\\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater \\
+To solve this problem, I need to:\\
+1. Figure out when Blind Shaft came out.\\
+2. Figure out when The Mask Of Fu Manchu came out.\\
+3. Compare their dates.\\
+I need to search information for both of Blind Shaft and The Mask Of Fu Manchu.\\
+\textless /think\textgreater \\
+\textless action\textgreater \\
+Search([0], "When did Blind Shaft come out?")\\
+Search([1], "When did The Mask Of Fu Manchu come out?")\\
+\textless /action\textgreater \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Obs: Blind Shaft came out on 2003 and The Mask Of Fu Manchu came out on 1932.\\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater Ok. Right now I need compare their released date. 1932 is much earlier than 2003. Therefore, The Mask Of Fu Manchu came out first. \textless /think\textgreater \\
+\textless answer\textgreater The Mask Of Fu Manchu \textless /answer\textgreater \\
+\bottomrule
+\end{tabular}
+}
+\label{planner_kbqa}
+\end{table}
+
+\begin{table}[h!]
+\caption{Prompt Template of Worker for Knowledge-based Question Answering}
+\vspace{0.2cm}
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{p{\textwidth}}
+\toprule
+\textbf{\#\# System Prompts \#\#} \\
+Task:
+Extract relevant information from provided materials and present it in a specified format.\\
+\\
+Instructions:\\
+\\
+Read Carefully:\\
+First, analyze the question to identify the key entity and requested information (e.g., "mother," "birth date").\\
+Review all materials systematically.\\
+\\
+Extraction Rules:\\
+Use only direct matches from materials. Never paraphrase or infer relationships.\\
+If multiple materials contain the answer, select all of them.\\
+If no material matches, respond with ``No relevant information found.''\\
+\\
+Answer Format:\\
+State the answer as a complete declarative sentence, mirroring the question structure.\\
+Add the source ID in brackets at the beginning of the answer.\\
+\\
+Use template:\\
+\textless think\textgreater ... let's think step by step ... \textless /think\textgreater \\
+\textless select\textgreater [X][Y] \textless /select\textgreater \\
+\textless sentence\textgreater Full sentence answer \textless /sentence\textgreater \\
+\midrule
+\textbf{\#\# User \#\#} \\
+Question: Who is the mother of Xawery Żuławski?\\
+Materials:\\
+$\text{[0]}$ Xawery Żuławski, mother, Małgorzata Braunek\\
+$\text{[1]}$ Xawery Żuławski, father, Andrzej Żuławski\\
+$\text{[2]}$ Xawery Żuławski, family, Q63532193\\
+$\text{[3]}$ Xawery Żuławski, family name, Q56541485\\
+$\text{[4]}$ Xawery Żuławski, spouse, Maria Strzelecka\\
+$\text{[5]}$ Xawery Żuławski, date of birth, 1971-12-22T00:00:00Z\\
+$\text{[6]}$ Xawery Żuławski, sibling, Vincent Zulawski\\
+$\text{[7]}$ Xawery Żuławski, place of birth, Warsaw\\
+$\text{[8]}$ Andrzej Żuławski, child, Xawery Żuławski\\
+$\text{[9]}$ Małgorzata Braunek, child, Xawery Żuławski\\
+\midrule
+\textbf{\#\# Assistant \#\#} \\
+\textless think\textgreater The question asks me to find the mother of Xawery Żuławski. [0] says Xawery Żuławski's mother Małgorzata Braunek, which excatly meets our need. \textless /think\textgreater\\
+\textless select\textgreater [0] \textless /select\textgreater \\
+\textless sentence\textgreater The mother of Xawery Żuławski is Małgorzata Braunek. \textless /sentence\textgreater \\
+\bottomrule
+\end{tabular}
+}
+\label{worker_kbqa}
+\end{table}

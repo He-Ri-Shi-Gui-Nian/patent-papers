@@ -1,0 +1,114 @@
+
+\begin{figure*}[h!]
+    \centering
+    \includegraphics[width=1.0\textwidth]{pics/framework.png} 
+    \vspace{-1\baselineskip}
+    \caption{(a) An example of a retrieved subgraph. (b) Overview of \myModel.}
+    %\vspace{-1.5\baselineskip}
+    \label{example} % Used for referencing this figure in the document.
+\end{figure*}
+
+Our method tackles two key challenges in textual graph question answering: noisy subgraphs and limited examples. Given a query $q$ and textual graph $G = (V, E)$, we retrieve a subgraph $S$ using GRetriever~\cite{gretriever}. To reduce noise in $S$, we apply a query-aware graph attention network that emphasizes relevant nodes and edges. To further enhance reasoning, we use few-shot in-context learning with selected $(q_i, S_i, a_i)$ examples, enabling the model to learn from both textual and structural patterns. The framework is shown in Figure ~\ref{example}.
+
+\subsection{Subgraph Retrieval}
+
+Given a query $q$, we use a pretrained language model (Sentence-BERT ~\cite{sentencebert}) $\mathrm{LM}(\cdot)$ to encode $q$, nodes, and edges in the textual graph $G = (V, E)$:
+
+{\small
+\begin{align}
+\mathbf{z}_q &= \mathrm{LM}(q), 
+\mathbf{z}_{v_i} = \mathrm{LM}(v_i), 
+\mathbf{z}_{e_{i,j}} = \mathrm{LM}(e_{i,j})
+\end{align}
+}%
+
+We compute cosine similarities between $\mathbf{z}_q$ and all node/edge embeddings and retrieve the top-$k$ nodes $V_k$ and edges $E_k$ with highest similarity. A connected subgraph is then constructed using the Prize-Collecting Steiner Tree (PCST) algorithm~\cite{gretriever}. Each retrieved item is assigned a prize based on its rank, and PCST selects a subgraph $S$ that maximizes total prize while minimizing edge cost:
+
+{\small
+\begin{align*}
+S = \underset{S \subseteq G}{\operatorname{argmax}} ( \sum_{v_i \in V_k} \text{prize}(v_i) + \sum_{e_{i,j} \in E_k} \text{prize}(e_{i,j}) - c \cdot |E_S| ).
+\end{align*}
+}%
+
+\subsection{Demonstration Retrieval}
+
+Building on our subgraph retrieval method, we introduce an approach to select informative few-shot examples for improved language model reasoning.
+Given a query $q$, we convert its retrieved subgraph $S$ into text using $\text{textualize}(\cdot)$, which flattens all node and edge attributes. The textualized graph is concatenated with $q$ to form the prompt $x$: $x = \mathrm{textualize}(S)||q$.
+
+While nearest-neighbor retrieval in embedding space is common, it may miss globally relevant examples. Inspired by recent work~\cite{onepromptisnotenough}, we instead cluster demonstrations by semantic similarity and select a representative from each cluster for more diverse and complementary examples.
+Specifically, We apply K-means clustering to partition the example pool
+$\mathcal{D} = {(S_i, q_i, a_i)}_{i=1}^n$
+into $C$ clusters ${C_1, C_2, \dots, C_C}$, treating each cluster as an expert. Clustering is performed on the Sentence-BERT embeddings of the augmented prompts $x_i = \mathrm{textualize}(S_i) || q_i$, following prior work~\cite{gretriever}.
+
+To adaptively determine the optimal number of clusters $C$, we minimize a regularized objective that balances within-cluster variance and model complexity:
+\begin{equation}
+C^* = \min_C \sum_{k=1}^{C} \sum_{x_i \in C_k} |f(x_i) - \boldsymbol{\mu}_k|_2^2 + \lambda C,
+\end{equation}
+where $f(\cdot)$ denotes the embedding function, $\boldsymbol{\mu}_k$ is the centroid of cluster $C_k$, and $\lambda$ controls the regularization strength.
+
+At inference time, a test query $q$ is augmented into $x_q = \mathrm{textualize}(S_q) || q$, embedded via $f(x_q)$, and assigned to its closest expert based on cosine similarity with cluster centroids:
+\begin{equation}
+c(q) = \arg\max_{i = 1, \dots, C^*} \cos(f(x_q), \boldsymbol{\mu}_i).
+\end{equation}
+The selected expert then provides a set of representative demonstrations, which are combined with the input to generate the model’s final prediction.
+
+
+
+
+
+\subsection{Noise Mitigation}
+
+Building on our retrieval and demonstration selection framework (Section 3.2), we now describe how the final answer is generated using the retrieved subgraphs. Specifically, we encode each subgraph $S$ with a \textit{GraphEncoder} that transforms its structural and semantic information into a graph-prompt representation. This encoding serves two purposes: (1) preserving relational patterns critical to the query, and (2) filtering irrelevant information through query-sensitive attention, thereby constructing an optimized input for the language model.
+
+Prior methods like G-Retriever use GCNs ~\cite{gcn} or GATs~\cite{gat}, but these suffer from over-smoothing~\cite{oversmooth}, making node embeddings indistinguishable, an issue in our setting where retrieved subgraphs mix relevant and noisy content. Effective encoding thus requires \textit{query-aware} representations that selectively highlight important nodes. For instance, given a query, the encoder should emphasize \texttt{a cut peony} and ignore irrelevant nodes like \texttt{a flying eagle}, even if structurally nearby.
+To achieve this, we design a query-conditioned GNN where both message passing and node interactions are modulated by the input query $q$. Specifically, we redefine the edge weight $\zeta_{e_{i,j}}^{(l)}$ using a query-aware attention mechanism, allowing the model to focus on the most informative edges.
+At each layer $l$, the attention weight $\zeta_{e_{i,j}}^{(l)}$ is computed by:
+\begin{align}
+\alpha_{v_i}^{(l)} &= \texttt{LINEAR}\left(\texttt{CONCAT}(z_{v_i}^{(l)}, q)\right) \\
+\beta_{v_j}^{(l)} &= \texttt{LINEAR}\left(\texttt{CONCAT}(z_{v_j}^{(l)}, q)\right) \\
+\gamma_{e_{i,j}} &= \texttt{LINEAR}\left(\texttt{CONCAT}(z_{e_{i,j}}, q)\right) \\
+\zeta_{e_{i,j}}^{(l)} &= \texttt{tanh}\left(\alpha_{v_i}^{(l)} + \gamma_{e_{i,j}} - \beta_{v_j}^{(l)}\right)
+\end{align}
+where $\alpha_{v_i}^{(l)}$, $\beta_{v_j}^{(l)}$, and $\gamma_{e_{i,j}}$ are learned {query-conditioned} node/edge embeddings. $\zeta_{e_{i,j}}^{(l)}$ serves as the attention weight for message passing 
+along edge $e_{i,j}$. Similarly, messages are generated using query-conditioned features:
+\begin{equation}
+\text{msg}_{e_{i,j}}^{(l)} = \texttt{LINEAR}\left(\texttt{CONCAT}(z_{v_i}^{(l)}, z_{v_j}^{(l)}, z_{e_{i,j}}, q)\right)
+\end{equation}
+and aggregated via attention weights:
+\begin{equation}
+z_{v_j}^{(l+1)} = \frac{1}{d_{v_j}}\sum_{v_i \in \mathcal{N}(v_j)} \zeta_{e_{i,j}}^{(l)} \cdot \text{msg}_{e_{i,j}}^{(l)}
+\end{equation}
+
+Unlike standard GCNs that apply static, query-agnostic filters, our GNN conditions node interactions and message passing on the query \( q \). Specifically, we redefine edge weights \( \zeta_{e_{i,j}}^{(l)} \) using a query-aware attention mechanism, allowing the model to emphasize task-relevant nodes and edges.
+
+After \( L \) layers, each node \( v_j \in S \) has an embedding \( z_{v_j}^{(L)} \), which we mean-pool to obtain the subgraph representation:
+$z_S = \texttt{POOL}(z_{v_j}^{(L)})$.
+This is projected into the LLM embedding space using an MLP:
+$p_\text{graph} = \texttt{MLP}(z_S)$,
+serving as the graph prompt.
+
+To incorporate multiple demonstration subgraphs \( \{z_d\}_{d \in D_R} \), we 
+% consider two strategies. The first concatenates all embeddings:
+% \begin{equation}
+% a = \texttt{MLP}(\texttt{Concat}(\{z_d\})),
+% \end{equation}
+% and the second 
+use query-based relevance weighting:
+
+{\small
+\begin{align}
+\lambda(q, z_d) = \frac{e^{s(q, z_d)}}{\sum_{d'} e^{s(q, z_{d'})}}, 
+z_{\text{final}} = \sum_{d=0}^N \lambda(q, z_d) z_d,
+\end{align}
+}
+
+where \( z_0 \equiv z_{\text{current}} \).
+
+\textbf{Generating responses.} We prepend task-specific instructions and tokenize all inputs:
+$q = \texttt{tokenize}(q)$, $p_\text{demo} = \texttt{tokenize}(p_\text{demo})$, $p_\text{text-graph} = \texttt{tokenize}(p_\text{text-graph})$,
+then feed the combined sequence into the frozen LLM:
+\begin{equation}
+a_\text{gen} = \texttt{LLM}(\texttt{CONCAT}(p_\text{demo}, p_\text{graph}, p_\text{text-graph}, q)),
+\end{equation}
+yielding the final answer \( a_\text{gen} \).
+

@@ -1,0 +1,665 @@
+
+\subsection{PGR with Alternative Generation Models}
+\label{sec:deepseek_results}
+
+To assess whether PGR's retrieval gains are robust to the choice of generation model, we run PGR-TOT with DeepSeek-V3.2 replacing GPT-4o for prospection and answer generation, while keeping the same retrieval pipeline, embeddings, and hyperparameters. Table~\ref{tab:deepseek_results} reports retrieval Recall and Recall$_{Exact}$ (MemoryQuest only) for the base single-phase and iterative two-phase variants across all three datasets. Results are consistent with the main GPT-4o findings, confirming that PGR's gains are not model-specific.
+
+\begin{table}[h]
+\centering
+\setlength{\tabcolsep}{6pt}
+\caption{Recall of PGR-TOT (DeepSeek-V3.2) across datasets. Base = single-phase prospection; Iterative = two-phase. Recall$_{Exact}$ reported for MemoryQuest only.}
+\vspace{1pt}
+\begin{tabular}{l|cc|c|c}
+\toprule
+\textbf{Dataset} & \textbf{Base Recall} & \textbf{Iterative Recall} & \textbf{Base Recall$_{Exact}$} & \textbf{Iterative Recall$_{Exact}$} \\
+\midrule
+MemoryQuest & \med{0.671} & \vhigh{\textbf{0.748}} & \med{0.245} & \high{\textbf{0.348}} \\
+ImplexConv  & \med{0.308} & \high{\textbf{0.374}}  & --          & --                   \\
+PersonaMem  & \med{0.210} & \med{\textbf{0.229}}   & --          & --                   \\
+\bottomrule
+\end{tabular}
+\label{tab:deepseek_results}
+\end{table}
+
+Iterative prospection consistently improves recall over the single-phase base across all three datasets, mirroring the pattern observed with GPT-4o (Table~\ref{tab:main_results}). The gains on MemoryQuest (\textbf{0.748} Recall, \textbf{0.348} Recall$_{Exact}$) exceed those of the GPT-4o variant (0.723 / 0.326), while ImplexConv and PersonaMem show the same directional improvement. This confirms that PGR's prospection-guided retrieval framework generalizes across generation models.
+
+\vspace{1em}
+
+
+
+\subsection{Computational Cost.}
+Table~\ref{tab:llm-budget} reports the average number of LLM calls and unique facts retrieved per query for PGR-TOT and each baseline. PGR-TOT requires approximately 4--5 LLM calls per query (one Phase-1 prospection + avg.\ Phase-2 refinements + one prospection summary + one answer generation), compared to 1 for GraphRAG and $\sim$2 for Mem0$^\texttt{g}$. TaciTree’s higher count reflects its level-by-level LLM pruning at inference (offline tree-construction calls excluded). The embedding-based retrieval sub-steps are parallelizable and add negligible latency relative to the LLM calls.
+
+\begin{table}[h]
+\centering
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.1}
+\caption{Average query-time LLM calls and unique facts retrieved per query for PGR-TOT.}
+\vspace{2pt}
+\small
+\begin{tabular}{l|cccc|cc}
+\toprule
+\textbf{Dataset} & \textbf{GraphRAG} & \textbf{Mem0$^\texttt{g}$} & \textbf{TaciTree} & \textbf{PGR-TOT} & \textbf{PGR Ph-1 Facts} & \textbf{PGR Ph-2 New Facts} \\
+\midrule
+MemoryQuest & 1.0 & 2.0 & $\sim$13.2 & \textbf{4.79} & 26.78 & 8.41 \\
+ImplexConv  & 1.0 & 2.0 & $\sim$15.9 & \textbf{4.32} & 22.41 & 3.85 \\
+PersonaMem  & 1.0 & 2.0 & $\sim$9.7  & \textbf{4.41} & 13.04 & 4.83 \\
+\bottomrule
+\end{tabular}
+\label{tab:llm-budget}
+\end{table}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{End-to-End PGR Trace: MemoryQuest Example}
+\label{sec:e2e-example}
+
+The following is a complete PGR-TOT trace on a MemoryQuest query where all four required references were successfully retrieved. The system runs Phase~1 (initial TOT, 15 facts retrieved), then two iterative refinement phases that progressively personalize the tree and surface new facts. Notice how the node constraints evolve across iterations as retrieved facts ground the simulation in the user's specific context.
+
+\vspace{0.5em}
+\noindent\textbf{Query, Date, and Required References}
+\begin{lstlisting}[style=appendixbox]
+Date:  2026-03-05
+Query: "I want to pre-order a new game that just got announced.
+        Check if it makes sense for me to do it now."
+
+Required references (all 4 retrieved by PGR-TOT):
+  [1] GPU overheating issue -- user plans to reduce overheating during gaming (2026-02-20).
+  [2] March trip funds locked -- user frames trip money as 'already spent' (2026-02-23).
+  [3] Upcoming online course expenses constraining GPU/hardware budget (2026-03-03).
+  [4] Backlog of unfinished games -- user committed to completing RDR2 before any new
+      title (2026-03-01).
+\end{lstlisting}
+
+\vspace{0.5em}
+\noindent\textbf{Phase 1 --- Initial TOT (initial, pre-retrieval)}
+\begin{lstlisting}[style=appendixbox]
+A1  Check the game's release date and pre-order availability
+    constraints: official announcement, platform compatibility, region restrictions
+    +-- A2  Look up gameplay trailers or developer previews
+    |       constraints: video quality, gameplay mechanics, genre preference
+    |       +-- A4  Read reviews from early access / beta testers
+    |       |       constraints: reviewer credibility, performance feedback
+    |       |       +-- A7  Decide if game aligns with personal gaming preferences
+    |       |               constraints: time available, interest in story/mechanics
+    |       |               +-- A9  [leaf] Pre-order or wait for post-release reviews
+    |       |                       constraints: confidence in purchase, willingness to wait, FOMO
+    |       +-- A5  [leaf] Compare with similar games in the genre
+    |               constraints: gameplay depth, replay value, prior genre experience
+    +-- A3  Check pre-order bonuses or exclusive content
+            constraints: bonus relevance, edition types, availability
+            +-- A6  Check the pre-order price and payment options
+                    constraints: budget, refund policy, currency exchange rates
+                    +-- A8  [leaf] Evaluate risk of bugs / incomplete features at launch
+                            constraints: developer track record, past launch issues, patch history
+\end{lstlisting}
+
+\vspace{0.5em}
+\noindent\textbf{Phase 1 --- Retrieved Facts} {\small(all 15 facts passed to Iteration~1)}
+\begin{lstlisting}[style=appendixbox]
+[2026-03-01] [Preference] User prefers finishing one main game at a time; avoids starting
+                          new games until current one is completed or consciously dropped.
+[2026-02-23] [Preference] 2-rule purchase system: under EUR 10 requires 24-hr wait;
+                          over EUR 10 must fit fun money AND be played immediately.
+                          User now muting sale notifications until after March trip.
+[2026-02-23] [Preference] Frames trip money as 'already spent' to mentally lock it.
+                          Rule: "Trip money is locked. Games from fun money only.
+                          If fun money = 0 EUR, wishlist and wait."
+[2026-02-23] [Goal]       Fun money for March: EUR 10 (tight) to EUR 15-20 (normal);
+                          trip savings locked in separate pocket labelled "DO NOT TOUCH".
+[2026-03-01] [Goal]       Prioritising RDR2 main story: 90-min capped sessions x2/week
+                          (Wed afternoons). Witcher 3 parked guilt-free.
+[2026-03-01] [Preference] Gaming sessions capped at 90 min to prevent late nights and
+                          maintain focus for job applications and 9:00 AM alarm.
+[2025-12-29] [Preference] Keyboard and mouse for gaming; mostly RPGs; prefers long sessions.
+[2026-03-03] [Preference] Prefers maintenance over upgrades for GTX 1660 Super GPU due to
+                          tight budget, locked travel savings, upcoming online course expenses.
+[2026-02-21] [Goal]       Tracks fun money (EUR 15-20) weekly; Sunday 18:00 reminder
+                          "Quick check: fun money (5 min)".
+[2025-12-29] [Preference] Enjoys gaming evenings/weekends to save money but limits
+                          bedtime shifts to avoid disrupting weekday routines.
+[2026-01-29] [Goal]       EUR 50 bill as visual safety net for next 3 days -- keep untouched
+                          as a measure of financial control.
+[2026-02-14] [Preference] Prefers fun sci-fi or action movies for casual friend hangouts.
+[2025-12-27] [Preference] Budget-friendly charger replacements; uses Amazon.es, PcComponentes.
+[2026-01-16] [Goal]       Calendar note for Friday interviews: "Possible transport disruption
+                          -- message recruiter by 7:30 if issues".
+[2026-02-03] [Goal]       Recurring 'Available for interviews' note protecting early afternoons.
+\end{lstlisting}
+
+\vspace{0.5em}
+\noindent\textbf{Iteration 1 --- Personalized TOT} {\small(9 nodes; constraints updated to reflect retrieved facts)}
+\begin{lstlisting}[style=appendixbox]
+A1  Check the game's release date and pre-order availability
+    constraints: official announcement, platform compatibility, region restrictions
+    +-- A2  Look up gameplay trailers or developer previews
+    |       constraints: genre preference, [+relevance to current gaming interests, RPGs]
+    |       +-- A4  Read reviews from early access / beta testers
+    |       |       constraints: reviewer credibility, [+alignment with gaming preferences]
+    |       |       +-- A7  Decide if game aligns with personal gaming preferences
+    |       |               constraints: time available, [+current RDR2 commitment --
+    |       |                            must finish before starting new games]
+    |       |               +-- A9  [leaf] Pre-order or wait
+    |       |                       constraints: FOMO, [+fun money only; current RDR2 focus]
+    |       +-- A5  [leaf] Compare with similar games
+    |               constraints: gameplay depth, [+preference for RPGs and long sessions]
+    +-- A3  Check pre-order bonuses
+            +-- A6  Check pre-order price and payment options
+                    constraints: budget, [+fun money only; >EUR 10 requires immediate
+                                  playability; refund policy]
+                    +-- A8  [leaf] Evaluate risk of bugs at launch
+                            constraints: track record, [+preference for maintenance over
+                                         upgrades; tight budget and online course expenses]
+
+New facts retrieved in Iteration 1 (5 new facts):
+  [2026-02-21] [Goal]  Track fun money (EUR 15-20) weekly; Sunday 18:00 reminder.
+  [2026-01-29] [Goal]  EUR 50 bill as visual safety net -- keep untouched.
+  [2026-02-20] [Goal]  Plans to open PC case side panel during gaming sessions to
+                       test airflow and reduce GPU overheating.
+  [2025-12-29] [Event] Eye strain during late-night gaming; uses blue light filters,
+                       reduced brightness, warm lighting to mitigate fatigue.
+  [2026-02-23] [Goal]  Weekly Sunday reminder "March trip fund still locked" to
+                       reinforce saving discipline.
+\end{lstlisting}
+
+\vspace{0.5em}
+\noindent\textbf{Iteration 2 --- Further Refined TOT} {\small(9 nodes; constraints tightened with Iteration~1 facts)}
+\begin{lstlisting}[style=appendixbox]
+A1  Check the game's release date and pre-order availability
+    constraints: [+release date relevance to March trip AND RDR2 completion goal]
+    +-- A2  Look up gameplay trailers or developer previews
+    |       constraints: genre preference, RPGs, [+alignment with 90-min session cap]
+    |       +-- A4  Read reviews from early access / beta testers
+    |       |       constraints: reviewer credibility, [+focus on avoiding games with
+    |       |                    launch bugs or incomplete features]
+    |       |       +-- A7  Decide if game aligns with personal gaming preferences
+    |       |               constraints: [+RDR2 in progress; 90-min sessions x2/week;
+    |       |                            starting new game violates current commitment]
+    |       |               +-- A9  [leaf] Pre-order or wait
+    |       |                       constraints: [+fun money EUR 15-20 for March;
+    |       |                                    trip money non-negotiable; FOMO low]
+    |       +-- A5  [leaf] Compare with similar games
+    |               constraints: [+RDR2/Witcher 3 backlog already present]
+    +-- A3  Check pre-order bonuses
+            +-- A6  Check pre-order price and payment options
+                    constraints: [+fun money capped EUR 15-20; >EUR 10 requires
+                                  immediate playability -- not possible while on RDR2]
+                    +-- A8  [leaf] Evaluate risk of bugs at launch
+                            constraints: [+GPU overheating issue; prefers maintenance;
+                                         online course costs in March]
+
+New facts retrieved in Iteration 2 (2 new facts):
+  [2026-02-07] [Goal]  Flag 'bad-weather mornings' in weekly reviews to avoid early
+                       outdoor plans unexpectedly.
+  [2026-01-27] [Goal]  Weekly co-op gaming with friends Thursdays 9:00--11:30 PM;
+                       marked Busy to avoid interview conflicts; wrap-up reminder
+                       at 11:45 PM for early Friday wake-up.
+\end{lstlisting}
+
+\vspace{0.5em}
+\noindent\textbf{Prospection Summary (passed to answer generation)}
+\begin{lstlisting}[style=appendixbox]
+The user may initially focus on confirming release date, platform compatibility, and
+pre-order availability, while exploring trailers and bonuses to gauge interest.
+Considerations then shift to gameplay mechanics, genre alignment, and budget constraints.
+Over time, the decision is further refined by comparing the game with similar titles,
+assessing early reviews for launch issues, and ensuring it fits the current gaming
+schedule (finishing RDR2 first). By the final stage, the decision hinges on specific
+factors: release timing relative to the March trip, strict fun-money budget constraints,
+and a preference for 90-minute capped sessions -- ultimately pointing toward adding the
+game to the wishlist rather than pre-ordering now.
+\end{lstlisting}
+
+\vspace{0.5em}
+\noindent\textbf{Reasoning \& Final Answer}
+\begin{lstlisting}[style=appendixbox]
+Reasoning:
+  - Trip money is mentally locked ('already spent'); fun money is the only game budget.
+  - Fun money for March: EUR 15-20 depending on stress and cash availability.
+  - 2-rule system: >EUR 10 must fit fun money AND be something played immediately --
+    this game cannot be played immediately; RDR2 is in progress.
+  - Muting sale notifications on gaming platforms until after the March trip.
+  - Currently committed to finishing RDR2 before starting any new game.
+  - GPU overheating issue flagged (2026-02-20); prefers maintenance over upgrades.
+  - Upcoming online course expenses further constrain discretionary spending in March.
+  - Backlog already includes Witcher 3 (parked); adding another title is premature.
+  - Pre-ordering now would violate the 2-rule system (can't play immediately).
+  - Query date is 2026-03-05; trip savings locked and non-negotiable.
+
+Answer:
+  "Pre-ordering now likely isn't the right move. You're mid-way through RDR2 and your
+   2-rule system requires any purchase over EUR 10 to be something you'll play
+   immediately -- that's not the case here. Your March trip fund is locked, and fun
+   money is limited this month. Add it to your wishlist, mute the notifications (as
+   you planned), and revisit after the trip or once RDR2 is wrapped up."
+\end{lstlisting}
+
+\vspace{1.5em}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{promptbox}[\textbf{Phase 1: COT Prospection Generation Prompt}]
+
+You are simulating how a person would think via prospection: mentally projecting themselves into the future to anticipate actions, needs, and outcomes.
+
+Instructions:
+\begin{itemize}
+  \item Given a user query, break it down into a sequence of steps a human would take, notice, or experience in that situation.
+  \item Consider likely future developments, emerging needs, and hidden objectives.
+  \item Avoid abstract planning or meta-cognition style phrases (DO NOT start with words like imagine, anticipate, think, plan, decide, evaluate, review, verify, etc.).
+  \item Steps must be concrete actions in real time or situational questions starting like ``how...'',''whether...'',''what...'' etc.
+  \item Each step should focus on a distinct dimension of the scenario (e.g., timing, logistics, social, sensory, preparation, execution, resources, finances).
+  \item Avoid redundancy or lexical overlap between steps. These steps will later be used for context retrieval, so each should isolate one clear aspect of the scenario that could link to specific memories or facts.
+\end{itemize}
+
+For each step, include:
+\begin{itemize}
+  \item \texttt{action}: A specific step or observation a person would make, experience, or mentally simulate in this scenario
+  \item \texttt{constraints}: The factors or aspects that influence that action (preferences, limits, timing, logistics, social cues, costs, sensory issues, etc.)
+\end{itemize}
+
+Output a chronological sequence of prospection steps in a JSON list.
+
+Examples (only for illustration):
+
+\codeblk{{3 Input/Output pairs}}
+
+---
+
+Date: \codeblk{{query_date}}
+
+User query: ``\codeblk{{query}}'' \codeblk{{main_query_context}}
+
+Output Steps [json]:
+
+\end{promptbox}
+
+
+
+\begin{promptbox}[\textbf{Phase 2: COT Prospection Generation Prompt}]
+You are simulating how a person would think via *prospection* — mentally projecting themselves into the future to anticipate actions, needs, and outcomes.
+
+Given a user query and their personal context, transform the initial thinking steps into a personalized sequence.
+
+Date: \codeblk{{query_date}}  
+
+User Query: ``\codeblk{{query}}''
+
+Initial Thinking Steps: 
+\codeblk{{initial_steps_json}}
+
+Personal Context:
+\codeblk{{retrieved_context}}
+
+Instructions:
+\begin{itemize}
+  \item Given the specific user facts (preferences, constraints, habits, events), update the initial prospection sequence. Dates (if provided) correspond to when the fact was created or updated after a conversation. Pay attention to infer the temporal relevance of a fact to the query based on dates.
+  \item Revise, refine, or reorganize the steps as needed to make it precisely tailored and applicable to the user.
+  \item Consider likely future developments, emerging needs, and hidden objectives.
+  \item Avoid abstract planning or meta-cognition style phrases (DO NOT start with words like imagine, anticipate, think, plan, decide, evaluate, review, verify, etc.).
+  \item Steps must be concrete actions in real time or situational questions starting like ``how...'',''whether...'',''what...'' etc.
+  \item Each step should focus on a distinct dimension of the scenario (e.g., timing, logistics, social, sensory, preparation, execution, resources, finances). 
+  \item Avoid redundancy or lexical overlap between steps. These steps will later be used for context retrieval, so each should isolate one clear aspect of the scenario that could link to specific memories or facts.
+\end{itemize}
+
+Output a JSON list where each step contains:
+\begin{itemize}
+  \item ``action'': A clear, context-aware step or observation the user would take, experience, or mentally simulate in this scenario, reflecting personalization and possible adjustments. 
+  \item ``constraints'': User-related factors or aspects that influence this action (preferences, limits, timing, logistics, social cues, costs, other issues, etc.).
+\end{itemize}
+
+Example output format (only for illustration):
+
+\codeblk{{3 Input/Output pairs}}
+
+Action and constraints should be descriptive and specific to enable effective information retrieval.
+
+Output Updated Steps [json]:
+\end{promptbox}
+
+
+\begin{promptbox}[\textbf{Phase 1: TOT Prospection Generation Prompt}]
+You are simulating how a person would think via *prospection* — mentally projecting themselves into possible future situations and outcomes.  
+Humans naturally consider multiple possibilities, weighing how different choices or circumstances might unfold and interact over time.
+
+Generate a structured representation of this process, similar to a Tree of Thoughts, capturing multiple possible futures, their sub-goals, and information needs that could later guide memory retrieval or action.  
+
+Instructions:
+\begin{itemize}
+  \item Given a user query, imagine how a person would naturally think about alternative possibilities and sequential outcomes.  
+  \item Each node represents a concrete situational action or observation in real time. Avoid abstract planning or meta-cognition style phrases (DO NOT start with words like imagine, anticipate, think, plan, decide, evaluate, review, verify, etc.)
+  \item Capture branching possibilities — e.g., different options, conditions, or paths the person could take.
+  \item Each action-constraint pair should focus on a distinct dimension (logistical, temporal, physical, sensory, social, financial, etc.)
+  \item Avoid redundancy or lexical overlap between nodes, as they will be later used for context retrieval. Hence, each should isolate one clear aspect of the scenario that could link to specific memories or facts.
+  \item Each node includes:
+  \begin{itemize}
+    \item ``action\_id'': unique ID (A1, A2, ...)
+    \item ``action'': A specific step or observation a person would make, experience, or mentally simulate in this scenario
+    \item ``constraints'': The factors or aspects that influence that action (preferences, limits, timing, logistics, social cues, costs, sensory issues, etc.)
+    \item ``parent'': ID of the node it follows from (null for the first)
+    \item ``children'': IDs of next possible actions branching from it
+  \end{itemize}
+\end{itemize}
+
+Example output format (only for illustration):
+
+\codeblk{{3 Input/Output pairs}}
+
+---
+
+Given the input below, return the Prospection Tree, with each node as a distinct dimension of possible future situations, as valid JSON without any additional text or explanation.  
+
+Date: \codeblk{{query_date}} 
+
+User query: ``\codeblk{{query}}'' \codeblk{{main_query_context}}
+
+Output Prospection Tree [json]:
+\end{promptbox}
+
+
+\begin{promptbox}[\textbf{Phase 2: TOT Prospection Generation Prompt}]
+You are simulating how a person would think via *prospection* — mentally projecting themselves into possible future situations and outcomes.  
+Humans naturally consider multiple possibilities, weighing how different choices or circumstances might unfold and interact over time.
+
+Instructions:
+\begin{itemize}
+  \item You are given an initial ``Tree of Thoughts Prospection'' for a user query. Each node represents a concrete situational action or observation with its constraints and branching possibilities.
+  \item Using the provided user-specific facts as additional context, \textbf{revise, refine, prune, or expand nodes} to make the Prospection Tree more personalized and realistic. Dates (if provided) correspond to when the fact was created or updated after a conversation. Pay attention to infer the temporal relevance of a fact to the query based on dates.
+  \item Each node should remain a concrete action or situational observation (avoid abstract planning/meta-cognition phrasing). DO NOT start with words like imagine, anticipate, think, plan, decide, evaluate, review, verify, etc.
+  \item Keep nodes coherent, distinct, and avoid redundancy. Each node’s action-constraint pair should focus on one clear dimension (logistics, temporal, social, sensory, financial, etc.), but now adjusted to the user’s context if relevant.
+  \item Branching is allowed: nodes can be added, removed, or reconnected to better reflect likely decisions, paths, or experiences for this particular user.
+  \item Maintain the structure:
+  \begin{itemize}
+    \item ``action\_id'': unique ID (can reuse existing IDs or assign new ones)
+    \item ``action'': specific step or observation a person would make, experience, or mentally simulate in this scenario
+    \item ``constraints'': factors or aspects that influence that action (preferences, limits, timing, logistics, social cues, costs, sensory issues, etc.)
+    \item ``parent'': ID of the node it follows from (null for the root)
+    \item ``children'': IDs of next possible actions
+  \end{itemize}
+\end{itemize}
+
+Example (only for illustration):
+
+\codeblk{{1 Input/Output pair}}
+
+---
+
+Given a user query and their personal context, transform the initial Prospection Tree into a personalized sequence, following the above Instructions.
+
+Date: \codeblk{{query_date}}  
+
+User Query: ``\codeblk{{query}}''
+
+Initial Prospection Tree: 
+\codeblk{{initial_steps_json}}
+
+Personal Context:
+
+\codeblk{{retrieved_context}}
+
+Output Updated Prospection Tree [json]:
+\end{promptbox}
+
+
+\begin{promptbox}[\textbf{Answer Generation Prompt}]
+You are a helpful AI Assistant. Given the user's query and your memory of the user's personal context, craft a brief, personalized response.
+
+First, reason over the provided user context to decide what is logically, temporally (if dates are provided), or situationally relevant to the query.
+\begin{itemize}
+  \item List down (as bullet points) all the information that could matter into a set of atomic, one line facts.
+  \item Each line should capture the essence of one or more provided context items. You may merge or rephrase facts for conciseness, but do not introduce new information. Always mention key entities or nouns.
+  \item Consider how past situations, constraints, or ongoing circumstances could affect what the user is likely to do next given the intent behind the query.
+  \item Infer and include facts that could plausibly affect planning, tradeoffs, timing, or feasibility of requested task.
+  \item Aim to surface as many usable facts as possible, while keeping each line minimal and precise.
+\end{itemize}
+
+In the response text, proactively make explicit references to the provided facts and reasoning details you used for personalization. 
+The response text should be crisp and easy to read. You must use markdown formatting to make it legible.
+
+Return a valid JSON object in the following format:
+\{``reasoning'': ``...'',
+``answer'': ``...''\}
+
+User's Personal Context:
+\codeblk{{context}}
+
+\codeblk{{optional_date}}
+
+User Query: ``\codeblk{{query}}'' 
+
+\codeblk{{optional_simulation_context}}
+
+Output Reasoning and Answer to User Query [JSON]:
+\end{promptbox}
+
+
+
+
+\begin{promptbox}[\textbf{Retrieval Evaluation Prompt}]
+You are evaluating whether required references are present in a retrieved context (facts or conversation excerpts).
+
+INPUTS:
+\begin{itemize}
+  \item Query: \codeblk{{user_query}}
+  \item Required references (numbered; find out if these are mentioned in the retrieved context): \codeblk{{refs_list}}
+  \item Retrieved context (facts or chat excerpts that were retrieved for this query): \codeblk{{retrieved_context}}
+\end{itemize}
+
+TASK:
+
+For each required reference, indicate with Yes/No whether it is acknowledged or mentioned in the retrieved context (explicitly or implicitly).  
+Output valid JSON with a single key ``ack'' whose value is the list: one item per reference, format as: 
+
+\{ ``ack'' : [``1. Yes. <one-line reason>'', ``2. No. <one-line reason>'', ...]\}.
+
+\vspace{1em}
+Numbering must match the input list. Only mark Yes if the retrieved context clearly contains or implies that reference.
+
+OUTPUT [JSON]:
+\end{promptbox}
+
+\begin{promptbox}[\textbf{Pairwise Comparison Prompt}]
+You are evaluating two AI-generated responses from the perspective of a specific user. User's context is provided to help judge which response is more useful.
+
+\codeblk{{persona_text}}  
+
+User Context (Profile/Facts): 
+\codeblk{{facts_text}}
+
+---
+
+Compare the two candidate responses. Use the following signals to make a choice.
+\begin{itemize}
+  \item A strong response:
+  \begin{itemize}
+    \item Acknowledges different or additional past experiences appropriately.
+    \item Connects them to the current or future situation in a logical way.
+    \item Identifies implications, anticipates follow-ups, and flags potential issues appropriately.
+    \item Provides concrete, actionable next steps or structured guidance.
+  \end{itemize}
+  \item A weak response:
+  \begin{itemize}
+    \item Is generic or non-personalized.
+    \item Reacts only to the surface wording of the query.
+    \item Provides vague advice that is hard to execute.
+    \item Misses clear opportunities to guide or anticipate needs.
+  \end{itemize}
+\end{itemize}
+
+Return a valid JSON with exactly two keys:  
+
+\{
+
+    ``reasoning'': ``Your brief comparison of the two responses, whether or not they are different, additional details, proactivity, or if they have no meaningful difference, why, etc.'',
+    
+    ``choice'': ``q6cg'' or ``j52d'' or ``tie'' 
+    
+\}
+
+--- Inputs: ---
+
+\codeblk{{optional_date}}
+
+User (Your) Query:  
+``\codeblk{{query}}''
+
+\codeblk{{ground_truth_section}}
+
+---
+
+Response \codeblk{{first_label}}:  
+\codeblk{{first_response}}
+
+Response \codeblk{{second_label}}:  
+\codeblk{{second_response}}
+
+---
+
+Output [JSON]:
+\end{promptbox}
+
+
+
+\begin{promptbox}[\textbf{Memory Creation Prompt}]
+Your task is to update a list of short, atomic facts about the user from a conversation given below.  
+Each fact should be concise, self-contained, *non-redundant*, and useful for building the user profile for personalization.
+
+Facts can include the user's:
+\begin{itemize}
+  \item Personal details (e.g., name, age, location, relationships), important dates, and user's health/wellness information. 
+  \item Preferences and lifestyle choices, including likes, dislikes, and habits across food, activities, travel, entertainment, and services.
+  \item Plans, goals, upcoming events, career details, and professional information.
+  \item Miscellaneous favorites like books, movies, and brands and any relevant context that can help personalize future interactions.
+  \item Situations or experiences the user has had or is currently going through.
+\end{itemize}
+
+Each fact should be a dictionary with these keys:
+\begin{itemize}
+  \item ``fid'': Sequential ID / Unique identifier for the fact
+  \item ``info'': The fact retrieved from given conversation
+  \item ``type'': One of ['``Identity''', '``Preference''', '``Goal''', '``Interest''', '``Activity''', '``Event''']
+    \begin{itemize}
+      \item Identity: Personal details like name, age, location, profession, qualifications, education, achievements or relationships. This reflects the core identity of the user.
+      \item Preference: Likes, dislikes, and habits, including food, entertainment, or lifestyle choices
+      \item Goal: Stated intentions, plans, or upcoming events in the conversation
+      \item Interest: Topics, hobbies, or subjects the user cares about
+      \item Activity: Actions the user does or has done, such as commute, attending events, visits, sending emails, or completing tasks
+      \item Event: Any situations, events, transitions, milestones, or life changes — positive or negative — including emotional, social, financial, materialistic, or health-related circumstances that had or will shape the user’s choices and actions.
+    \end{itemize}
+  \item ``frequency'': How many times a similar fact has appeared in previous conversations. Set to 1 for new facts, or increment by 1 for updating existing facts.
+  \item ``related\_entities'': List of keywords or concepts related to the fact (entities, topics, themes)
+  \item ``state'': One of ['``update''', '``add''']
+    \begin{itemize}
+      \item ``update'': Existing fact with incremented frequency
+      \item ``add'': New fact from this conversation
+    \end{itemize}
+\end{itemize}
+
+Example/Format:
+
+\begin{tcolorbox}[colback=gray!10, colframe=gray!50, title=Example/Format, breakable]
+[
+  \{"fid": "c2f10", "info": "Prefers vegan food and healthy lifestyle", "type": "Preference", "frequency": 3, "related\_entities": ["food", "vegan", "health"], "state": "update"\},\vspace{0.5em}
+  \{"fid": "c3f5", "info": "Received a Masters in Genomics from UCL", "type": "Identity", "frequency": 2, "related\_entities": ["education", "Masters degree", "Genomics"], "state": "update"\},\vspace{0.5em}
+  \{"fid": "c3f21", "info": "Inquiring about strategy and revenue of business companies X, Y and Z", "type": "Interest", "frequency": 2, "related\_entities": ["business", "X", "Y", "Z", "revenue"], "state": "update"\},\vspace{0.5em}
+  \{"fid": "c4f6", "info": "Drafted a message to follow up with Ross on travel plans", "type": "Activity", "frequency": 3, "related\_entities": ["message", "Ross", "travel", "planning"], "state": "update"\},\vspace{0.5em}
+  \{"fid": "NEW\_1", "info": "Experiencing vericose veins in the legs due to long hours of standing", "type": "Event", "frequency": 1, "related\_entities": ["health", "vericose veins", "standing"], "state": "add"\},\vspace{0.5em}
+  \{"fid": "NEW\_2", "info": "User has hit their credit card limit and are being financially sensitive", "type": "Event", "frequency": 1, "related\_entities": ["credit card", "limit", "financial", "sensitive"], "state": "add"\},\vspace{0.5em}
+  \{"fid": "NEW\_3", "info": "Name is Harry", "type": "Identity", "frequency": 1, "related\_entities": ["name", "personal\_info"], "state": "add"\},\vspace{0.5em}
+  \{"fid": "NEW\_4", "info": "Tax filing in California due on April 15", "type": "Goal", "frequency": 1, "related\_entities": ["taxes", "California", "finance", "deadline"], "state": "add"\},\vspace{0.5em}
+  \{"fid": "NEW\_5", "info": "Visited London for one week to attend Coldplay's concert", "type": "Activity", "frequency": 1, "related\_entities": ["concert", "Coldplay", "London"], "state": "add"\}\vspace{0.5em}
+]
+\end{tcolorbox}
+
+Do not get biased from example facts. You must return user-specific facts strictly from the context given below.
+
+CONTEXT:
+
+Existing Facts: The following facts were extracted from this user's previous conversations: 
+
+\codeblk{{curr_facts}}
+
+New Conversation:
+
+\codeblk{{content}}
+
+Now, based on the conversation above:
+\begin{itemize}
+  \item If it reveals any information that closely matches, overlaps, repeats or contradicts an existing fact, create an UPDATED fact (modify ``info'' appropriately detailing the change if the fact evolved) under the same ``fid'', increment its ``frequency'', and mark its ``state'': ``update''.
+  \item For any new information, create a NEW fact with the appropriate ``fid'' (starting with ``NEW\_'') and other attributes. Mark its ``state'': ``add''.
+  \item REMEMBER: Each fact should independently convey a unique, non-redundant, and meaningful observation. We aim for a minimal number of well-crafted facts that capture the maximum information about the user. 
+  \item Do not return existing facts that remain unchanged. Only return a list of updated or newly added facts.
+  \item If the given conversation does not yield any new or updated facts, return empty list [].
+\end{itemize}
+
+Follow the provided format. Do not include any explanations, formatting, or extra text in the output.
+
+Output facts [list]:
+\end{promptbox}
+
+
+\vspace{2em}
+
+\begin{promptbox}[\textbf{Memory Consolidation Prompt}]
+You are given a list of similar facts or pieces of information about a user that need to be merged into a single coherent fact.  
+These facts have been identified as highly similar based on their content and should be combined to reduce redundancy while preserving all important information.
+
+Your task is to merge these facts into ONE comprehensive fact that:
+\begin{itemize}
+  \item Combines all the information from the input facts
+  \item Uses the most appropriate fact ``type'' from the input facts
+  \item Creates a coherent ``info'' text that captures all the details
+  \item Has a compact set of important related\_entities based on info
+  \item Combines all conversation IDs (removing duplicates)
+  \item Preserves the frequency information appropriately
+\end{itemize}
+
+The merged fact should follow the given structure:
+\begin{verbatim}
+{
+  "fid": <highest_fid_from_input_facts>,
+  "info": "<comprehensive_info_combining_all_facts>",
+  "type": "<most_appropriate_type_from_input_facts>",
+  "frequency": <sum_of_all_frequencies>,
+  "related_entities": [<compact_set_of_all_related_entities>],
+  "conversation_ids": [<union_of_all_conversation_ids>],
+  "merged_fids": [<list_of_all_input_fids>],
+  "state": "add"
+}
+\end{verbatim}
+
+Guidelines:
+\begin{itemize}
+  \item The ``info'' should be a single coherent sentence that captures the essence of all input facts.
+  \item List of related entities should be concise, including only the important ones.
+  \item The ``merged\_fids'' field should contain ALL the original fact IDs that were combined
+\end{itemize}
+
+Return only the single merged fact dictionary. Do not include any explanations, formatting, or extra text.
+
+Input facts to merge: 
+\codeblk{{facts_to_merge}}
+
+Output [Merged fact]:
+\end{promptbox}
+
+
+
+% First figure across both columns
+\begin{figure*}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/Intro-page.png}
+    \caption{Human Evaluations: Survey Preview}
+    \label{fig:intro}
+\end{figure*}
+
+% Second figure across both columns
+\begin{figure*}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/Task-page.png}
+    \caption{Human Evaluations: Survey Instructions}
+    \label{fig:task}
+\end{figure*}

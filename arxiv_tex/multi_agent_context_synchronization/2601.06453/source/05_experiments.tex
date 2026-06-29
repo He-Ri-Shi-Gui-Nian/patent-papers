@@ -1,0 +1,83 @@
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Setup}
+\label{sec:exp_setups}
+
+\noindent \textbf{Datasets.} We evaluate \system{} across five diverse multimodal sensing benchmarks, spanning both physiological and physical activity recognition tasks: (i)~WESAD~\citep{wesad} for affective state recognition; (ii)~SleepEDF~\citep{sleepedf} for sleep stage classification; (iii)~ActionSense~\citep{actionsense} for recognizing four categories of kitchen activities (e.g., peeling, washing); (iv)~MMFit~\citep{mmfit} for gym exercise recognition; and (v)~PAMAP2~\citep{pamap2} for daily activity recognition. The datasets cover a wide range of 12 distinct sensor modalities collected from different locations and devices (e.g., smartphones, smartwatches, and earbuds). Raw sensor data were processed into standard, hand-crafted feature representations following established protocols~\citep{wesad, sleepedf_features}. We detail the sensor modalities, preprocessing, and splits in Appendix~\ref{sec:appendix_dataset}.
+
+\noindent \textbf{Prompts.} We employ text-only prompts that embed extracted sensor features within a structured prompt template. Each prompt includes a detailed description of the target task and data, derived directly from the original dataset documentation. 
+Furthermore, we employ a 1-shot in-context learning strategy, providing one representative example per class to enhance the model reasoning. We provide the prompt details in Appendix~\ref{sec:appendix_prompts}.
+
+\noindent \textbf{Models and Metrics.} We use \texttt{gpt-oss-20B} as the main backbone~\citep{gptoss}. Moreover, we evaluate scale and architecture variations using \texttt{gpt-oss-120B}, \texttt{Llama-3.1-8B-Instruct}~\citep{llama3} and \texttt{Llama-4-Scout-17B-16E}~\citep{llama4}. We use a temperature of 0 to ensure deterministic and reproducible outputs. As the datasets are class-balanced, we use accuracy as the evaluation metric. We report macro-F1 in Appendix~\ref{sec:appendix_f1score}, which shows trends consistent with accuracy.
+
+\noindent \textbf{Baselines.} We evaluate \system{} against three representative baselines: (i)~\textbf{Single-Agent}, where all modality features are concatenated into a single prompt, (ii)~\textbf{Self-Consistency} (SC)~\citep{sc}, which samples multiple reasoning paths and selects the most consistent prediction (with temp$=0.7$), and (iii)~\textbf{Self-Refine} (SR)~\citep{sr}, which iteratively generates feedback and refines an initial response. For SC, we use three LLM instances, and for SR, we perform two refinement steps to ensure a comparable inference budget with \system{}, which involves two intermediate fusion steps prior to the final hybrid decision.
+
+\input{tables/new_main_results}
+
+To further evaluate the effectiveness of our hybrid fusion design, we compare \system{} against state-of-the-art multi-agent debate frameworks adapted to operate over the same set of modality agents: (i)~\textbf{Debate}~\citep{debate}, where agents iteratively refine responses by observing the outputs of other agents, with the final decision determined by majority voting; (ii)~\textbf{MAD}~\citep{mad}, which follows a similar protocol to Debate but employs a judge agent to steer the final decision; (iii)~\textbf{CMD}~\citep{cmd}, where agents are partitioned into groups (we use two groups) such that agents within each group share full responses, while only prediction counts are exchanged across groups; and (iv)~\textbf{ReConcile}~\citep{reconcile}, where agents output an explicit confidence score and arrive at a final decision via confidence-weighted voting. As SC and SR, we fix the number of debate rounds to two. We emphasize that, while these baselines are designed for multi-round debates, \system{} performs aggregation in a single round, highlighting a fundamental difference in both efficiency and interaction structure.
+
+Importantly, \system{} is a \textit{training-free} framework. By leveraging the world knowledge and reasoning capabilities of pre-trained LLMs, our method bypasses the need for large-scale data collection and task-specific model training. Consequently, we do not include traditional learning-based sensor fusion methods~\citep{multimodalsensing} as direct baselines, since they rely on supervised training over substantial task-specific data. Nevertheless, to contextualize performance against a supervised reference, we provide a comparison in Appendix~\ref{app:supervised_fusion}.
+
+\subsection{Results}
+\label{sec:exp_results}
+
+\noindent \textbf{Effect of Modality Agents.} We first evaluate the impact of modality agents by comparing \system{} against single-agent reasoning baselines. As shown in Table~\ref{tab:main_results}, \system{} consistently outperforms the Single-Agent baseline by an average accuracy margin of $7.1\%$. Notably, even without hybrid fusion, both semantic-only and statistical-only fusion variants achieve substantial performance gains, indicating that modality-specific agent decomposition alone yields strong improvements. While Self-Consistency yields only marginal improvements (an average gain of $0.6\%$), its performance remains substantially below that of \system{}. Qualitative analysis (Appendix~\ref{sec:appendix_outputs}) shows that the Single-Agent baseline often omits modality-specific interpretations, consistent with Observation~1. In contrast, \system{} ensures complete modality coverage, resulting in more reliable and well-grounded decisions.
+
+\noindent \textbf{Effect of Hybrid Fusion.} Table~\ref{tab:main_results} further compares \system{} with semantic-only and statistical-only fusion variants. While statistical fusion outperforms semantic fusion by an average margin of 1.5\%, the optimal fusion strategy varies substantially across datasets. Semantic fusion performs best when sensor data align well with LLM prior knowledge (e.g., PAMAP2, $2.5\%$), whereas statistical fusion dominates under unexpected or noisy data characteristics (e.g., WESAD, $10.2\%$). This is consistent with Observation~2: in WESAD, the semantic fusion agent frequently overweights incorrect ECG-derived predictions due to knowledge bias, whereas majority voting aggregates correct evidence from secondary modalities.
+
+Importantly, the hybrid fusion agent resolves this trade-off, achieving the highest average accuracy across datasets. On SleepEDF, ActionSense, and MMFit, the hybrid agent surpasses both semantic-only and statistical-only fusion agents. This demonstrates the hybrid agent's ability to follow semantic reasoning when it is reliable and to revert to statistical consensus when knowledge bias would otherwise lead to incorrect decisions.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\columnwidth]{figures/number_of_tokens.pdf}
+    % \vspace{-7pt}
+    \caption{Average input tokens per inference across datasets. Gray bars denote tokens required for initial interpretation, and blue bars denote aggregation or refinement tokens, segmented by rounds.}
+    % \vspace{-18pt}
+    \label{fig:token_efficiency}
+\end{figure}
+
+\noindent \textbf{Comparison with Multi-Agent Debate.} We further compare \system{} with iterative multi-agent debate baselines built on the same set of modality agents. \system{} achieves the highest accuracy among all baselines, with the exception of ReConcile, which attains comparable performance ($72.7\%$ vs. $72.3\%$). Notably, all debate baselines rely on multi-round interactions, incurring substantial token overhead. In contrast, \system{} achieves comparable or superior accuracy using a single-round fusion protocol, resulting in up to $12.7\times$ reduction in fusion tokens compared to the debate baselines. We further evaluate non-iterative variants of the debate baselines 
+in Appendix~\ref{sec:appendix_round0}, showing that \system{} consistently outperforms debate baselines under similar number of tokens.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.9\columnwidth]{figures/missingness_comparison.pdf}
+    % \vspace{-5pt}
+    \caption{Accuracy under random modality omission at varying missingness levels. \system{} maintains higher accuracy by adaptively balancing semantic and statistical fusion.}
+    % \vspace{-15pt}
+    \label{fig:missingness_comparison}
+\end{figure}
+
+\noindent \textbf{Token Efficiency.} Figure~\ref{fig:token_efficiency} reports the average token usage per inference across all datasets. Gray bars represent tokens consumed during initial interpretation, including system prompts and sensor feature descriptions required to derive an initial prediction. These costs remain consistent across all methods, as modality agents partition the same underlying sensory information rather than introducing additional content. Blue bars represent tokens consumed by refinement, debate, or fusion procedures. %These overhead costs differ substantially across methods. 
+While ReConcile, one of the strongest baselines, requires 78.6K tokens for aggregation per inference to achieve accuracy comparable to \system{}, \system{} requires only 6K tokens. %, yielding a $13.1\times$ reduction. 
+Averaged across all multi-agent debate baselines, \system{} reduces aggregation tokens by $12.7\times$. This result highlights the substantial token efficiency of \system{}, achieved through its single-round structured fusion design.
+
+\noindent \textbf{Robustness to Sensor Failure.} We simulate sensor failure by randomly omitting 10\%, 30\%, and 50\% of sensor modalities. As shown in Figure~\ref{fig:missingness_comparison}, \system{} maintains a consistent performance advantage, outperforming the Single-Agent baseline by an average of $7.1\%$, $4.5\%$, $8.2\%$, $1.2\%$ across the respective missingness ratios. %At 50\% missingness, the single-agent baseline shows comparable accuracy to \system{}; we attribute this to the fact that under extreme sparsity, a single agent can prioritize the few available modalities without the noise of conflicting multi-agent contexts.
+
+We observe that the statistical fusion degrades sharply as sensor missingness increases, collapsing to 41.4\% at 50\% missingness. This confirms Observation~3: majority voting is fragile when anchored to a high ratio of unreliable votes. In contrast, semantic fusion exhibits remarkable resilience, maintaining 59.9\% accuracy even in extreme failure scenarios. Importantly, \system{}'s hybrid fusion dynamically prioritizes the semantic reasoning as statistical certainty drops. Consequently, \system{} outperforms the statistical fusion by 9.1\% at 30\% and 18.4\% at 50\% missingness, effectively mitigating catastrophic degradation by selectively following the semantic fusion agent.
+
+We additionally examine robustness to sensor corruption in Appendix~\ref{app:noise_robustness} by evaluating \system{} under additive white Gaussian noise (AWGN) at 10 dB SNR. The results show broadly similar performance trends to those in the main setting, indicating that \system{} is robust to both modality missingness and moderate signal perturbation.
+
+%While Self-Consistency (SC) exhibits improved robustness by leveraging multiple reasoning paths to identify sensor failures, \system{} still achieves a $1.3\%$ higher accuracy. Crucially, as detailed in a later section, SC incurs substantial computational overhead, whereas \system{} maintains higher accuracy at a significantly lower inference cost ($1.8\times$ reduction).
+
+% \input{tables/multi_agent_baselines}
+
+
+% Under sensor failure, semantic fusion outperforms statistical fusion by an average of $9.4\%$. Statistical fusion degrades substantially when $30\%$ of modality-level votes are corrupted by missing inputs, violating the reliability assumptions required for an accurate consensus (Observation~3). Notably, hybrid fusion effectively mitigates this degradation by selectively following the semantic fusion agent, maintaining an average accuracy gain of $8.9\%$ over the statistical fusion agent.
+
+% \noindent \textbf{Effect of LLM.} We evaluate \system{} across various LLM architectures and scales, including %\texttt{gpt-oss-20B}, 
+% \texttt{gpt-oss-120B}, \texttt{Llama-3.1-8B-Instruct}, and the Mixture-of-Experts (MoE) based \texttt{Llama-4-Scout-17B-16E} (109B total parameters). Table~\ref{tab:llm_comparison} shows the results. Across all evaluated LLMs, \system{} consistently outperforms the Single-Agent baseline and exhibits robust hybrid fusion behavior, effectively balancing semantic and statistical fusion agents. Notably, while the 8B model initially struggles with multimodal sensing tasks ($29.3\%$ accuracy under the Single-Agent baseline), \system{} provides a significant improvement of $16.3\%$. This result suggests that \system{} has strong potential to enhance the sensing capabilities of smaller and resource-constrained LLMs.
+
+\input{tables/llm_results}
+
+\noindent \textbf{Effect of LLM.} We evaluate \system{} across diverse open-sourced LLMs, including %\texttt{gpt-oss-20B}, 
+\texttt{gpt-oss-120B}, \texttt{Llama-3.1-8B-Instruct}, and the Mixture-of-Experts (MoE) based \texttt{Llama-4-Scout-17B-16E} (109B total parameters). Table~\ref{tab:llm_comparison} compares \system{} against the Single-Agent baseline, the best-performing debate baseline ReConcile, and the semantic and statistical fusion agents.
+
+Across all LLMs, \system{} consistently outperforms the Single-Agent baseline and exhibits robust hybrid fusion behavior, effectively balancing semantic and statistical fusion results. For \texttt{gpt-oss-120B}, semantic and statistical fusion achieve comparable performance, and ReConcile outperforms \system{}, suggesting that the prior knowledge in larger parameters benefit the fusion and further debates. In contrast, on \texttt{Llama} models, \system{} consistently outperforms ReConcile while requiring fewer tokens (up to $13.1\times$), indicating that ReConcile's advantages are not robust across LLMs. Notably, on the small \texttt{Llama-3.1-8B-Instruct} model, the Single-Agent baseline performs poorly (29.3\%), and ReConcile yields limited improvement (+8.6\%), whereas \system{} achieves a substantially larger gain (+16.3\%). This highlights the strong potential of \system{} to enhance multimodal sensing capabilities for smaller, resource-constrained LLMs. Overall, \system{} delivers consistent performance gains across model families while maintaining high token efficiency.
+
+% First, across all evaluated LLMs, \system{} consistently outperforms the Single-Agent baseline, and exhibits robust hybrid fusion behavior, effectively balancing semantic and statistical fusion agents. In \texttt{gpt-oss-120B}, we observe that semantic fusion result matches the statistical fusion, and ReConcile outperforms \system{}, meaning that it is less disadvantaged by the prior knowledge and further debate iterations enhancing the result with better knowledge encoded in larger parameters. However, on \texttt{Llama} models we observed the opposite results, \system{} outperforms ReConcile while operating at a substantially lower token cost ($13.1\times$ reduction), implying that the outperforming of ReConcile is not consistent across different LLMs. In particular, especially in smaller models, \texttt{Llama-3.1-8B-Instruct}, we found that single-agent struggles with base accuracy ($29.3\%$) achieving very low score, and even ReConcile is not very helpful ($+8.6\%$), while \system{} brings significant improvement (+$16.3\%$). This result suggests that \system{} has strong potential to enhance the sensing capabilities of smaller and resource-constrained LLMs. In summary, \system{} achieves consistent performance gains across all evaluated LLMs while maintaining high token efficiency.
+
+% Overall, \texttt{gpt-oss} models outperform \texttt{Llama} models on the evaluated multimodal sensing tasks. Nevertheless, on \texttt{Llama} backbones, \system{} outperforms ReConcile while operating at a substantially lower token cost ($13.1\times$ reduction), confirming its effectiveness across diverse LLM architectures. We attribute this behavior to the observation that \texttt{Llama} models appear more susceptible to knowledge bias, which can cause iterative debate-based methods to drift toward incorrect decisions. In summary, \system{} achieves consistent performance gains across all evaluated LLMs while maintaining high token efficiency.
+
+% \noindent \textbf{Summary.} Across diverse datasets, failure conditions, and LLM backbones, these results consistently demonstrate that structured modality decomposition combined with single-round hybrid fusion yields improvements in both accuracy and efficiency.

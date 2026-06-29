@@ -1,0 +1,206 @@
+\begin{table}[t]
+\centering 
+\caption{Summary of GRbench dataset statistics.}
+\label{tab:tb-data}
+\small
+\begin{tabular}{@{}cccccc@{}}  % 共6列
+\toprule
+\multirow{2}{*}{Domain} & \multirow{2}{*}{Topic} & \multirow{2}{*}{Abbr} & \multicolumn{2}{c}{Graph Statistics} & \multirow{2}{*}{Questions} \\
+\cmidrule(lr){4-5}
+ &  &  & \# Nodes & \# Edges &  \\ \midrule
+Academic    & DBLP      & ac & $\sim$8M   & $\sim$52M   & 150 \\
+E-commerce  & Amazon    & ec & $\sim$9M   & $\sim$313M  & 200 \\
+Literature  & Goodreads & li & $\sim$3M   & $\sim$22M   & 240 \\
+Healthcare  & Disease   & he & $\sim$47K  & $\sim$4M    & 270 \\
+Legal       & Freelaw   & le & $\sim$84M  & $\sim$114M  & 180 \\ \midrule
+\textbf{SUM}& -         & -  & \textbf{104M} & \textbf{505M} & \textbf{1040} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\input{tables/dataset}
+\input{tables/main_table}
+
+\begin{figure*}[ht]
+    \centering
+    \includegraphics[width=0.88\linewidth]{figures/token_comparison.pdf}
+    \caption{Token consumption comparison.}
+    \label{fig:token_consumed_comparison}
+\end{figure*}
+
+\begin{figure*}[ht]
+    \centering
+    \includegraphics[width=0.88\linewidth]{figures/latency_comparison.pdf}
+    \caption{End-to-end latency comparison.}
+    \label{fig:end_to_end_latency_comparison}
+\end{figure*}
+
+\section{Evaluation}\label{sec:evaluation}
+
+\subsection{Implementation Details}
+
+We implemented a prototype of \projectname in approximately \texttt{3K} lines of Python. It is built on vLLM~\cite{kwon2023efficient} (v0.8.5), with essential modifications to support our Graph-CoT–aware mechanisms.
+
+
+\stitle{System Architecture.} 
+\projectname adopts a modular architecture with two main components: (1) an LLM-based agent module and (2) a Graph RAG retriever module, each implemented as an independent class. The agent module supports specialized agents (\textit{classification}, \textit{reasoning}, and \textit{action}) through customizable prompt templates stored in a \texttt{custom} directory, enabling easy modification and extension to new datasets. The execution follows Algorithm~\ref{alg:workflow}, allowing flexible integration of new agents and control flows.
+
+\stitle{Parallel Batch Processing.} 
+For efficient concurrent query handling, \projectname uses a thread pool in which each query runs on an independent thread that shares the same agent and retriever instances to reduce memory overhead. The vLLM backend dynamically batches requests and schedules inference across multiple GPUs, ensuring scalability and high throughput.
+
+\stitle{Fault Tolerance.} 
+\projectname ensures robustness through two recovery layers. For code execution errors, the system logs the faulty code and the error message, feeding them back to the LLM for self-correction. For request-level failures, a timeout and recovery mechanism restarts or resumes execution from the last successful step using cached KV pairs, preventing redundant computation and improving reliability under heavy load.
+
+\subsection{Experimental Setup}
+
+\stitle{Hardware.} All experiments are conducted using NVIDIA A100 GPUs with Python 3.8 and Hugging Face Transformers v4.36.2. For retrieval, we use MPNet-v2 as the encoder and implement indexing with FAISS~\cite{johnson2019billion}. The backbone LLM for our main experiments is Qwen3-235B-A22B~\cite{qwen}, with the decoding temperature fixed at $t = 0$ to ensure deterministic outputs. Specifically, we deploy the Qwen3-235B-A22B variant using vLLM v0.8.5 on a cluster of eight NVIDIA A800 SXM4 GPUs, each equipped with 80\,GB of high-bandwidth memory (HBM) and interconnected via NVLINK.
+
+\stitle{Baselines.} We compare \projectname against four widely used categories of baseline methods: standard LLMs (Base LLMs), text retrieval-augmented LLMs (Text RAG LLMs), graph retrieval-augmented LLMs (Graph RAG LLMs), and multi-step reasoning with graph interaction (\textsc{Graph-CoT}):
+\begin{itemize}[leftmargin=*, wide, itemindent=0pt, nosep]
+    \item \textit{\underline{Base LLMs}:} This baseline tests whether LLMs\cite{qwen} can answer questions using only their internal knowledge, without any access to external data. We provide direct instructions along with the question and allow the LLM to generate an answer.
+
+    \item \textit{\underline{Text RAG LLMs}:} Following \cite{gao2023retrieval}, this method treats the external graph as a plain text corpus. A retriever selects relevant textual content, which is then appended to the prompt as contextual information to guide the LLM's response.
+
+    \item \textit{\underline{Graph RAG LLMs}:} Extending the Text RAG approach, this method linearizes both the retrieved node and its associated subgraph (e.g., 1-hop ego-graph) into a textual sequence, which is then used as input to the Graph RAG LLM~\cite{ye2023language}. This provides a more structured relational context for the model.
+
+    \item \textit{\underline{Graph-CoT}:} As proposed in \cite{jin2024graph}, this method enables LLMs to interact with graphs in an iterative reasoning process. At each step, the model formulates a sub-query, retrieves the necessary information from the graph, and incorporates it into the reasoning trajectory for multi-hop question answering.
+\end{itemize}
+
+\stitle{Evaluation Metrics.} We use rule-based and model-based metrics for evaluation. For rule-based assessment, we adopt ROUGE-L (R-L)~\cite{lin2004rouge} to measure surface-level overlap with ground-truth answers. For model-based evaluation, following~\cite{jin2024graph}, we use GPT-4 as a judge to evaluate semantic correctness by comparing the generated answers with the ground truth. The percentage of outputs judged as semantically correct is reported as \textit{GPTScore}~\cite{fu2023gptscore}. We also measure system-level performance using end-to-end latency, throughput (requests per second), and total token consumption to assess efficiency and cost under realistic serving conditions.
+
+\stitle{Datasets.} We evaluate \projectname on GRBench~\cite{jin2024graph}, a benchmark for assessing LLM reasoning over structured knowledge. As shown in Table~\ref{tab:tb-data}, GRBench includes 1,740 manually curated QA pairs from ten real-world graphs across five domains: academia, e-commerce, literature, healthcare, and law. Each question requires one of three reasoning types: factual retrieval, multi-hop reasoning, or inductive inference, providing diverse graph reasoning challenges.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figures/token_breakdown_consumed.pdf}
+    \caption{Per-stage token usage comparison.}
+    \label{fig:token_consumed_breakdown}
+\end{figure}
+
+\subsection{Accuracy Comparison}
+
+We first evaluate the accuracy improvements of \projectname compared to all baseline methods, using both ROUGE-L (R-L) and GPTScore metrics, as reported in Table~\ref{tab:results}. The results demonstrate that \projectname consistently and significantly outperforms all baselines across the evaluated benchmarks. Specifically, \projectname achieves an accuracy gain of 60\% over Base LLMs, 62\% over Text RAG, 55\% over Graph RAG, and 38\% over \textsc{Graph-CoT}. These gains are primarily attributed to \projectname’s novel multi-agent design and code-based reasoning strategy.
+
+A substantial portion of the improvement over \textsc{Graph-CoT} stems from questions that require multi-hop reasoning and information aggregation across multiple nodes. While \textsc{Graph-CoT} often struggles to maintain coherent reasoning over long chains and frequently exceeds the step limit in complex scenarios, \projectname delegates sub-tasks to specialized agents and replaces repetitive LLM reasoning with deterministic, executable code snippets. This results in more structured, accurate, and scalable reasoning.
+
+When compared with Base LLMs, \projectname shows the largest accuracy gain, which depend solely on internal knowledge and often hallucinate or omit details. Text RAG performs better than Base LLMs due to the inclusion of external textual context; however, its retrieval process often fails to recall all relevant information needed for complete reasoning, leading to suboptimal accuracy. Graph RAG LLMs and \textsc{Graph-CoT} perform better than the previous two by incorporating structured graph-aware context and enabling multi-step reasoning. Nonetheless, they still fall short of \projectname due to limitations in reasoning coherence and system efficiency.
+
+In conclusion, \projectname achieves the highest accuracy among all evaluated methods by leveraging its multi-agent Graph-CoT framework, which enables task decomposition, effective use of external graph knowledge, and efficient reasoning through code execution.
+
+
+
+%A substantial portion of the performance gains over \textsc{Graph-CoT} can be attributed to questions that require information from multiple nodes within the graph. Such cases highlight the limitations of \textsc{Graph-CoT}, which often fails to maintain coherent reasoning across multiple steps and tends to exceed the maximum step limit in more complex scenarios. In contrast, the multi-agent architecture of \projectname enables the use of structured and expressive code to replace iterative large language model (LLM) reasoning. This design leads to more accurate results.
+
+
+%\textbf{Results of Base LLMs} As the results shown in Table~\ref{tab:results}, base LLM exhibit the worst performance in comparison to other method. A typecal reason is that the LLMs may not contain the knowledge needed to answer those questions.
+
+%\textbf{Results of Text RAG LLMs} Incorporating text-based RAG leads to slightly better performance compared to the base LLM, as the additional retrieved text provides some helpful context. However, the overall improvement remains limited. This is primarily because text retrieval often fails to recall all the relevant chunks that contain the necessary supporting facts to accurately answer the input question.
+
+%\textbf{Results of Graph RAG LLMs and \textsc{Graph-CoT}} Graph RAG LLMs outperform text RAG LLMs in most cases since the former can provide more structure-aware context, which is helpful for problem-solving. \textsc{Graph-CoT} further surpasses Graph RAG in performance. This is because \textsc{Graph-CoT} is able to capture the key steps of graph-based chain reasoning through in-context learning, allowing the model to follow a more coherent and guided reasoning process, rather than depending solely on retrieved graph information.
+
+%\textbf{Results of \projectname} 
+%\projectname consistently and significantly outperforms all baseline methods across the evaluated benchmarks. A substantial portion of the performance gains over \textsc{Graph-CoT} can be attributed to questions that require information from multiple nodes within the graph. Such cases highlight the limitations of \textsc{Graph-CoT}, which often fails to maintain coherent reasoning across multiple steps and tends to exceed the maximum step limit in more complex scenarios. In contrast, the multi-agent architecture of \projectname enables the use of structured and expressive code to replace iterative large language model (LLM) reasoning. This design leads to more accurate results.
+
+
+
+
+
+
+
+
+
+
+
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.95\linewidth]{figures/latency_breakdown_consumed.pdf}
+    \caption{Per-stage latency breakdown comparison.}
+    \label{fig:latency_breakdown}
+\end{figure}
+
+
+\subsection{Token Consumption Comparison}\label{sec:token_comparison}
+
+To demonstrate the token efficiency of our multi-agent Graph-CoT reasoning framework, we compare the token consumption of the baseline \textsc{Graph-CoT} with our proposed approach, \projectname.
+
+We first examine the total number of tokens consumed during inference. As shown in Figure~\ref{fig:token_consumed_comparison}, \textsc{Graph-CoT} exhibits substantial token overhead due to iterative multi-step reasoning, long shared prefixes, and redundant context retention. In contrast, \projectname achieves significantly lower token usage. Specifically, the average token consumption per instance ranges from 1,538 $\sim$ 2,974 tokens in \projectname, compared to 22,613 $\sim$ 45,490 tokens in \textsc{Graph-CoT}, representing up to a 95.7\% reduction.
+
+To understand the source of these improvements, we further break down the token usage by measuring (i) the average number of LLM invocations per query and (ii) the average number of tokens consumed per invocation. \projectname requires only 2 $\sim$ 3 LLM calls per instance on average, with each call using approximately 769 $\sim$ 991 tokens. In comparison, \textsc{Graph-CoT} performs an average of 9 $\sim$ 14 invocations per query, each consuming 1,875 $\sim$ 4,483 tokens. These results confirm that \projectname achieves substantial token savings by reducing both the frequency and per-call cost of LLM usage, leading to significantly more efficient inference.
+
+This efficiency stems from three key advantages of \projectname. First, its multi-agent architecture comprising specialized classification, thought, and action agents, ensures that each component operates with minimal, task-specific context, thereby avoiding redundant prompt content. Second, unlike \textsc{Graph-CoT}, which carries the full intermediate reasoning state across steps, \projectname maintains only essential graph-derived facts in a lightweight \textit{notebook}, significantly reducing prompt length. Third, \projectname replaces verbose multi-step reasoning chains with concise, executable code snippets, thereby minimizing the total number of LLM invocations required per task.
+
+We further analyze token composition across agents. As shown in Figure~\ref{fig:latency_breakdown}, for non-deterministic questions, the classification, thought, and action agents contribute to token usage in an approximate ratio of 2.5\% : 82.3\% : 15.1\%. This reflects the fact that reasoning agents process large graph-retrieved vertex chunks, which dominate the token budget. For deterministic questions, token contributions from the classification and action agents are distributed in a ratio of approximately 16.7\% : 83.3\%, where the classification agent consumes substantially fewer tokens, consistent with our architectural analysis in Section~\ref{sec:framework}.
+
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.88\linewidth]{figures/throughput_comparison.pdf}
+    %\vspace{-.1in}
+    \caption{Throughput comparison.}
+    \label{fig:throughput_comparison}
+    %\vspace{-1mm}
+\end{figure}
+
+\input{tables/error_table}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=.95\linewidth]{figures/optimization.pdf}
+    \caption{
+    Performance breakdown of individual optimizations: \textbf{(a)} evaluates the \textit{pipelined execution strategy}, highlighting latency improvements; \textbf{(b)} and \textbf{(c)} assess the \textit{vertex-centric KV cache reuse model}, reporting gains in throughput and cache hit rate; \textbf{(d)} and \textbf{(e)} analyze the \textit{priority-based KV cache eviction policy}, also in terms of throughput and cache hit rate.
+    }    
+    \label{fig:optimize_comparison}
+\end{figure*}
+
+\subsection{End-to-End Latency Breakdown}
+
+Figure~\ref{fig:end_to_end_latency_comparison} shows the end-to-end latency of \textsc{Graph-CoT} and \projectname. Empirically, \textsc{Graph-CoT} requires 11.3 $\sim$ 38.6 seconds per query, while \projectname completes the same tasks in just 2.8 $\sim$ 5.9 seconds, achieving a latency reduction of up to 74.7\% $\sim$ 90.3\%. \textsc{Graph-CoT} incurs significantly higher latency, primarily due to its single-agent execution model and the lack of system-level optimizations. In contrast, \projectname achieves substantially lower latency through its inherently multi-agent design and three core system optimizations: (1) a pipelined execution strategy that overlaps Graph RAG retrieval with LLM decoding, (2) a vertex-centric KV cache reuse model that efficiently reuses KV cache, and (3) a priority-based KV cache eviction policy that avoids unnecessary computation.
+
+We further analyze end-to-end latency by examining the time distribution across system components. For the Graph RAG retriever, \textsc{Graph-CoT} incurs approximately 0.1 $\sim$ 5.5 seconds for retrieval and 10.1 $\sim$ 38.5 seconds for LLM inference. Retrieval accounts for roughly 0.2\% $\sim$ 23.1\% of the total latency, with the majority of time dominated by multi-step reasoning and LLM decoding. In contrast, \projectname reduces retrieval time to around 0.1 $\sim$ 0.6 seconds and LLM inference time to 2.8 $\sim$ 5.4 seconds. Retrieval constitutes only 1.2\% $\sim$ 9.3\% of the total latency, primarily because it overlaps with LLM decoding, effectively masking most of the retrieval overhead. On smaller datasets, such as Healthcare and Literature, retrieval latency is almost entirely hidden during the decoding phase. However, for larger datasets like Legal, retrieval latency becomes more noticeable due to increased subgraph fetching and preprocessing times that extend beyond the LLM decoding window.
+
+We also examine the latency breakdown of LLM inference within \projectname’s multi-agent framework in Figure~\ref{fig:latency_breakdown}. For non-deterministic questions, the classification agent, reasoning agent, and action agent contribute to latency in a ratio of 3.7\% : 42.1\% : 54.2\%. This distribution reflects a trade-off between input and output token lengths: the reasoning agent typically processes more input tokens, increasing prefill and decoding overhead, while the action agent produces longer output sequences (e.g., code snippets), which require more decoding steps. Both agents benefit from relatively high KV cache hit rates on input tokens, mitigating the incremental cost of processing lengthy contexts. Consequently, their total inference times remain comparable. For deterministic questions, the classification and reasoning agents account for 12.4\% to 87.6\% of the latency, consistent with the token distribution reported in Section~\ref{sec:token_comparison}.
+
+%As shown in Figure~\ref{fig:latency_breakdown}, with respect to LLM inference time within \projectname's multi-agent framework, for deterministic questions, the classification agent and reasoning agent account for latency in a rough ratio of \textbf{12.4\% : 87.6\%}, which aligns with the analysis in Section~\ref{sec:token_comparison}. Meanwhile, for non-deterministic questions, the classification agent, reasoning agent, and action agent contribute to latency in a rough ratio of \textbf{3.7\% : 42.1\% : 54.2\%}. This distribution reflects a trade-off between input and output token lengths. Specifically, the reasoning agent processes significantly more input tokens than the action agent, leading to higher prefill and decoding costs per token. In contrast, the action agent generates longer outputs in the form of code snippets, requiring more decoding steps. Additionally, both agents benefit from relatively high cache hit rates on their input tokens, which mitigates the overhead of long input sequences. As a result, their overall inference times are approximately similar, with the action agent taking slightly more time due to its longer output sequences.
+
+% This distribution arises because both the classification and action agents benefit from reusable key–value (KV) caches, operating over long shared prefixes followed by short suffixes. As a result, their inference time remains minimal. In contrast, the reasoning agent generates notebook-style responses that evolve at each reasoning step, leading to longer decoding sequences and a higher proportion of the total latency.
+
+\subsection{Throughput Comparison}\label{sec:throughput_comparison}
+
+Throughput is defined as the number of question–answer pairs processed per unit time. As shown in Figure~\ref{fig:throughput_comparison}, \textsc{Graph-CoT} achieves a modest throughput of only 0.6 $\sim$ 2.2 queries per second. In contrast, our proposed system, \projectname, delivers higher throughput, reaching 6.8 $\sim$ 9.1 queries per second. This improvement stems from two core design principles: (1) a multi-agent architecture that parallelizes and accelerates the reasoning process, and (2) a \textit{vertex-centric KV cache reuse model} combined with an efficient \textit{KV cache eviction policy} that maximizes cache reuse and eliminates redundant computations. Together, these optimizations make \projectname particularly well-suited for high-throughput scenarios under constrained compute budgets, achieving up to 3.2$\times$ to 15.1$\times$ higher throughput than \textsc{Graph-CoT}.
+
+\subsection{Efficiency of Different Optimizations}
+
+We analyze the impact of different system-level optimizations on computational efficiency, focusing on three key components: the \textit{vertex-centric KV cache reuse model}, \textit{priority-based KV cache eviction policy}, and the \textit{pipelined execution strategy}. To evaluate the cache-related optimizations designed primarily for non-deterministic queries, we augment the original datasets with additional non-deterministic questions. In particular, the e-commerce and literature datasets are extended due to the limited number of such queries in the original benchmark. Detailed results are presented in Figure~\ref{fig:optimize_comparison}, covering latency, throughput, and cache hit ratio comparisons.
+
+\noindent\textbf{Efficiency of Pipeline Execution Strategy.}  
+We evaluate the pipelined execution strategy, which overlaps the execution of retrieval with LLM decoding. Without pipelining, average response latency ranges from 4.3 $\sim$ 10.2 seconds. With pipelining enabled, latency is reduced to 2.8 $\sim$ 5.3 seconds—an improvement of up to 47.8\%. This gain is achieved by precomputing retrieval results and masking I/O latency during token generation, thereby reducing idle time and improving responsiveness in interactive workloads.
+
+\noindent\textbf{Efficiency of Vertex-Centric KV Cache Reuse Model.}  
+This optimization improves the information granularity in Graph RAG retrieval by enabling prefix segments of the KV cache to be shared across different queries. As a result, it reduces redundant computation and improves execution efficiency. Experimental results show a 41.6\% increase in throughput and a 17.7\% boost in cache hit rate. Moreover, coarser-grained retrieval not only enhances reuse opportunities but also shortens the overall reasoning steps required by the GLM, further amplifying the throughput benefit.
+
+\noindent\textbf{Efficiency of the Priority-Based KV Cache Eviction Policy.}  
+This mechanism improves cache utilization by assigning eviction priorities based on token frequency and reuse potential. As shown in Figure~\ref{fig:optimize_comparison}, it improves overall throughput by 14.3\% and reduces the cache miss rate by 15.1\%, showing its effectiveness in managing limited GPU memory and reducing redundant recomputation.
+
+In conclusion, \projectname's performance optimizations effectively improve throughput, increase the cache hit rate, and reduce latency across various configurations, demonstrating the overall effectiveness of our system-level design.
+
+\subsection{Error Analysis of Code Generation}
+
+In this section, we analyze failure cases in Graph-CoT and \projectname. Table~\ref{tab:error-comparison} categorizes errors into four types: \emph{unexpected agent output}, \emph{retrieval process error}, \emph{code execution error}, and \emph{step limit exceeded}.  
+
+In Graph-CoT, the most frequent failure (41\%) arises from \emph{unexpected agent output}, caused by the single-agent design handling long contexts, which often leads to the loss of intermediate information. The second most common error (37\%) is \emph{step limit exceeded}, which occurs when queries require information from multiple nodes, resulting in reasoning rounds that exceed the allowed limit.  
+
+Introducing the code generation optimization compresses multi-step reasoning into a single executable snippet, reducing the number of steps per query (e.g., from 8 to 4). This significantly lowers the incidence of \emph{step limit exceeded} errors. However, this optimization increases \emph{code execution errors}, as the LLM now synthesizes full code snippets rather than selecting from a predefined set of graph-interaction functions.  
+
+In \projectname, the multi-agent framework further mitigates \emph{unexpected agent output}, reducing it from 41\% to 2\% because each agent operates within a minimal, task-specific context and is less likely to lose track of intermediate information. Overall, code generation introduces a trade-off: \emph{code execution errors} increase (2\% $\rightarrow$ 20\%) while \emph{step limit exceeded} errors drop dramatically (38\% $\rightarrow$ 8\%). 
+Additional optimizations in \projectname further reduce \emph{unexpected agent output}, demonstrating the effectiveness of the multi-agent and inference-aware design.
+
+
+
+
+
+% \subsection{Comparison with Other LLM works}
+
+% \subsection{Workload Balance}
+
+% \subsection{Scalability}

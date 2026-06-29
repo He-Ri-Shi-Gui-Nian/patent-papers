@@ -1,0 +1,501 @@
+
+In this subsection, we list the prompts used for KG interaction, trajectory generation, question generation, data quality evaluation, and relation reranking. When using them, we replace the contents in \{\} with our target data.
+
+%-----------------------------------------------------------------------------
+% Box 1: KG Interaction Prompt for Evaluation
+%-----------------------------------------------------------------------------
+\begin{tcolorbox}[
+  colback=white,
+  colframe=blue!60,
+  colbacktitle=blue!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=KG Interaction Prompt,
+  rounded corners,
+  boxrule=0.5pt
+]
+You are a helpful assistant that answers questions based on knowledge graphs. You can query from knowledge base provided to you to answer the question up to \textcolor{teal!70!black}{\textit{\{max\_calls\}}} times.
+
+\textbf{General Instructions:}
+\begin{enumerate}
+  \item First, perform careful reasoning inside \textcolor{blue}{\textit{<think>}}\textit{...}\textcolor{blue}{\textit{</think>}} tags. In this section, briefly outline your plan, record any working memory or intermediate observations, check for mistakes or ambiguous interpretations.
+  \item If you need to query knowledge for more information, you can set a query statement between \textcolor{orange}{\textit{<kg-query>}}\textit{...}\textcolor{orange}{\textit{</kg-query>}} to query from knowledge graph. The query tool-using rules are provided in "KG Query Server Instruction" part. Each \textcolor{orange}{\textit{<kg-query>}} call must occur after \textcolor{blue}{\textit{<think>}}\textit{...}\textcolor{blue}{\textit{</think>}}, and you must not issue another \textcolor{orange}{\textit{<kg-query>}} until you have received the environment's \textcolor{purple}{\textit{<information>}} feedback for the previous query.
+  \item If you have already found the answer, return it directly in the form \textcolor{red}{\textit{<answer>}}\textit{...}\textcolor{red}{\textit{</answer>}} and end your search. Your answer must strictly follow the KG Query Server Instruction.
+\end{enumerate}
+
+\textbf{KG Instructions:}
+
+\textcolor{teal!70!black}{\textit{\{kg\_instruction\}}}
+
+\textbf{Question:} \textcolor{teal!70!black}{\textit{\{question\}}}
+
+Begin your search with the following initial entities. Use \textit{get\_relations} to explore their relations.
+
+\textbf{Initial Entities:} \textcolor{teal!70!black}{\textit{\{initial\_entities\}}}
+\end{tcolorbox}
+
+
+
+
+
+
+%-----------------------------------------------------------------------------
+% Box 2: KG Query Server Instructions (Shared by multiple prompts)
+%-----------------------------------------------------------------------------
+\begin{tcolorbox}[
+  colback=white,
+  colframe=blue!60,
+  colbacktitle=blue!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=KG Query Server Instructions,
+  rounded corners,
+  boxrule=0.5pt
+]
+\textbf{Available Query Functions:}
+\begin{itemize}
+  \item \textit{get\_relations(``entity\_name'')}: Returns all relations (incoming and outgoing) for the entity. Use this to explore the entity's properties.
+  \item \textit{get\_triples(``entity\_name'', [``relation1'', ``relation2'', ...])}: Returns triples for the entity limited to the specified relations.
+\end{itemize}
+
+\textbf{KG Query Server Instructions:}
+\begin{enumerate}
+  \item If you encounter a KG-related error, read the error message carefully and correct your query.
+  \item Use only the two query functions above; do not write natural-language queries inside \textcolor{orange}{\textit{<kg-query>}} tags.
+  \item If Initial Entities are provided, begin your search from them using \textit{get\_relations(``initial\_entity'')}. If multiple initial entities are given, start with the most specific one. Analyze each systematically.
+  \item Use the ENTITY NAME EXACTLY as shown in the \textcolor{purple}{\textit{<information>}} section. Example: \textit{get\_relations(``Barack Obama'')}.
+  \item Before calling \textit{get\_triples(...)}, you MUST have called \textit{get\_relations(...)} for that entity (or already seen its relations) to ensure the relations exist.
+  \item When calling \textit{get\_triples}, provide a list of ALL candidate relations returned by the previous step, ranked by relevance to the question. We will automatically use the top 4. Copy each relation EXACTLY as it appears in the \textcolor{purple}{\textit{<information>}} list. Example: \textit{get\_triples(``Barack Obama'', [``people.person.place\_of\_birth'', ``people.person.nationality'', ...])}.
+  \item Always use double quotes around all function parameters (entity names and relations).
+\end{enumerate}
+
+\textbf{Answer Output Rules:}
+\begin{enumerate}
+  \item Format: \textcolor{red}{\textit{<answer>}}\textit{[``Answer1'', ``Answer2'', ...]}\textcolor{red}{\textit{</answer>}}. Return a JSON list of strings. The final answer must be a human-readable entity name, not a MID (e.g., m.01234). If the only candidate you have is a MID, do NOT output it as the final answer. Instead, explore the MID's neighbors (use \textit{get\_relations}/\textit{get\_triples}) to find a named entity to return.
+  \item No external knowledge: answer ONLY using KG query results you have retrieved. The answer(s) MUST be EXACT and COMPLETE entity names from the retrieved triples. If multiple entities satisfy the question, list them all in the JSON list in \textcolor{red}{\textit{<answer>}} tags.
+  \item Do NOT include any explanations in the \textcolor{red}{\textit{<answer>}} tags.
+  \item NEVER include ``I don't know'' or ``Information not available'' in \textcolor{red}{\textit{<answer>}} tags. Provide the best possible answer(s) from the entities you have retrieved.
+  \item CRITICAL: Your final answer must only contain entities that exist in the provided graph triples.
+\end{enumerate}
+\end{tcolorbox}
+
+
+
+%-----------------------------------------------------------------------------
+% Box 3: Trajectory Generation Prompt - Composition Type
+%-----------------------------------------------------------------------------
+\begin{tcolorbox}[
+  colback=white,
+  colframe=green!60,
+  colbacktitle=green!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=Trajectory Generation Prompt (Composition Type),
+  rounded corners,
+  boxrule=0.5pt
+]
+=== OVERVIEW ===
+
+You are a helpful assistant that generates Supervised Fine-Tuning samples for a Knowledge Graph question-answering task. Your task is to generate a concise reasoning thought that explains WHY a specific action was chosen at a given step, based on the information you have gathered. Keep it brief and direct, following the style of the example provided.
+
+=== AGENT ROLLOUT RULES ===
+
+These rules describe how the underlying agent behaves. Your thoughts should align with them.
+
+- Tools:
+  - \textit{get\_relations(``entity\_name'')}: Returns all relations (both incoming and outgoing) connected to the entity.
+  - \textit{get\_triples(``entity\_name'', [``relation1'', ``relation2'', ...])}: Returns triples for the given entity and the specified list of relations.
+
+Entity reference rules (CRITICAL):
+\begin{enumerate}
+  \item Always use ENTITY NAME in all function calls. Copy names exactly as shown in the last \textcolor{purple}{\textit{<information>}}.
+  \item If Initial entities are provided, you must start your search from them using \textit{get\_relations(``your\_initial\_entity'')}.
+  \item Use double quotes around all function parameters (entity and relations).
+  \item When calling \textit{get\_triples}, provide a list of relations that are helpful to answer the question, triples related to these relations will be automatically retrieved. Each relation must be copied EXACTLY from the latest \textcolor{purple}{\textit{<information>}} list. Example: \textit{get\_triples(``Barack Obama'', [``people.person.place\_of\_birth'', ``people.person.nationality''])}.
+  \item Only use the two query functions listed above; do not write natural language queries inside \textcolor{orange}{\textit{<kg-query>}} tags.
+  \item Before calling \textit{get\_triples(...)}, first call \textit{get\_relations(...)} for your current entity to obtain the predicate list.
+  \item No outside knowledge: answer ONLY using KG results you have retrieved.
+\end{enumerate}
+
+=== WHAT TO WRITE ===
+
+You will be given:
+\begin{enumerate}
+  \item The question to answer
+  \item The topic entities (starting points)
+  \item Historical information: all previous steps with their thoughts, actions, and observations
+  \item The next action that should be taken (this is the "golden action" that leads to the answer)
+\end{enumerate}
+
+Your task is to write a concise thought that:
+\begin{enumerate}
+  \item Briefly mentions what you learned from the last observation (relations or triples)
+  \item Directly explains why the given next action is the right choice at this point
+\end{enumerate}
+
+For the final step (when the next action is to provide an \textcolor{red}{\textit{<answer>}}):
+\begin{itemize}
+  \item Briefly explain how the observations from the last step provide the answer
+\end{itemize}
+
+Keep your thought concise and direct. Avoid over-summarizing or repeating information. Focus on the essential reasoning that leads to the action, similar to the example style.
+
+=== CRITICAL CONSTRAINTS ===
+\begin{enumerate}
+  \item ONLY reference information from previous steps (historical information provided to you). NEVER mention entities, relations, or facts that may appear in future steps.
+  \item Keep your thought concise and direct - typically 2-5 sentences, similar to the example style. Avoid lengthy summaries or over-explanation.
+  \item Copy entity/predicate strings EXACTLY as shown in observations.
+  \item Use natural language only; never include \textcolor{orange}{\textit{<kg-query>}} or \textcolor{red}{\textit{<answer>}} tags in your thoughts.
+  \item Do NOT simply restate the action - explain the REASONING behind choosing it, but keep it brief.
+\end{enumerate}
+
+=== OUTPUT FORMAT ===
+
+\textcolor{blue}{\textit{<think>}}
+
+Your concise reasoning thought (typically 2-5 sentences, following the example's brief style)
+
+\textcolor{blue}{\textit{</think>}}
+\end{tcolorbox}
+
+%-----------------------------------------------------------------------------
+% Box 4: Trajectory Generation Prompt - Conjunction Type
+%-----------------------------------------------------------------------------
+\begin{tcolorbox}[
+  colback=white,
+  colframe=orange!60,
+  colbacktitle=orange!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=Trajectory Generation Prompt (Conjunction Type),
+  rounded corners,
+  boxrule=0.5pt
+]
+=== OVERVIEW ===
+
+You are a helpful assistant that generates Supervised Fine-Tuning samples for a Knowledge Graph question-answering task involving CONJUNCTION reasoning. Your task is to generate a detailed reasoning thought that explains WHY a specific action was chosen at a given step, based on the historical information available up to that point.
+
+CONJUNCTION reasoning means the question requires exploring from more than one different starting entities (topic entities) that eventually converge to the same answer entity through different paths. The agent is expected to explore all paths to find the common answer.
+
+=== AGENT ROLLOUT RULES ===
+
+These rules describe how the underlying agent behaves. Your thoughts should align with them.
+
+- Tools:
+  - \textit{get\_relations(``entity\_name'')}: Returns all relations (both incoming and outgoing) connected to the entity.
+  - \textit{get\_triples(``entity\_name'', [``relation1'', ``relation2'', ...])}: Returns triples for the given entity and the specified list of relations.
+
+Entity reference rules (CRITICAL):
+\begin{enumerate}
+  \item Always use ENTITY NAME in all function calls. Copy names exactly as shown in the last \textcolor{purple}{\textit{<information>}}.
+  \item If Initial entities are provided, you must start your search from them using \textit{get\_relations(``your\_initial\_entity'')}.
+  \item Use double quotes around all function parameters (entity and relations).
+  \item When calling \textit{get\_triples}, provide a list of relations that are helpful to answer the question, triples related to these relations will be automatically retrieved. Each relation must be copied EXACTLY from the latest \textcolor{purple}{\textit{<information>}} list. Example: \textit{get\_triples(``Barack Obama'', [``people.person.place\_of\_birth'', ``people.person.nationality''])}.
+  \item Only use the two query functions listed above; do not write natural language queries inside \textcolor{orange}{\textit{<kg-query>}} tags.
+  \item Before calling \textit{get\_triples(...)}, first call \textit{get\_relations(...)} for your current entity to obtain the predicate list.
+  \item No outside knowledge: answer ONLY using KG results you have retrieved.
+\end{enumerate}
+
+=== WHAT TO WRITE ===
+
+You will be given:
+\begin{enumerate}
+  \item The question to answer
+  \item The topic entities (starting points - may be multiple for conjunction questions)
+  \item Historical information: all previous steps with their thoughts, actions, and observations
+  \item The next action that should be taken (this is the "golden action" that leads to the answer)
+\end{enumerate}
+
+Your task is to write a concise thought that:
+\begin{enumerate}
+  \item Briefly mentions what you learned from the last observation (relations or triples)
+  \item Directly explains why the given next action is the right choice at this point
+\end{enumerate}
+
+For the final step (when the next action is to provide an \textcolor{red}{\textit{<answer>}}):
+\begin{itemize}
+  \item Briefly explain how the observations from the previous step provide the answer
+\end{itemize}
+
+Keep your thought concise and direct. Avoid over-summarizing or repeating information. Focus on the essential reasoning that leads to the action, similar to the example style.
+
+=== CRITICAL CONSTRAINTS ===
+\begin{enumerate}
+  \item ONLY reference information from previous steps (historical information provided to you). NEVER mention entities, relations, or facts that may appear in future steps.
+  \item Keep your thought concise and direct - typically 2-5 sentences, similar to the example style. Avoid lengthy summaries or over-explanation.
+  \item Copy entity/predicate strings EXACTLY as shown in observations.
+  \item Use natural language only; never include \textcolor{orange}{\textit{<kg-query>}} or \textcolor{red}{\textit{<answer>}} tags in your thoughts.
+  \item Do NOT simply restate the action - explain the REASONING behind choosing it, but keep it brief.
+\end{enumerate}
+
+=== OUTPUT FORMAT ===
+
+\textcolor{blue}{\textit{<think>}}
+
+Your concise reasoning thought (typically 2-5 sentences, following the example's brief style)
+
+\textcolor{blue}{\textit{</think>}}
+\end{tcolorbox}
+
+%-----------------------------------------------------------------------------
+% Box 5: Question Generation Prompts
+%-----------------------------------------------------------------------------
+\begin{tcolorbox}[
+  colback=white,
+  colframe=blue!60,
+  colbacktitle=blue!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=Question Generation Prompts,
+  rounded corners,
+  boxrule=0.5pt
+]
+\vspace{0.5em}
+\hrule
+\vspace{0.3em}
+
+\textbf{Single-Path Question:}
+
+You are given:
+
+- A path represented as an ordered sequence of relations, topic entity and answer entity (e.g., Topic Entity --relationA--> entity1 --> relationB--> entity2 --> ... --> Answer Entity).
+
+You will be provided with the name of the topic entity and the name of the answer entity. Names of intermediate entities in the path will be replaced by placeholders like entity1, entity2, etc.
+
+\textbf{Your task:}
+\begin{itemize}
+  \item Compose ONE concise English question whose unique answer is exactly the Answer Entity.
+  \item Implicitly reflect the multi-hop path, but keep it brief and natural. Avoid enumerations or multiple questions.
+  \item STRICT: The question must contain exactly one question mark '?' (only one interrogative). The question must be a single sentence with only one '?'.
+  \item Do NOT directly mention raw relation labels. Paraphrase using concrete, meaningful semantics (e.g., country, city, river, award, university, founder, member of, genre, located in, part of, spouse, parent, date, birthplace, capital).
+  \item Keep the question concise (ideally < 100 characters).
+  \item Use only the information implied by the path; do not introduce outside facts.
+  \item Try to use different styles and sentence structures when generating questions.
+\end{itemize}
+
+\textbf{Input:}
+
+Path: \textcolor{teal!70!black}{\textit{\{path\}}}
+
+CRITICAL: Do NOT include any explanations, analysis, or additional text. Output ONLY the one line below, nothing more.
+
+Output format (STRICT --- output EXACTLY one line, nothing else):
+
+\textcolor{green!70!black}{\textit{<question>}}\textit{(one concise question with exactly one '?')}\textcolor{green!70!black}{\textit{</question>}}
+
+\vspace{0.5em}
+\hrule
+\vspace{0.3em}
+
+\textbf{Conjunction Question:}
+
+You are given:
+- Two paths that both lead to the same answer entity:
+
+Your task:
+\begin{itemize}
+  \item Compose ONE complete and concise English question whose unique answer is the common entity reached by both paths (the final entity in both paths).
+  \item The question should implicitly reflect that the answer requires exploring from BOTH starting entities (conjunction reasoning), not just one of them.
+  \item Keep it brief and natural (ideally < 120 characters). Avoid enumerations or multiple questions.
+  \item STRICT: The question must be COMPLETE and contain exactly one question mark '?' (only one interrogative). Prefer a single sentence (or two short clauses joined), but only one '?'.
+  \item Do NOT directly mention exact entity names/IDs or raw relation labels. Paraphrase using concrete, meaningful semantics (e.g., country, city, river, award, university, founder, member of, genre, located in, part of, spouse, parent, date, birthplace, capital).
+  \item De-emphasize meta/technical relations (e.g., types, notable\_for, generic topic) unless essential. Focus on relations with clear real-world meaning.
+  \item Use only the information implied by the two paths; do not introduce outside facts.
+  \item Try to use diverse styles and sentence structures when generating questions to avoid repetitive patterns and enhance question diversity.
+  \item CRITICAL: Output a COMPLETE question. Do NOT truncate or cut off the question. The question must end with a question mark '?'.
+  \item You MUST output the question in the format \textcolor{green!70!black}{\textit{<question>}}\textit{<your complete question>}\textcolor{green!70!black}{\textit{</question>}}
+\end{itemize}
+
+\textbf{Input:}
+
+Path 1: \textcolor{teal!70!black}{\textit{\{path1\}}}
+
+Path 2: \textcolor{teal!70!black}{\textit{\{path2\}}}
+
+\textbf{Output:}
+
+\textcolor{green!70!black}{\textit{<question>}}\textit{<your complete question>}\textcolor{green!70!black}{\textit{</question>}}
+\end{tcolorbox}
+
+%-----------------------------------------------------------------------------
+% Box 6: Data Quality Evaluation Prompt Template
+%-----------------------------------------------------------------------------
+\begin{tcolorbox}[
+  colback=white,
+  colframe=blue!60,
+  colbacktitle=blue!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=Data Quality Evaluation Prompt Template,
+  rounded corners,
+  boxrule=0.5pt
+]
+You are an expert evaluator for Knowledge Graph Question Answering (KGQA) data quality. Your task is to evaluate question-path pairs based on multiple quality criteria.
+
+\textbf{Input Format}
+
+You will be provided with two inputs:
+\begin{enumerate}
+  \item \textbf{name\_path}: A reasoning path in the knowledge graph, represented as a sequence of entities and relations connected by ``->''
+  \item \textbf{question}: The natural language question that should be answerable by following this path
+\end{enumerate}
+
+Input Example:
+
+\textit{name\_path}: ``Emap International Limited -> organization.organization.founders -> Richard Winfrey -> people.person.place\_of\_birth -> Long Sutton, Lincolnshire''
+
+\textit{question}: ``What is the birthplace of a founder of Emap International Limited?''
+
+\textbf{Task}
+
+For each question-path pair provided, you must:
+Evaluate it on the following dimension and assign a score from 0 to 10 based on the scoring guide:
+
+\textbf{Evaluation Criteria}
+
+You must evaluate each question-path pair based on the following dimension:
+\textcolor{teal!70!black}{\textit{\{dimension\_prompt\}}}
+
+\textbf{Important Guidelines}
+\begin{enumerate}
+  \item \textbf{Strict Evaluation}: Be strict but fair.
+  \item \textbf{Output Consistency}: Always output the score in the exact format above. Do not include any text outside the valid structure.
+  \item Do not include any other text or explanation.
+\end{enumerate}
+
+\textbf{Output Format}
+
+You must output only a single score from 0 to 10:
+\textcolor{gray!60!black}{\textit{<score>}}\textit{<0-10>}\textcolor{gray!60!black}{\textit{</score>}}
+\end{tcolorbox}
+
+%-----------------------------------------------------------------------------
+% Box 7: LLM Relation Reranking Prompt
+%-----------------------------------------------------------------------------
+
+
+\begin{tcolorbox}[
+  colback=white,
+  colframe=blue!60,
+  colbacktitle=blue!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=Relation Reranking Prompt Template,
+  rounded corners,
+  boxrule=0.5pt
+]
+You are an expert Knowledge Graph navigator. Your goal is to select the most relevant relations that will lead to the answer for a given question.
+
+\textbf{You will be provided with:}
+\begin{enumerate}
+    \setlength{\itemsep}{0pt}
+    \setlength{\parskip}{0pt}
+    \item A Question.
+    \item A Topic Entity involved in the question.
+    \item A list of Candidate Relations connected to that entity.
+    \item A Previous Model Thinking Process: The reasoning from the model's last turn (if available), which may provide helpful context about the query strategy and what information is being sought.
+\end{enumerate}
+
+\textbf{Task (STRICT RULES):}
+\begin{itemize}
+    \setlength{\itemsep}{0pt}
+    \setlength{\parskip}{0pt}
+    \item You MUST select relations ONLY from the provided Candidate Relations list.
+    \begin{itemize}
+        \item Each selected string MUST be an EXACT character-by-character match to an item in the input list.
+        \item Do NOT rename relations, do NOT change underscores/dots, do NOT add/remove numeric suffixes.
+    \end{itemize}
+    \item You MUST NOT invent new relations.
+    \item You MUST NOT output an empty list if at least one candidate relation is provided.
+    \item Output length rules (use K = \{k\}, which matches the evaluation setting \texttt{kg\_top\_k}):
+    \begin{itemize}
+        \item If the input list has at least \{k\} candidates, return EXACTLY \{k\} DISTINCT relations.
+        \item If the input list has fewer than \{k\} candidates, return ALL candidates (still non-empty), and do NOT pad with invented items.
+    \end{itemize}
+    \item Rank them by relevance (most relevant first).
+    \item Output ONLY a JSON array of strings. Do not include any other text.
+\end{itemize}
+
+\textbf{Examples} (illustrative format; when K differs from the example length, still follow the rules above with your K):
+
+Question: \{\} \\
+Topic Entity: \{\} \\
+Relations: \{\} \\
+Your Selections: \{\} 
+\end{tcolorbox}
+
+%-----------------------------------------------------------------------------
+% Box 8: Evaluation Dimension Prompts (Three dimensions in one box)
+%-----------------------------------------------------------------------------
+\vspace{0.3em}
+
+\begin{tcolorbox}[
+  colback=white,
+  colframe=blue!60,
+  colbacktitle=blue!30,
+  coltitle=white,
+  fonttitle=\bfseries\scriptsize,
+  fontupper=\scriptsize,
+  title=Evaluation Dimension Prompts,
+  rounded corners,
+  boxrule=0.5pt
+]
+\textbf{Reasoning Path Quality (0--10)}
+
+Reasoning Path Quality: ``Whether the reasoning path forms a complete, valid, and efficient chain from the starting entity to the answer entity, with all relations semantically correct and entities properly resolved.''
+
+\textbf{Scoring Guide (0--10)}
+\begin{itemize}
+  \item \textbf{10}: The path is complete, direct, and optimal. All relations are semantically valid and correctly connected. All entities are properly resolved with no ambiguity. The path represents the most efficient route to the answer with no unnecessary steps.
+  \item \textbf{8--9}: The path is complete and valid, with only minor inefficiencies or one minor ambiguity. All relations are correct, and the path successfully leads to the answer entity.
+  \item \textbf{6--7}: The path is mostly complete and valid, but may have some inefficiencies, minor relation issues, or one ambiguous entity. The path can still lead to the answer, though not optimally.
+  \item \textbf{4--5}: The path has noticeable issues: missing intermediate entities, some invalid relations, or multiple ambiguous entities. The path may still reach an answer but with significant problems.
+  \item \textbf{1--3}: The path has serious structural problems: circular references, multiple invalid relations, or critical missing entities. The path may not reliably lead to the answer.
+  \item \textbf{0}: The path is fundamentally broken: cannot form a valid chain, contains only invalid relations, or fails to connect to any meaningful answer entity.
+\end{itemize}
+
+\vspace{0.4em}
+\hrule
+\vspace{0.4em}
+
+\textbf{Question-Path Relevance (0--10)}
+
+Question-Path Relevance: ``Whether the question semantically aligns with what the path can answer, and whether the path contains all necessary information to fully and accurately answer the question.''
+
+\textbf{Scoring Guide (0--10)}
+\begin{itemize}
+  \item \textbf{10}: Perfect alignment. The question directly matches what the path answers. The path contains all necessary information and fully addresses the question. The answer entity at the end of the path is exactly what the question asks for.
+  \item \textbf{8--9}: Strong alignment with minor gaps. The path answers the question well, with only very minor information missing or slight semantic nuances not perfectly captured.
+  \item \textbf{6--7}: Good alignment but incomplete. The path addresses the core of the question but may miss some aspects or provide partial information. The answer entity is relevant but may not fully satisfy the question.
+  \item \textbf{4--5}: Moderate alignment with notable gaps. The path is related to the question but doesn't fully answer it, or answers a different but related aspect. Some necessary information is missing.
+  \item \textbf{1--3}: Poor alignment. The path is tangentially related but doesn't answer the question, or answers a different question entirely. Significant information mismatch.
+  \item \textbf{0}: No alignment. The path and question are completely unrelated, or the path cannot answer the question at all.
+\end{itemize}
+
+\vspace{0.4em}
+\hrule
+\vspace{0.4em}
+
+\textbf{Question Semantic Coherence (0--10)}
+
+Question Semantic Coherence: ``Whether the question is grammatically correct, semantically clear, naturally phrased, and logically structured like a human would ask it.''
+
+\textbf{Scoring Guide (0--10)}
+\begin{itemize}
+  \item \textbf{10}: Perfect coherence. The question is grammatically flawless, semantically crystal clear, reads naturally, and has impeccable logical structure. It sounds exactly like a native speaker would ask it.
+  \item \textbf{8--9}: Excellent coherence with minor imperfections. The question is grammatically correct, clear, and natural, with only very minor stylistic issues or slight ambiguity.
+  \item \textbf{6--7}: Good coherence with some issues. The question is mostly grammatically correct and understandable, but may have minor grammatical errors, slight ambiguity, or somewhat unnatural phrasing.
+  \item \textbf{4--5}: Moderate coherence with noticeable problems. The question has grammatical errors, some ambiguity, or unnatural phrasing that affects comprehension, but the core meaning is still discernible.
+  \item \textbf{1--3}: Poor coherence. The question has significant grammatical errors, is confusing or ambiguous, or has very unnatural phrasing that makes it difficult to understand.
+  \item \textbf{0}: No coherence. The question is grammatically broken, completely ambiguous, or makes no logical sense. It cannot be understood as a valid question.
+\end{itemize}
+\end{tcolorbox}
+
+

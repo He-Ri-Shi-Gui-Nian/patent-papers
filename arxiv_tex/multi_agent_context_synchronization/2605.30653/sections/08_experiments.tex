@@ -1,0 +1,117 @@
+\section{Experiments}
+\label{sec:experiments}
+\input{tables/tab1_main}
+
+% We evaluate CAGE-CAL as a panel-level confidence estimator. 
+% Given a completed multi-agent panel and its plurality answer, each method estimates the confidence that the panel answer is correct.
+
+\subsection{Experimental Setup}
+
+We use the 25-cell grid from Section~\ref{sec:setup}, formed by five benchmarks and five communication topologies. 
+The benchmarks are TriviaQA~\citep{joshi2017triviaqalargescaledistantly}, TruthfulQA~\citep{lin2022truthfulqameasuringmodelsmimic}, MMLU-Pro~\citep{wang2024mmluprorobustchallengingmultitask}, GSM8K~\citep{cobbe2021trainingverifierssolvemath}, and BIG-Bench Hard~\citep{suzgun2022challengingbigbenchtaskschainofthought}. 
+The topologies are iid, debate, chain, hub-spoke, and tree. 
+Each topology and benchmark cell is evaluated with three rollouts. 
+For each query, the panel first produces a plurality answer, and the calibrator then scores the reliability of that answer.
+%
+Metrics are averaged over topologies and rollouts within each benchmark. 
+The Mean column macro-averages the five benchmarks. 
+For \select{}, we evaluate only matched test groups where all five topology outputs are available for the same query. Full experimental details are provided in Appendix~\ref{app:experimental_setup}.
+
+\subsection{Baselines and Metrics}
+\label{sec:baselines}
+% such as Platt scaling~\cite{platt1999probabilistic}, isotonic regression~\cite{zadrozny2002transforming}  scaling-binning~\cite{kumar2019verified} 
+
+
+We compare \methodname{} against three categories of baselines to address different evaluation dimensions: 
+\textit{Post hoc plurality calibrators}:
+% Plurality share uses the fraction of agents supporting the plurality answer as confidence. 
+Calibrate the confidence score computed from plurality share~\cite{kuncheva2004combining} on the validation split using three  post-hoc methods: (1) Platt scaling~\cite{platt1999probabilistic}, (2) Isotonic regression~\cite{zadrozny2002transforming}, and (3) Scaling-binning~\cite{kumar2019verified};
+\textit{LLM-elicited confidence estimators.} 
+These baselines use an LLM judge to elicit a probability-like confidence score for the panel prediction.
+They test whether panel reliability can be inferred from the final agent responses, optionally augmented with the topology description.
+The baselines include: (1) LLM-Cal without topology information, (2) LLM-Cal with topology information, and (3) Collaborative Calibration~\citep{yang2024confidence};
+\textit{Trained calibrators.} 
+(1) Scalar + GBT~\cite{ke2017lightgbm} uses vote, confidence, and graph-summary features without relational encoding; 
+(2) GraphCal~\citep{li2025graph} adapts graph-based calibration to the panel setting; 
+and (3) DiscoUQ-LLM~\citep{jiang2026discouq} serves as a strong baseline based on disagreement features.
+% \paragraph{Ranking-only UQ scores.}
+We also evaluate answer entropy~\citep{kuhn2023semanticuncertaintylinguisticinvariances}, average log probability~\cite{kadavath2022languagemodelsmostlyknow}, DiverseAgentEntropy~\citep{feng2025rethinkingllmuncertaintymultiagent}, and MATU~\citep{chen2026responsecountsquantifyinguncertainty}. 
+These methods provide uncertainty scores rather than calibrated probabilities, so we report AUROC and AUARC without interpreting the scores probabilistically.
+
+\paragraph{Metrics.}
+Our primary metrics are ECE and AUROC. 
+ECE measures whether predicted confidence matches empirical correctness, while AUROC measures whether correct panel answers receive higher scores than incorrect ones. 
+We additionally report Brier score and AUARC as complementary metrics. 
+Brier score evaluates probability quality under a proper scoring rule, and AUARC evaluates selective prediction when panel answers are accepted in decreasing confidence order. 
+For ranking-only UQ scores, we omit ECE unless a probability scale is introduced through the shared validation-set calibration protocol.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_brier_bars.pdf}
+  \vspace{-20pt}
+  \caption{\textbf{Mean Brier score by method family} (lower is
+  better). Within each family, bars are sorted worst $\to$ best
+  (light $\to$ dark). \methodname{} (rightmost) has the lowest
+  Brier overall.}
+  \label{fig:brier-bars}
+  \vspace{-15pt}
+\end{figure}
+\subsection{Main Calibration Results}
+\label{sec:main_results}
+
+Table~\ref{tab:main} reports the headline in-distribution results. 
+The first block shows that post-hoc calibration can substantially reduce the ECE of plurality share, from $18.04$ to $6.98$ with scaling-binning. 
+However, these methods still rely on the same scalar agreement signal. 
+Platt scaling is monotonic and therefore preserves the AUROC of plurality share at $72.80$; isotonic regression and scaling-binning only change ranking slightly through ties and bins. 
+This confirms that post-hoc calibration can improve probability scale, but cannot add the structural information needed to distinguish independent agreement from communication-induced consensus.
+LLM-elicited confidence estimators are also limited in this setting. 
+Their mean ECE remains high, ranging from $22.52$ to $23.78$, and adding topology information to the prompt brings only a small AUROC change. 
+This suggests that a topology label alone is not enough for a judge model to recover the query-specific dependence among agents.
+Among trained calibrators, \methodname{} achieves the best mean ECE and the strongest mean AUROC. 
+Compared with DiscoUQ-LLM, the strongest prior trained baseline, \methodname{} reduces mean ECE from $7.08$ to $5.56$ and improves mean AUROC from $73.46$ to $83.61$. 
+The AUROC gain is especially large on MMLU-Pro and BBH, where correlated agreement is more harmful: \methodname{} improves AUROC by $13.69$ points on MMLU-Pro and $24.55$ points on BBH over DiscoUQ-LLM. 
+These gains support the central claim that panel confidence should depend not only on how many agents agree, but also on how that agreement was formed.
+Figure~\ref{fig:brier-bars} provides a complementary view through Brier score. 
+\methodname{} achieves the lowest mean Brier score at $11.2$, outperforming DiscoUQ-LLM ($14.5$), Scalar + GBT ($15.6$), and GraphCal ($19.2$). 
+Thus, the improvement is not only an artifact of ECE binning; \methodname{} also produces sharper and better scaled probability estimates.
+
+\subsection{Ranking-Only UQ Comparison}
+\label{sec:uq_ranking}
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_auroc_auarc.pdf}
+  \vspace{-20pt}
+  \caption{\textbf{AUROC and AUARC of \methodname{} vs.\ heuristic
+  UQ baselines.} Each axis reports benchmark-level mean over 3 rollouts and 5 topologies. Per-benchmark numbers in
+  Appendix Table~\ref{tab:heuristic-uq}.}
+  \label{fig:auroc-auarc}
+  \vspace{-15pt}
+\end{figure}
+
+Figure~\ref{fig:auroc-auarc} compares \methodname{} with ranking-only UQ baselines using AUROC and AUARC. 
+These methods provide useful uncertainty scores, but they do not define a calibrated probability scale. 
+Plurality vote, entropy, average log probability, DiverseAgentEntropy, and MATU all summarize the panel with scalar signals. 
+Such signals work when disagreement reflects uncertainty, but they miss the difference between benign diversity and false consensus.
+\methodname{} gives the strongest overall reliability ranking across the five benchmarks. 
+The advantage is most visible on BBH and MMLU-Pro, where scalar disagreement signals are less reliable. 
+This aligns with the failure-mode analysis: when agents become correlated through shared model families or communication paths, the reliability of the final answer depends on the dependency structure behind the vote, not only on the vote distribution itself.
+
+\subsection{Confidence-Routed Topology Selection}
+\label{sec:cage_select}
+
+We further test whether calibrated confidence can serve as a control signal for multi-agent inference. 
+Instead of committing to a single topology for all queries, \select{} uses \methodname{} confidence to choose which topology output should be trusted for each query.
+Figure~\ref{fig:cage-select} shows that the best fixed topology reaches $65.18\%$ mean accuracy, while simple routing rules based on plurality share or mean log probability do not improve over it. 
+\select{} reaches $67.23\%$, a $+2.05$ point gain. 
+Thus, \methodname{} confidence is not only calibrated within a topology, but also comparable across topologies, making it useful as a control signal for multi-agent inference.
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=0.9\columnwidth]{figures/fig_cage_select.pdf}
+  \vspace{-10pt}
+  \caption{\textbf{Mean accuracy of routing strategies.}
+  Dashed line marks per-bench best fixed ($65.18$). Per-bench
+  breakdown in Appendix Table~\ref{tab:cage-select}.}
+  \label{fig:cage-select}
+  \vspace{-15pt}
+\end{figure}
+

@@ -1,0 +1,114 @@
+\section{Method}\label{sec:method}
+    
+    Our method follows a two-stage pipeline designed to enable \emph{grokking} in real-world multi-hop reasoning tasks. 
+    First, we \textbf{augment} the original Wiki2Hop dataset with synthetic knowledge, increasing the ratio of multi-hop (\emph{inferred}) to single-hop (\emph{atomic}) facts. 
+    Second, we \textbf{train} a Transformer model for hundreds of thousands of steps, leveraging the late-phase generalization phenomenon characteristic of grokking \citep{power2022grokking, wang_grokked_2024}.
+    
+    \subsection{Dataset}\label{sec:method_dataset}
+    
+        \paragraph{2WikiMultiHopQA Overview.}
+            We use the \textbf{2WikiMultiHopQA} dataset \citep{ho_2WikiMultiHopQA_2020}, a well-known benchmark for retrieval-augmented generation (RAG) and multi-hop QA. 
+            2WikiMultiHopQA consists of Wikipedia paragraphs, supporting facts (triplets), and reasoning queries that often require chaining multiple pieces of evidence.
+            Despite its breadth, the \emph{initial} ratio $\phi \approx 0.5$ -- that is, each two atomic fact spawn only one inferred fact -- making it insufficient for grokking to emerge naturally.
+            
+        \paragraph{Structured vs.\ Unstructured.}
+            We divide 2WikiMultiHopQA into two subsets:
+            \begin{itemize}
+                \item \textbf{Structured}: supporting facts are simplified into short triplets (e.g., \texttt{Paris -- country -- France}).
+                \item \textbf{Unstructured}: supporting facts are embedded in full Wikipedia paragraphs, offering richer context but also more noise and complexity.
+            \end{itemize}
+            Within these subsets, we focus on two of the four main multi-hop tasks: 
+            \begin{enumerate}
+                \item \textbf{Comparison}, which compares attributes of different entities (e.g., same location or release year),
+                \item \textbf{Composition}, which chains multiple relations to derive answers (e.g., who directed the sequel of a certain film?).
+            \end{enumerate}
+            Our objective is to \textit{raise} $\phi$ for both comparison and composition queries so that Transformers can develop \emph{internal} reasoning circuits.
+    
+    \subsection{Data Augmentation}\label{sec:method_datasynthesis}
+    
+        To increase the coverage of multi-hop questions, we systematically add both \emph{atomic} and \emph{inferred} facts via LLM-based generation. 
+        In each case, we ensure consistency with 2WikiMultiHopQA style, maintain balanced class distributions, and closely track $\phi$ so it exceeds known thresholds for grokking \citep{wang_grokked_2024}.
+        
+        \subsubsection{Comparison Task}
+            \label{sec:method_comparison}
+            
+            In the comparison task, atomic facts (e.g., \texttt{City -- country -- X}) are paired to form questions about shared attributes. 
+            Initially, we select $120$ atomic facts and $60$ inferred facts centered on geographic locations (India, France, the U.S., Canada, Russia). 
+            Using our augmentation strategy, we expand this to $1{,}000$ atomic facts and $8{,}000$ inferred facts, yielding $\phi_G=8$ -- well above the bare-minimum ratio of $3.6$ reported by \citet{wang_grokked_2024} for slow grokking.
+            
+            \paragraph{Generating New Locations.}
+                We first produce atomic facts describing additional cities or regions not present in the original set. 
+                For the structured version, these remain in the $(\texttt{City}, \texttt{country}, \texttt{Country})$ format. 
+                For unstructured data, we prompt a Large Language Model (LLM) to generate concise, Wikipedia-like paragraphs (e.g., “\emph{Paris Louvre Museum: The Louvre is a world-famous art museum...}”).
+            
+            \paragraph{Generating Inferred Examples.}
+                Next, we create comparison-based queries by selecting two distinct location facts and prompting, e.g., “\emph{Are Avignon Rocher des Doms and Paris Louvre Museum both located in the same country?}.” 
+                Algorithm~\ref{alg:comparison} shows the pseudo-code for this procedure, where \textit{generate\_inferred} systematically merges atomic facts into comparison questions:
+                
+                \begin{algorithm}[tb]
+                \small
+                \caption{Augmentation algorithm for comparison}
+                \label{alg:comparison}    
+                    \begin{algorithmic}[1]
+                        \REQUIRE loc\_examples ~~// sample atomic facts
+                        \REQUIRE detailed\_examples ~~// extended paragraphs
+                        \STATE atomic $\gets$ \textit{generate\_locations}(\text{loc\_examples})
+                        \IF {task\_type == ``full\_text''}
+                            \STATE atomic $\gets$ \textit{detalize\_locations}(\text{atomic}, \text{detailed\_examples})
+                        \ENDIF
+                        \STATE inferred $\gets$ \textit{generate\_inferred}(\text{atomic})
+                        \STATE \textbf{return} atomic, inferred
+                    \end{algorithmic}
+                \end{algorithm}
+                
+        \subsubsection{Compositional Task}
+            \label{sec:method_compositional}
+        
+            Compositional tasks require linking multiple relations in sequence (e.g., \texttt{Person -- spouse of -- X -- born in -- Year}). 
+            We begin with $200$ atomic facts and $100$ inferred facts, ensuring no direct mention of dates as an answer, and expand to $800$ atomic facts plus $5{,}000$ inferred facts. This boosts $\phi_G$ to $6.25$ -- enough to trigger grokking dynamics in practice.
+            
+            \paragraph{Graph Processing.}
+                We transform the textual facts into a graph representation, extracting nodes (entities) and edges (relations) via an LLM-based parser. 
+                We then enrich this graph by adding new atomic edges (avoiding cycles) and sampling multi-hop paths that yield additional inferred facts.
+            
+            \paragraph{Inferred Question Pentads.}
+                Each multi-hop path of length two or three corresponds to a pentad \((obj_1, rel_1, obj_2, rel_2, obj_3)\). 
+                An LLM then converts these pentads into natural-language questions (e.g., “\emph{Why did Randal Plunkett, 19th baron of Dunsany's father die?}”), approximating real 2WikiMultiHopQA style. 
+                Algorithm~\ref{alg:composition} details this approach:
+                
+                \begin{algorithm}[tb]
+                \small
+                \caption{Augmentation algorithm for composition}
+                \label{alg:composition}    
+                    \begin{algorithmic}[1]
+                        \REQUIRE text ~~// original atomic facts in textual form
+                        \STATE graph $\gets$ \textit{parse\_graph}(\text{text})
+                        \STATE atomic $\gets$ graph.\textit{augment\_atomic}()
+                        \STATE inferred $\gets$ graph.\textit{augment\_inferred}()
+                        \STATE inferred $\gets$ \textit{diversify}(\text{inferred})
+                        \STATE \textbf{return} atomic, inferred
+                    \end{algorithmic}
+                \end{algorithm}
+                
+            \paragraph{Example of Augmented Facts.}
+                Table~\ref{tab:augmented_examples} provides a sample of how an atomic fact, a detailed version, and an inferred question look after augmentation. Note how the final question elegantly ties both locations to a yes/no query on whether they share the same country.
+                
+                \begin{table}[h]
+                \small
+                    \centering
+                    \caption{Examples of augmented facts for the 2WikiMultiHopQA comparison task}
+                    \vskip 0.1in
+                    \label{tab:augmented_examples}
+                    \begin{tabular}{p{1.6cm} p{6cm}}
+                        \toprule
+                        \textbf{Type} & \textbf{Example} \\
+                        \midrule
+                        \textbf{Atomic Fact} & \texttt{Louvre Museum -- country -- France}\\
+                        \textbf{Detailed Fact} & \texttt{Paris Louvre Museum: The Louvre Museum is a world-famous art museum...}\\
+                        \textbf{Inferred Question} & \emph{Are Avignon Rocher des Doms and Paris Louvre Museum both located in the same country? (Answer: Yes)} \\
+                        \bottomrule
+                    \end{tabular}
+                \end{table}
+                
+                \noindent After these augmentation steps, the resulting dataset attains a sufficiently high \(\phi\). In the next section, we detail how we \textbf{train} a GPT-2 style Transformer on this enriched corpus, and how prolonged optimization reveals the hallmark late-phase jump in multi-hop reasoning accuracy.
+            

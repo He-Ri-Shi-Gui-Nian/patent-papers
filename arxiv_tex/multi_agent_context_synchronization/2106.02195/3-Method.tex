@@ -1,0 +1,111 @@
+\section{Method}
+In this section, we present a novel diversity-driven MARL framework (Fig.~\ref{fig:model}) that balances each agent's individuality with group coordination, which is a general approach that can be combined with existing CDTE value factorization methods.
+
+%Our approach for encouraging diversity in a multi-agent system builds on a basic idea. We want agents to achieve a trade-off between the specialty of its trajectory and group-level coordination. 
+% In section~\ref{section:represent}, we design a new neural network structure to represent diverse policies.
+
+\begin{wrapfigure}[12]{r}{0.6\linewidth}
+	\centering
+	\vspace{-0.2cm}
+	\includegraphics[width=\linewidth]{pic/model.pdf}
+	\caption{Schematics of our approach.}
+	\label{fig:model}
+\end{wrapfigure}
+\subsection{Identity-Aware Diversity}\label{sec:intrinsic}
+We first introduce how to encourage behavioral diversity by designing intrinsic motivations. Intuitively, to encourage the specialty of individual trajectories, agents need to behave differently to highlight themselves from others, taking different actions and visiting different local observations. To achieve this goal, we use an information-theoretic objective for maximizing the mutual information between individual trajectory and agents' identity:
+\begin{equation}
+I^{\boldsymbol{\pi}}(\tau_T; id) = H(\tau_T) - H(\tau_T | id)
+= E_{id, \tau_T \sim \boldsymbol{\pi}}\left[\log \frac{p(\tau_T | id)}{p(\tau_T)}\right],
+\label{equ:mutual_information}
+\end{equation}
+where $\tau_T$ and $id$ is the random variable for agent's local trajectory and identity, respectively. $\boldsymbol{\pi}$ is the joint policy. To optimize Eq.~\ref{equ:mutual_information}, we expand $p(\tau_T)$ as $p(o_0) \prod_{t=0}^{T-1} p(a_t | \tau_t)p(o_{t+1} | \tau_t,a_t)$, and $p(\tau_T | id)$ as $p(o_0 | id) \prod_{t=0}^{T-1} p(a_t | \tau_t, id)p(o_{t+1} | \tau_t,a_t, id)$. Therefore, the mutual information can be written as:
+\begin{equation}
+I^{\boldsymbol{\pi}}(\tau_T; id) = E_{id,\tau}\underbrace{\left[\log \frac{p(o_0 | id)}{p(o_0)}\right.}_{\text{\raisebox{.5pt}{\textcircled{\raisebox{-.6pt}{1}}}}}+\underbrace{\sum_{t=0}^{T-1} \log \frac{p(a_t| \tau_t, id)}{p(a_t| \tau_t)}}_{\text{\raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{2}}}}} + \underbrace{\left.\sum_{t=0}^{T-1} \log \frac{p(o_{t+1}| \tau_t,a_t,id)}{p(o_{t+1}| \tau_t,a_t)}\right]}_{\text{\raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{3}}}}}.
+\label{equ:per_timestep}
+\end{equation}
+%and $\tau_T$ can be expended as $(o_{0}, a_{0}, \ldots, o_{T})$
+%and $p(\tau_T)$ can be expended as $p(o_0) \prod_{t=0}^{T-1} p(a_t| \tau_t)p(o_{t+1}| \tau_t,a_t)$.
+%\begin{equation}
+%p(\tau_T) = p(\tau_0)\prod_{t=0}^{T-1}p(\tau_{t+1} | \tau_t) = p(o_0)\prod_{t=0}^{T-1}p((a_t, o_{t+1}) | \tau_t) = p(o_0)\prod_{t=0}^{T-1}p(a_t | \tau_t)p(o_{t+1} | \tau_t, a_t)
+%\end{equation}
+%Detailed derivations are shown in the appendix. Because the distribution $q_{\phi_1}$ and $q_{\phi_2}$ are arbitrary, we use agents' local policy $\pi(a_t| \tau_t, id)$ to replace $q_{\phi_1}$. Then the second term in Eq.~\ref{equ:ELBO} can be rewritten as
+% We maximize Eq.~\ref{equ:item_2} to optimize the second item. 
+Term \raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{1}}} is determined by the environment, and we can ignore it when optimizing the mutual information. The second term quantifies the information gain about agent's action selection when the identity is given, which measures \textbf{action-aware diversity} as $I(a;id|\tau)$. However, $p(a_t | \tau_t, id)$ is typically the distribution induced by $\epsilon$-greedy, which only distinguishes the action with the highest possibility. Therefore, directly optimizing this term conceals most information about the local Q-functions. To solve this problem, we use the Boltzmann softmax distribution of local Q values to replace $p(a_t | \tau_t, id)$, which forms a lower bound of term \raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{2}}}:
+\begin{equation}
+E_{id,\tau}\left[\log \frac{p(a_t | \tau_t, id)}{p(a_t | \tau_t)}\right] \ge E_{id,\tau}\left[\log \frac{{\rm SoftMax}(\frac{1}{\alpha}Q(a_t | \tau_t, id))}{p(a_t | \tau_t)}\right].
+\label{equ:item_2}
+\end{equation}
+The inequity holds because the KL divergence $\KL(p(\cdot | \tau_t, id) \| {\rm SoftMax}(\frac{1}{\alpha}Q(\cdot | \tau_t, id)))$ is non-negative. We maximize this lower bound to optimize Term \raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{2}}}. Inspired by variational inference approaches~\cite{wainwright2008graphical}, we derive and optimize a tractable lower bound for Term \raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{3}}} at each timestep by introducing a variational posterior estimator $q_\phi$ parameterized by $\phi$:
+%Direct optimization of Term \raisebox{.5pt}{\textcircled{\raisebox{-.9pt}{3}}} is intractable because it involves integrals over a continuous observation space. 
+\begin{equation}
+    E_{id,\tau}\left[\log \frac{p(o_{t+1}| \tau_t,a_t,id)}{p(o_{t+1}| \tau_t,a_t)}\right] \ge E_{id,\tau}\left[\log \frac{q_\phi(o_{t+1}| \tau_t,a_t,id)}{p(o_{t+1}| \tau_t,a_t)}\right],
+    \label{equ:item_3}
+\end{equation}
+Similar to the second term, the inequality holds because for any $q_{\phi}$, the KL divergence $D_{\mathrm{KL}}(p(\cdot | \tau_t,a_t,id) \| q_{\phi}(\cdot | \tau_t,a_t,id))$ is non-negative. Intuitively, optimizing Eq.~\ref{equ:item_3} encourages agents to have diverse observations that are distinguishable by agents' identification and thus measures \textbf{observation-aware diversity} as $I(o^{\prime};id|\tau, a)$. To tighten the this lower bound, we minimize the KL divergence with respect to the parameters $\phi$. The gradient for updating $\phi$ is:
+\begin{equation}
+\begin{aligned} 
+\nabla_{\phi} \mathcal{L}(\phi)&=\nabla_{\phi} \mathbb{E}_{\tau, a, id}\left[\KL\left( p\left(\cdot | \tau, a, id\right) \| q_{\phi}\left(\cdot | \tau, a, id \right)\right)\right] =\nabla_{\phi} \mathbb{E}_{\tau, a, id, o^{\prime}}\left[\log \frac{p\left(o^{\prime} | \tau, a, id\right)}{q_{\phi}\left(o^{\prime} | \tau, a, id\right)}\right] 
+\\ &=-\mathbb{E}_{\tau, a, id, o^{\prime}}\left[\nabla_{\phi} \log q_{\phi}\left(o^{\prime} | \tau, a, id\right)\right].
+\end{aligned}
+\end{equation}
+% \begin{equation}
+% \begin{aligned} 
+% \text{\textcircled{2}} &=E_{id, \tau_T}\left[\sum_{t=0}^{T-1} E_{a_t \sim \pi(. | \tau_t, id)} \log \frac{\pi(a_t| \tau_t, id)}{p(a_t| \tau_t)}\right] = E_{id, \tau_T }\left[\sum_{t=0}^{T-1} D_{\mathrm{KL}}(\pi(\cdot | \tau_t, id) \| p(\cdot | \tau_t))\right]
+% \\ &\approx E_{id, \tau_T }\left[\sum_{t=0}^{T-1} D_{\mathrm{KL}}({\rm SoftMax}(Q(\cdot | \tau_t, id)) \| p(\cdot | \tau_t))\right],
+% \end{aligned}
+% \label{derive_KL}
+% \end{equation}
+% E_{id \sim [N], \tau_T \sim \pi(a | \tau, id )p(o^{\prime} | \tau, a)}\left[\sum_{t=0}^{T-1} \log \frac{\pi(a_t| \tau_t, id)}{p(a_t| \tau_t)}\right]
+%where $N$ is the number of agents, $id \sim [N]$ means a uniform distribution over agents, and $p(id, \tau_T)$ is expanded to $p(id)p(\tau_T | id)$. We use the following intrinsic reward $r^i_{1, t}$ to optimize item $\textcircled{2}$, where we use SoftMax function to better calculate divergence in local Q function. where $\theta_a = (\theta_a^S, \theta_a^I)$ is parameters of all agents' action-value functions.
+%With an estimator of $q_{\phi_2}$, we can optimize agents' policies to maximize item \textcircled{3}. Here we have:
+% is used to adjust the weight of $H\left(\tau_{T} | i d\right)$ compared with $H\left(\tau_{T}\right)$.
+Based on the lower bounds shown in Eq.~\ref{equ:item_2} and Eq.~\ref{equ:item_3}, we introduce intrinsic rewards to optimise the information-theoretic objective (Eq.~\ref{equ:mutual_information}) for encouraging diverse behaviors:
+\begin{equation}
+\begin{aligned} 
+r^I &=  E_{id}\left[\beta_2 D_{\mathrm{KL}}({\rm SoftMax}(\beta_1 Q(\cdot | \tau_t, id)) || p(\cdot| \tau_t)) \right.
+\\& \left.+ \beta_1 \log q_{\phi}(o_{t+1}| \tau_t,a_t,id) - \log p(o_{t+1}| \tau_t,a_t)\right].
+\end{aligned}
+\label{final reward}
+\end{equation}
+We introduce two scaling factors $\beta_1,\beta_2 \geq 0$ when calculating intrinsic rewards. When $\beta_1$ is 0, we only optimize the entropy term $H(\tau_T)$ in the mutual information objective (Eq.~\ref{equ:mutual_information}). $\beta_2$ is used to adjust the importance of policy diversity compared with transition diversity. In Appendix~\ref{appe:rewards}, we discuss and compare two different approaches for estimating $p\left(a_{t} | \tau_{t}\right)$ and $p\left(o_{t+1} | \tau_{t}, a_{t}\right)$.
+
+%Appendix~\ref{appe:rewards} 
+
+\subsection{Action-Value Learning for Balancing Diversity and Sharing}\label{sec:represent}
+In the previous section, we introduce an information-theoretic objective for encouraging each agent to behave differently from general trajectories. However, the shared local Q-function does not have enough capacity to present different policies for each agent. For solving this problem, we additionally equip each agent $i$ with an individual local Q-function $Q^I_i$. Defining experiences that need to be shared or exclusively learned is inefficient and usually can not generalize. Therefore, we let agents adaptively decide whether to share experiences by decomposing $Q_i$ as:
+\begin{equation}
+    Q_i(a_i | \tau_i) = Q^S(a_i | \tau_i) + Q^I_i(a_i | \tau_i),
+\end{equation}
+% As shown in Fig.\ref{fig:model}, where green parts are shared among agents and red parts are independent for each agent, we maintain a shared action-value function $Q^S$ for sharing experience among agents to maintain consensus. Meanwhile, for diverse policy representation, we provide an independent action-value function $Q^I$ for each agent. The summation of $Q^S$ and $Q^I$ represents the decomposed action-value function for each agent. In this way, the experience collected by each agent will adaptively flow into the independent or shared action-value functions after being integrated by a centralized trainer. In this paper, we merely consider cooperation MARL, so we expect as much knowledge as possible can be shared, which forms the basis of cooperation. We achieve it by introducing an L1 regularization term on each agent's non-shared action-value function. At the same time, due to the sparsity brought by L1 regularization terms, agents are encouraged to be diverse only when necessary on several critical actions. The combination of our policy representation novelties can achieve a balance between diversity and homogeneity among agents.
+where $Q^S$ is the shared Q-function among agents. In its current form, agents may learn to decompose their local Q-function arbitrarily. On the contrary, we expect that agents can share as much knowledge as possible so that we apply an L1 regularization on individual local Q-function $Q^I$ as shown in Fig.\ref{fig:model}. Such a regularization can also prevent agents from being too diverse and ignore cooperating to finish the task. In our experiments, we show that the L1 regularization is critical to achieving a balance between diversity and cooperation.
+
+% However, achieving diversity will not directly lead to the accomplishment of joint tasks in most environments. Moreover, extreme diversity might cause disharmony between teammates, which will limit coordination among agents. The question now becomes how to let agents adaptively adjust diversity to achieve sophisticated strategies while exploring rare ideas.
+% In human society, good cooperation originates from consensus, which includes the cognition of basic concepts of joint tasks and the comprehension of each other's strategies. Usually, humans achieve this consensus by dynamically deciding whether to learn or teach among groups. 
+% However, it is intractable for artificial intelligence to generally and reasonably define what kind of experiences need to be explicitly shared or learn. This is because, under different domains and mutual influence, each agent needs to make distinctive choices. To solve this tricky problem, we now establish a novel policy representation structure to balance diversity and homogeneity adaptively.
+%We maintain sharing experiences among all agents with the shared neural network, as shown in the blue part of Fig.~\ref{mdoel} (b). Meanwhile, we incorporate agent-specific modules to encourage agents' policy representation diversity, as shown in the orange part in Fig.~\ref{mdoel} (b).  We use the summation of the shared and independent local action-value function ($Q_{k}^{S}$ and $Q_{k}^{I}$) to represent a decentralized policy ($Q_{k}$) for each agent. Moreover, we add an L1 regularization term to $Q_k^I$, hoping that the individual part only activates when diversity is needed, and agents can share more valuable experiences. As for the mixing network, we can use existing approaches, such as QMIX or QPLEX, to assign the total reward to each agent.
+
+\subsection{Overall Learning Objective}
+In this section, we discuss how to use the diversity-encouraging reward to train the proposed learning framework. Since the intrinsic rewards $r^I$ inevitably involves the influence from all agents, we add $r^I$ to environment rewards $r^e$ and use the following TD loss:
+
+%. Especially, dynamics-aware diversity encourages other agents' impact on the observation easier to understand after knowing which agent is under control. We add $r^I$ to environment rewards $r^e$ and use the following TD loss:
+
+%Since the intrinsic rewards $r^I$ inevitably involves the influence from all agents, we add $r^I$ to environment rewards $r^e$ and use the following TD loss:
+\begin{equation}
+    \mathcal{L}_{T D}(\theta) = \left[r^e+\beta r^I+\gamma \max _{\boldsymbol{a}^{\prime}} Q_{t o t}\left(s^{\prime}, \boldsymbol{a}^{\prime} ; \theta^{-}\right)-Q_{t o t}(s, \boldsymbol{a} ; \theta)\right]^{2},
+    \label{Eq:TD}
+\end{equation}
+
+where $\theta$ is the parameters in the whole framework, $\theta^-$ is periodically frozen parameters copied from $\theta$ for a stable update, and $\beta$ is a hyper-parameter adjusting the weight of intrinsic rewards compared with environment rewards. We use QPLEX to decompose $Q_{tot}$ as mixing of local Q-functions $Q_i$ and train the framework end-to-end by minimizing the loss:
+\begin{equation}
+\mathcal{L(\theta)}=\mathcal{L}_{T D}(\theta)+\lambda \sum_i \mathcal{L}_{L_1}(Q^I_i(\theta^I_i)),
+\label{eq:final_optimize}
+\end{equation}
+where $\theta^I_i$ is the parameters of $Q^I_i$, $\mathcal{L}_{L_1}(Q^I_i)$ is the L1 regularization term for independent Q-functions, and $\lambda$ is a scaling factor.
+
+
+
+
+%learning from how human society cooperates. For diversity, we propose a novel information-theoretical objective to maximize the mutual information between agents' identities and trajectories. From this objective, we derive tractable intrinsic rewards closely related to diversity in action selection and transition function for encouraging agents to highlight themselves from others. In this way, some agents will explore unexplored areas or find crucial inspiration to accomplish challenging tasks. It is similar to technological breakthroughs in human society, which is often promoted by the inspiration of few people. However, for cooperation, the consensus among teammates is required, limited under extreme diversity. To solve this issue, we maintain a shared action-value function for sharing experience to combine each agent's diverse exploration and novel ideas while providing each agent an independent action-value function for representation diversity.
+% Meanwhile, the L1 regularization term added on the non-shared Q function is critical to balance each agent's identity with group coordination. (connection of three part). To the best of our knowledge, the combination of these novelties broadens the application scenarios of MARL by efficiently catalyzing the learning of sophisticated cooperation strategies. (Experiment results...)
+
+% shared in Q -> estimating I related to all agents

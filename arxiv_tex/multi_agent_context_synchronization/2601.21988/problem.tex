@@ -1,0 +1,506 @@
+\section{A Modular Framework for Sequential Decision-Making Under Dynamics Uncertainty}
+\label{sec:contribution1}
+
+We consider agents that sequentially plan, execute, and learn the unknown dynamics parameters.
+At each step, the agent solves an optimization problem using a learned dynamics model (model-based control), executes the first action, receives an observation, and immediately updates its model (online learning).
+
+\subsection{Execution}
+
+At execution time $\timestart$, an agent in an environment with state $\state_{\timestart} \in \mathbb{R}^{\dimstate}$ applies control $\control_\timestart \in \mathbb{R}^{\dimcontrol}$, which results in state $\state_{\timestart+1}$.
+In this work we assume the environment is a stochastic, Markov dynamical system
+\begin{equation}
+\label{eq:dynamical_system}
+    \state_{\timeindex+1} = \dynamics(\state_\timeindex, \control_\timeindex, \params_{\timeindex+1}) + \statenoise_\timeindex, \quad \forall \timeindex \ge \timestart,
+\end{equation}
+where $\dynamics$ is a known, possibly nonlinear function, $\params_i \in \mathbb{R}^{\dimparams}$ is a set of (unknown) ground-truth parameters, and $\statenoise_\timeindex$ is noise drawn as follows: $\statenoise_\timeindex \sim \mathcal{N}(\mathbf{0}, \statenoisecov), \statenoisecov \succeq 0$.
+We assume the parameters $\params_{\timeindex+1}$ evolve according to the parameter dynamics
+\begin{equation}
+    \label{eq:process_model}
+    \params_{\timeindex+1} = \paramsdynamics(\params_{\timeindex}) + \paramsnoise_{\timeindex}, 
+\end{equation}
+where $\paramsdynamics$ is a known, possibly nonlinear function independent of state or controls, $\paramsnoise_\timeindex \sim \mathcal{N}(\mathbf{0}, \paramsnoisecov), \paramsnoisecov \succeq 0$.
+For brevity, we refer the set of all noise as $\noise = \{\statenoise, \paramsnoise\}$.
+
+The agent does not observe the state $\state_{\timeindex+1}$. 
+Instead, it receives an observation $\observation_{\timeindex+1} \in \mathbb{R}^{\dimobs}$ which is a known function of the state $\state_{\timeindex+1}$, i.e., 
+\begin{equation}
+    \observation_{\timeindex+1} = \observationfn(\state_{\timeindex+1})
+\end{equation}
+
+Note how $\state_{\timeindex+1}$ is a function of $\params_{\timeindex+1}$ (and not $\params_\timeindex$) in \cref{eq:dynamical_system} and \cref{fig:causal}.
+Using this convention, the observation $\observation_{\timeindex+1}$ informs the belief update about the parameters $\params_{\timeindex+1}$
+
+\subsection{Online Dynamics Parameter Learning}
+
+The agent uses the observation $\observation_\timeindex$ to update a belief $\belief_\timeindex \in \mathbb{R}^{\dimbelief}$  over the parameters, i.e., what it ``thinks'' the ground-truth parameters are.
+In this paper, the belief is only over the dynamics parameters (not state). 
+$\belief_\timeindex$ may correspond to a point estimate or a distribution over the parameters.
+For a point estimate, $\dimbelief = \dimparams$. 
+For a distribution, $\dimbelief$ depends on how the distribution is defined. 
+E.g., if $\belief_\timeindex$ is a Gaussian then $\dimbelief = \dimparams + \dimparams^2$, where the terms correspond to the dimensions of the mean and the covariance, respectively.
+
+We define the \textit{learning process} $\learningfn$ as a procedure that combines 1) the propagation of the ground-truth parameters and state, and 2) the agent's update to its belief.
+Formally, it is denoted as:
+\begin{equation}
+\label{eq:learning_process}
+    \belief_{\timeindex+1} = \learningfn(\belief_\timeindex, \state_\timestart, \params_{\timestart}, \noise_{\timestart:\timestart+i}, \control_{\timestart:\timestart + \timeindex})
+\end{equation}
+where $\learningfn$ is shown in \cref{alg:general_learning}.
+This process is labeled as ``past'' in \cref{fig:causal}.
+
+The learning process is causal (i.e., filtering) such that $\belief_{\timeindex+1}$ only depends on the preceding belief, and the noise and control sequences.
+This models the way an agent will sequentially process information as it receives it.
+
+Within the learning process (line 5 of \cref{alg:general_learning}) a \emph{belief updater} $\beliefupdater$ outputs a belief $\belief_{\timeindex+1}$ given the previous belief $\belief_\timeindex$, an observation $\observation_\timeindex$, and additional conditioning variables $\control_\timeindex$, i.e., controls.
+Common belief updaters include: gradient descent, where the belief is a point estimate obtained by minimizing prediction error (e.g., mean-squared error); Kalman filters, where the belief is a set of statistics defining a Gaussian distribution over parameters refined via Bayesian updates; linear regression, where the belief is a least-squares point estimate fit to observed transitions; and particle filters, where the belief is a set of weighted parameter samples reweighted and resampled based on observations.
+Formally, a belief updater is defined as 
+\begin{equation}
+    \belief_{\timeindex+1} = \beliefupdater(\belief_{\timestart:\timeindex}, \observation_{\timestart+1:\timeindex+1}, \control_{\timestart:\timeindex}).
+\end{equation}
+In general, the belief at time $\timeindex+1$ depends on the preceding sequences of beliefs, observations, and controls. 
+In practice, most belief updaters are Markovian, i.e., $\belief_{\timeindex+1} = \beliefupdater(\belief_{\timeindex}, \observation_{\timeindex+1}, \control_{\timeindex})$.
+The full learning process is shown in \cref{alg:general_learning}.
+
+\begin{algorithm}[ht!]
+\SetAlgoLined
+\DontPrintSemicolon
+\caption{Learning Process $\learningfn$}
+\label{alg:general_learning}
+\KwIn{$ \belief_\timestart, \state_\timestart, \params_{\timestart}, \noise_{\timestart:\timestart+i}, \control_{\timestart:\timestart + \timeindex}$}
+{
+    \BlankLine
+    \tcp{Propagate state, dynamics, and belief from $\timestart$ to $\timeindex + 1$}
+    \For{$j = \timestart \dots \timeindex$}{
+        $\params_{j+1} = \paramsdynamics(\params_j) + \paramsnoise_j$
+        \tcp*{Nature propagates parameters}
+        $\state_{j+1} = \dynamics(\state_j, \control_j, \params_{j+1}) + \statenoise_j$
+        \tcp*{Nature propagates state}
+        $\observation_{j+1} = \observationfn(\state_{j+1})$
+        \tcp*{Generate observation}
+        $\belief_{j+1} = \beliefupdater(\belief_{\timestart:j}, \observation_{\timestart+1:j+1}, \control_{\timestart:j})$
+        \tcp*{Update belief}
+    }
+    \BlankLine
+    \Return{$\belief_{\timeindex+1}$}
+}
+\end{algorithm}
+
+\subsection{Planning}
+At planning time $\timestart$, the agent computes a sequence of $\horizon$ controls such that it minimizes a cost $\cost$.
+Generically, cost can be defined as a function of predicted observations $\observationpredicted_{\timestart+1:\timestart + \horizon}$, controls $\control = \control_{\timeindex:\timeindex+\horizon}$, and predicted beliefs $\beliefpredicted = \beliefpredicted_{\timestart+1:\timestart + \horizon}$, i.e., $\cost(\observationpredicted, \control, \beliefpredicted)$.
+
+The predicted beliefs are given by a \textit{belief dynamics} function $\beliefdynamics$ that models how belief will evolve over time. 
+Formally,
+\begin{equation}
+\label{eq:beliefdynamics}
+    \beliefpredicted_{\timeindex+1} = \beliefdynamics(\beliefpredicted_\timeindex, \state_\timestart, \noisepredicted_{\timestart:\timestart+i}, \control_{\timestart:\timestart + \timeindex}),
+\end{equation}
+where $\noisepredicted_{\timestart:\timestart+i}$ is a sequence of predicted noise samples. 
+\cref{fig:causal} sections ``present'' and ``future'' illustrate the causal relationships among the variables in \cref{eq:beliefdynamics}.
+We remark that $\beliefdynamics$ may differ from the learning process $\learningfn$. 
+This distinction allows us to separate the \textit{actual} belief evolution (observed during execution) from the \textit{predicted} belief evolution (used during planning). 
+
+Finally, the agent's optimization problem is given by
+\begin{subequations}
+\label{eq:optimization_problem}
+    \begin{align}
+        \min_\control \, \cost(\observationpredicted, \control, \beliefpredicted)&\\
+        \textrm{s.t.} \, \beliefpredicted_{\timeindex+1} &= \beliefdynamics(\beliefpredicted_\timeindex, \state_\timestart, \noisepredicted_{\timestart:\timestart+i}, \control_{\timestart:\timestart + \timeindex})\\
+        \statepredicted_{\timeindex+1} &= \dynamics(\statepredicted_{\timeindex}, \control_\timeindex, \beliefpredicted_{\timeindex+1}) + \hat{\statenoise}_\timeindex\\
+        \observationpredicted_{\timeindex+1} &= \observationfn(\statepredicted_{\timeindex+1}),
+    \end{align}
+\end{subequations}
+where the initial state $\statepredicted_\timestart = \state_\timestart$, and belief $\beliefpredicted_\timestart = \belief_\timestart$ are assumed to be known.
+We refer to the \textit{planner} as the algorithm used to solve problem \eqref{eq:optimization_problem}.
+
+\contribution[A modular framework for sequential decision-making under dynamics uncertainty]{
+We present a framework that cleanly exposes the causal dependencies between parameter beliefs, controls, and observations.
+This framework unifies existing work on decision making under dynamics uncertainty and allows us to compose dynamics models (e.g., Gaussian processes, physics-based models, neural networks, etc.), belief updaters (e.g., Kalman filters, particle filters, online gradient descent), belief dynamics, observation models, and planners, while maintaining the same causal structure.
+This invariance allows us to derive a general information-gathering cost that is agnostic to these choices (\cref{sec:contribution2}), unlike existing information-based costs which explicitly depend on the chosen dynamics model and update procedure \cite{sukhija2023optimistic, buisson2020actively, krause2007nonmyopic, krause2008near,zimmer2018safe,abraham2019active,vantilborgh2025dual,davydov2024first, lew2022safe, palafox2025info}.
+Finally, the modularity of the framework also allows us to make an explicit connection to learning in (\cref{sec:contribution3}).}
+
+\section{A General Information-Gathering Cost for Dynamics Uncertainty}
+\label{sec:contribution2}
+
+In this section, we derive a general information-gathering cost based on Massey's directed information \cite{massey1990causality}, which captures the causal structure of sequential decision-making exposed in the framework of \Cref{sec:contribution1}. 
+This generality allows practitioners to
+model information gain across different domains without re-deriving cost functions depending on the chosen dynamics, e.g., mutual information costs for Gaussian process dynamics \cite{sukhija2023optimistic, buisson2020actively, krause2007nonmyopic, krause2008near, zimmer2018safe}.
+We conclude this section with \Cref{thm:mi_special_case}, in which we prove that under certain assumptions, this cost reduces to the popular mutual information cost used in the information-gathering literature. 
+
+\subsubsection{Mutual Information}
+Mutual information quantifies the information obtained about  random variable $X$ by observing random variable $Y$ \cite[Def. 8.9.1]{cover1999elements}.
+Formally, it is defined as
+\begin{subequations}
+    \begin{align}
+        \mutualinfo(X;Y) &\triangleq \entropy(X) - \entropy(X\mid Y)\\
+        &= \mathbb{E}_{X\sim p(x)}\left[-\log p(X)\right] - \mathbb{E}_{(X,Y)\sim p(x,y)}\left[-\log p(X|Y)\right] \\
+        &= -\int p(x)\log p(x)\,dx + \int p(x,y)\log p(x|y)\,dx\,dy
+        \label{eq:mutual_information}
+    \end{align}
+\end{subequations}
+where $\entropy$ is the differential entropy of a random variable \cite[Def. 8.1]{cover1999elements}.
+
+One could encode information-gathering behavior by maximizing mutual information between the sequences $\beliefpredicted$ and $\observationpredicted$. 
+Unfortunately, this would fail to account for their causal dependencies, i.e., in sequential decision making, future beliefs do not influence past observations (see \cref{fig:causal}). 
+Therefore, in the next section we derive an information-gathering cost based on directed information \cite{massey1990causality}, a metric that accounts for the causal relationship between two random sequences.
+
+\subsubsection{Directed Information}
+
+Following prior work on directed information~\cite{kramer1998directed,massey1990causality},
+we begin by defining the \textit{causally} conditioned probability of a random variable.
+Given two sequences of random variables $Y = Y_{\timestart+1:\timestart+\horizon}$ and $X = X_{\timestart:\timestart+\horizon-1}$, 
+the causally-conditional probability of $Y$ given $X$ is the product of the probability of each element $Y_i$ conditioned only on the history available at each time step:
+\begin{equation}
+    p(Y \parallel X) \triangleq \prod_{\timeindex=\timestart}^{\timestart+\horizon-1} p(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}, X_{\timestart:\timeindex}),
+\label{eq:causal_cond_prob}
+\end{equation}
+where we have slightly abused notation such that $Y_{\timestart+1:\timestart} = Y_{\timestart+1}$. 
+The \textit{causal} entropy \cite[Def. 3.1]{kramer1998directed} is given by applying the definition of entropy to the distribution in \eqref{eq:causal_cond_prob} as follows:
+\begin{subequations}
+\label{eq:causal_entropy}
+    \begin{align}
+    \entropy(Y \parallel X) &\triangleq -\mathbb{E}_{Y \sim P(Y\parallel X)}\left[ \log p(Y \parallel X) \right] \\
+    &= -\mathbb{E}_{Y \sim P(Y\parallel X)}\left[ \log \left( \prod_{\timeindex=\timestart}^{\timestart+\horizon-1} p(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}, X_{\timestart:\timeindex}) \right) \right] \\
+    &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}, X_{\timestart:\timeindex}).
+    \end{align}
+\end{subequations}
+Intuitively, causal entropy measures the accumulated uncertainty as the random variables $X, Y$ are observed sequentially.
+
+The directed information  between sequences $X$ and $Y$ is almost identical to the definition of mutual information in \eqref{eq:mutual_information} but uses the causally-conditional probability of the sequences \cite[Def. 3.5]{kramer1998directed}, i.e.,
+\begin{equation}
+\label{eq:directed_information}
+    \directedinfo(X \rightarrow Y) \triangleq \entropy(Y) - \entropy(Y \parallel X)
+\end{equation}
+Intuitively, directed information is the total information  about $Y$ when the agent updates its uncertainty over $Y_\timeindex$ using only the histories $Y_{\timestart:\timeindex-1}$ and $X_{\timestart:\timeindex-1}$. 
+% Directed information \cref{eq:directed_information} can also be written as a sum of mutual information \cite[Def. 3.6]{kramer1998directed}:
+% \begin{equation}
+%     \mutualinfo(X \rightarrow Y) = \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \mutualinfo(X_{\timestart:\timeindex}; Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}).
+%     \label{eq:directed_info_sum}
+% \end{equation}
+% This form will be useful in later derivations.
+
+% \fp{may be able to cut this}
+% Indeed, directed information can also be expressed as the sum of conditional mutual information terms along the trajectory.
+% To show this, we start by expanding $\entropy(Y)$ using the chain rule for entropy \cite[Theorem 8.6.2]{cover1999elements}:
+% \begin{equation}
+% \label{eq:entropy_chain}
+%     \entropy(Y) = \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}).
+% \end{equation}
+% Substituting the expansion in \eqref{eq:entropy_chain} and the expression for causal entropy in \eqref{eq:causal_entropy} into the definition of directed information \eqref{eq:directed_information} results in:
+% \begin{align}
+%     \mutualinfo(X \rightarrow Y) &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}) - \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}, X_{\timestart:\timeindex}) \\
+%     &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \left[ \entropy(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}) - \entropy(Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}, X_{\timestart:\timeindex}) \right].
+% \end{align}
+% Finally, by recognizing that the term inside the brackets matches the definition of conditional mutual information (i.e., $\mutualinfo(X;Y \mid Z) = \entropy(Y \mid Z) - \entropy(Y \mid X,Z)$ \cite[Def. 2.60]{cover1999elements}), we arrive at the summation form of directed information: 
+% \begin{equation}
+%     \mutualinfo(X \rightarrow Y) = \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \mutualinfo(X_{\timestart:\timeindex}; Y_{\timeindex+1} \mid Y_{\timestart+1:\timeindex}).
+%     \label{eq:directed_info_sum}
+% \end{equation}
+% This form will be useful in later derivations. 
+
+We often need to quantify information flow conditioned on a third sequence $Z$. 
+For example, in our setting $Z$ will be the control sequence which causally influences both beliefs and observations.
+In this case, it is useful to use causally \textit{conditional} directed information, which encodes the reduction in the causal entropy of $Y$ given $Z$, when $X$ is also causally observed \cite[Def.~3.7]{kramer1998directed}.
+Formally, it is given by:
+\begin{equation}
+    \mutualinfo(X \rightarrow Y \parallel Z) \triangleq \entropy(Y \parallel Z) - \entropy(Y \parallel X, Z).
+    \label{eq:causal_cond_directed_info}
+\end{equation}
+This metric quantifies the information flow from $X$ to $Y$ that is not explained by the causal history of $Z$.
+
+\subsubsection{The Directed Information Cost}
+
+In our setting, an information-gathering agent maximizes directed information between predicted beliefs $\beliefpredicted$ and predicted observations $\observationpredicted$, causally conditioned on $\control$.
+Formally, the cost is
+\begin{equation}
+    \cost_{\text{info}}(\observationpredicted, \control, \beliefpredicted) = -\directedinfo(\beliefpredicted \rightarrow \observationpredicted \parallel \control) = -\left(\entropy(\observationpredicted \parallel \control)-\entropy(\observationpredicted \parallel \control,\beliefpredicted)\right)
+    \label{eq:objective_directed_info}
+\end{equation}
+Computing the term $\entropy(\observationpredicted \parallel \control)$ requires carefully following the causal dependencies:
+the predicted observation $\observationpredicted_{\timeindex+1}$ depends on the predicted state $\statepredicted_{\timeindex+1}$ which depends on the belief $\beliefpredicted_\timeindex$\footnote{The dependence between $\statepredicted_{\timeindex+1}$ and $\beliefpredicted_\timeindex$ is shown by the red lines in \cref{fig:causal}}. 
+% \jl{Should we have $\hat{x}_{i+1}$ in the information gathering cost? } \fp{If we assume full state observability we recover the state. 
+% This derivation is more general. }
+Finally, the belief $\beliefpredicted_\timeindex$ depends on $\observationpredicted_{\timestart:\timeindex}$ and $\control_{\timestart:\timeindex}$.
+Therefore, $\observationpredicted_{\timeindex+1}$ is conditioned on the history $\observationpredicted_{\timestart:\timeindex}$ and $\control_{\timestart:\timeindex}$:
+\begin{equation}
+    \entropy(\observationpredicted \parallel \control) = \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}).
+    \label{eq:obs_causal_entropy_marg}
+\end{equation}
+On the other hand, computing $\entropy(\observationpredicted \parallel \control, \beliefpredicted)$ is easier since it can be expressed as a sum of entropies by applying \eqref{eq:causal_entropy}, and then simplified with the Markov property of the system \eqref{eq:dynamical_system}:
+% \begin{subequations}
+%     \begin{align}
+%         \entropy(\observationpredicted \parallel \beliefpredicted, \control) &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{
+%         \timestart: \timeindex}, \control_{
+%         \timestart: \timeindex}, \beliefpredicted_{
+%         \timestart: \timeindex})\\
+%         &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+%     \end{align}
+%     \label{eq:obs_causal_entropy}
+% \end{subequations}
+\begin{equation}
+        \entropy(\observationpredicted \parallel \control, \beliefpredicted) = \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{
+        \timestart: \timeindex}, \control_{
+        \timestart: \timeindex}, \beliefpredicted_{
+        \timestart: \timeindex})
+        = \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+    \label{eq:obs_causal_entropy}
+\end{equation}
+Then, substituting into \eqref{eq:objective_directed_info} yields the \textbf{directed information cost}:
+\begin{equation}
+    \boxed{\cost_{\text{info}}(\observationpredicted, \control, \beliefpredicted) = -\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \left[ \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex},\control_{\timestart:\timeindex}) - \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex)\right],}
+    \label{eq:final_directed_cost}
+\end{equation}
+ where 
+\begin{equation}
+\entropy(\observationpredicted_{\timeindex+1}\mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = -\int p(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex})\log p(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) d \observationpredicted_{\timeindex + 1},
+\end{equation}
+\begin{equation}
+\label{eq:obs_marginal}
+    p(\observationpredicted_{\timeindex+1} | \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = \int p(\observationpredicted_{\timeindex+1} | \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_{\timeindex}) \underbrace{p(\beliefpredicted_{\timeindex}|\observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex})}_{\textrm{belief dynamics }}d\beliefpredicted_{\timeindex}.
+\end{equation}
+% \jl{What is the relationship between this belief dynamics and the belief dynamics in (6)?}\fp{it's the same. The statistics of this distribution is determined by the output of (6)}
+Note how \eqref{eq:final_directed_cost} applies to arbitrary dynamics models, belief update procedures, and observation models. 
+
+% \fp{---FERNANDO/JINGI DISCUSSION---}
+
+% \jl{Let's say, $T=1$, then the above equation implies $p(\hat{o}_{t+1} | \hat{x}_t, u_t, \hat{\theta}_t) = p(\hat{o}_{t+1} | \hat{o}_t, u_t, \hat{\theta}_t)$. This is true only if we have full observability. }
+
+% \fp{Recall that we know the observation model $\observationfn$. Then, during planning, we are doing the following:
+% \begin{enumerate}
+%     \item start with $\state_\timestart, \belief_\timestart$
+%     \item step dynamics and predict state $\statepredicted_{\timestart+1} = \dynamics(\state_\timestart, \control_t, \belief_\timestart)$
+%     \item predict observation: $\observationpredicted_{\timestart+1} = \observationfn(\statepredicted_{\timestart+1})$
+%     \item predict belief: $\beliefpredicted_{\timestart+1} = \beliefupdater(\belief_{\timestart}, \observationpredicted_{\timestart+1}, \control_{\timestart})$
+%     \item step dynamics with PREDICTED belief/state $\statepredicted_{t+2} = \dynamics(\statepredicted_{\timestart+1}, \control_{\timestart+1}, \beliefpredicted_{\timestart+1})$
+%     \item predict observation: $\observationpredicted_{\timestart+2} = \observationfn(\statepredicted_{\timestart+2})$
+%     \item predict belief: $\beliefpredicted_{\timestart+2} = \beliefupdater(\beliefpredicted_{\timestart+1}, \observationpredicted_{\timestart+2}, \control_{\timestart+1})$
+%     \item and so on
+% \end{enumerate}
+% }
+
+% \fp{The above applies regardless of whether we're partially observable or not (i.e., regardless of $\observationfn$ is).}
+
+% \fp{In general, state estimation may not be Markov (i.e., if we're partially observable we may need more than one observation to find the state).}
+
+% \fp{HOWEVER, observation generation IS markov, from the environment's point of view.To get intuition, see the causal diagram in \cref{fig:causal}.
+% Note how the only thing a predicted observation depends on is the predicted state.
+% Therefore, when predicting full state/belief/observation trajectories during planning, all of the original math is correct.}
+
+% \fp{You mention that $p(\hat{o}_{i+1} | \hat{x}_i, u_i, \hat{\theta}_i) = p(\hat{o}_{i+1} | \hat{o}_i, u_i, \hat{\theta}_i)$ is only true if we're fully observable
+% This is not true. 
+% This equation is always true because $\hat{o}_i$ is a function of $\hat{x}_i$ (see causal relationships in \cref{fig:causal}), regardless of whether $\observationfn$ implies full or partial observability.}
+% \jl{I would totally buy it if you can prove a lemma showing that $p(\hat{o}_{i+1} | \hat{x}_i, u_i, \hat{\theta}_i) = p(\hat{o}_{i+1} | \hat{o}_i, u_i, \hat{\theta}_i)$. Otherwise, I'm worried about whether this step is well-justified. For example, consider $x_t = [1,-1]$, and $y_t = [2,-2]$, then for $o_t = h(x_t) = x_t(1) + x_t(2)$, we have $x_t$ and $y_t$ generating a same observation. }
+% \fp{This could be proven yes. But where would that lemma go? Why does that equation need proving? }
+% \fp{Also, two different states generating the same observation is not a problem, as far as planning is concerned. Or if you think it is, could you point me towards why?}.
+% \fp{One idea could be to instead replace the equation to be in terms of observations only. Perhaps this would avoid confusion. The rest of the math still holds. Here it is corrected:}
+% \begin{subequations}
+%     \begin{align}
+%         \entropy(\observationpredicted \parallel \beliefpredicted, \control) &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{
+%         \timestart: \timeindex}, \control_{
+%         \timestart: \timeindex}, \beliefpredicted_{
+%         \timestart: \timeindex})\\
+%         &= \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+%     \end{align}
+%     \label{eq:obs_causal_entropy}
+% \end{subequations}
+% \jl{It would be very helpful to explicitly expand the term of $\entropy(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{
+%         \timestart: \timeindex}, \control_{
+%         \timestart:\timeindex}, \beliefpredicted_{
+%         \timestart: \timeindex})$ and show where we use the Markov property $p(\hat{\mathbf{x}}_{t+1}|\hat{\mathbf{x}}_t, \mathbf{u}_t) = p(\hat{\mathbf{x}}_{t+1}|\hat{\mathbf{x}}_{0:t},\mathbf{u}_{0:t} )$. The current expression still looks like observation follows Markov property and it is a bit confusing. Overall, the partial observation function $\mathbf{h}$ is not an injective function.. }
+% \fp{Predicted observations do follow markov, in general. The only thing we need to compute $\observationpredicted_{\timeindex}$ is $\statepredicted_\timeindex$. No matter what $\observationfn$ we use. Why exactly is the current expression confusing? Also $\observationfn$ being many-to-one is not a problem, the math still holds. Here's the math you're asking for (although I'm not sure we have space for it):  }
+
+% {\color{red}
+% We show that $h(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}, \beliefpredicted_{\timestart:\timeindex})$ simplifies to $h(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex)$.
+
+% \textbf{Step 1: Identify the generative process for observations.}
+% During planning, the predicted observation $\observationpredicted_{\timeindex+1}$ is generated as:
+% \begin{equation}
+%     \statepredicted_{\timeindex+1} = \dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex) + \statenoise_\timeindex, \quad \observationpredicted_{\timeindex+1} = \observationfn(\statepredicted_{\timeindex+1}).
+% \end{equation}
+% Thus, $\observationpredicted_{\timeindex+1}$ depends on $(\statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex, \statenoise_\timeindex)$.
+
+% \textbf{Step 2: Apply the Markov property.}
+% By the Markov property of the state dynamics:
+% \begin{equation}
+%     p(\observationpredicted_{\timeindex+1} \mid \statepredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}, \beliefpredicted_{\timestart:\timeindex}) 
+%     = p(\observationpredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+% \end{equation}
+
+% \textbf{Step 3: Replace state conditioning with observation conditioning.}
+% Since $\observationpredicted_j = \observationfn(\statepredicted_j)$ and the belief $\beliefpredicted_j$ is updated using $\observationpredicted_j$, the tuple $(\observationpredicted_\timeindex, \beliefpredicted_\timeindex)$ encodes equivalent information to $(\statepredicted_\timeindex, \beliefpredicted_\timeindex)$ for the purpose of predicting $\observationpredicted_{\timeindex+1}$. Specifically, given $(\observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex)$, we can reconstruct the relevant state information needed to propagate dynamics. Therefore:
+% \begin{equation}
+%     p(\observationpredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex) 
+%     = p(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+% \end{equation}
+
+% \textbf{Step 4: Conclude.}
+% Combining Steps 2 and 3:
+% \begin{equation}
+%     p(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}, \beliefpredicted_{\timestart:\timeindex}) 
+%     = p(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+% \end{equation}
+% Since entropy is a functional of the distribution, we have:
+% \begin{equation}
+%     h(\observationpredicted_{\timeindex+1} \mid \observationpredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}, \beliefpredicted_{\timestart:\timeindex}) 
+%     = h(\observationpredicted_{\timeindex+1} \mid \observationpredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex).
+% \end{equation}
+% }
+
+\subsubsection{Connection to Mutual Information Cost}
+
+We now prove that under certain assumptions, our directed information cost reduces to the mutual information cost in the information gathering literature \cite{sukhija2023optimistic, buisson2020actively,lew2022safe,krause2007nonmyopic,zimmer2018safe,abraham2019active,vantilborgh2025dual,davydov2024first, palafox2025info}.
+
+\begin{theorem}[Mutual Information Cost as a Special Case of the Directed Information Cost]
+\label{thm:mi_special_case}
+Under the following assumptions:
+\begin{enumerate}
+    \item \textbf{Full observability:} $\observation_{\timeindex} = \state_{\timeindex}$
+    \item \textbf{Gaussian belief:} $\beliefpredicted_{\timeindex}  = \{\beliefmean_\timeindex, \beliefcov_\timeindex\} \implies p(\beliefpredicted_{j} \mid \statepredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = \mathcal{N}(\beliefpredicted_{j}; \beliefmean_\timeindex, \beliefcov_\timeindex )$
+    \item \textbf{Static belief dynamics:} $\beliefpredicted_{\timeindex} = \belief_\timestart, \forall \timeindex \ge \timestart$
+    \item \textbf{Linearized state dynamics:} $\dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_{\timeindex}) \approx \dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefmean_\timeindex) + \dynjac_\timeindex (\beliefpredicted_{\timeindex} - \beliefmean_\timeindex)$ where $\dynjac_\timeindex = \frac{\partial \dynamics}{\partial \params}(\statepredicted_\timeindex, \control_\timeindex, \beliefmean_\timeindex)$.
+\end{enumerate}
+the directed information cost \eqref{eq:final_directed_cost} reduces to \cref{eq:mutual_info_cost}, which is the sum of conditional mutual informations between the starting parameter belief $\belief_\timestart$ and the states $\statepredicted_{\timeindex}, \forall \timestart \leq \timeindex \leq \timestart + \horizon$, i.e., $\sum_{\timeindex = \timestart}^{\timestart + \horizon - 1}\mutualinfo(\belief_\timestart; \statepredicted_{\timeindex+1} \mid \statepredicted_{\timeindex}, \control_{\timeindex})$. 
+\begin{equation}
+    \cost_{\text{info}}(\statepredicted, \control, \beliefpredicted) = - \frac{1}{2} \sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \log \left(\frac{\det (\innovationcovpredicted_\timeindex)}{\det (\statenoisecov)}\right),
+    \label{eq:mutual_info_cost}
+\end{equation}
+where $\innovationcovpredicted_\timeindex = \dynjac_\timeindex \beliefcov_\timestart \dynjac_\timeindex^\top + \statenoisecov$.
+\end{theorem}
+
+% \begin{proof}
+% \fp{re-write this with new assumptions and highlighting mutual info cost}
+% Under Assumption 1, the observation equals the state, so $\observationpredicted_{\timeindex+1} = \statepredicted_{\timeindex+1}$ and the directed information cost \eqref{eq:final_directed_cost} becomes
+% \begin{equation}
+%     \cost(\statepredicted, \control, \beliefpredicted) = -\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \left[ \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_{\timestart:\timeindex},\control_{\timestart:\timeindex}) - \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex)\right].
+% \end{equation}
+% The second term simplifies to the entropy of the state noise: $\entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex) = \frac{1}{2}\log\det(2\pi e \, \statenoisecov)$.
+% Under Assumption 2, the belief dynamics in \eqref{eq:obs_marginal} are given by $p(\beliefpredicted_{\timeindex} \mid \statepredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = \mathcal{N}(\beliefpredicted_{\timeindex}; \beliefmean_\timestart, \beliefcov_\timestart )$.
+% Under Assumption 3, the mean $\dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_{\timeindex})$ becomes a linear function of $\beliefpredicted_{\timeindex}$.
+% Therefore, \eqref{eq:obs_marginal} 
+% simplifies to $p(\statepredicted_{\timeindex+1} \mid \statepredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = \mathcal{N}(\statepredicted_{\timeindex+1}; \dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefmean_\timeindex), \innovationcovpredicted_\timeindex)$.
+% Thus, $\entropy(\statepredicted_{\timeindex+1}\mid \statepredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = \frac{1}{2} \log \det ( 2 \pi e \, \innovationcovpredicted_\timeindex )$.
+% Substituting both entropy terms and simplifying yields the result. 
+% \qed
+% \end{proof}
+
+\begin{proof}
+Under Assumption 1,  the state is directly observed, so $\observationpredicted_{\timeindex+1} = \statepredicted_{\timeindex+1}$ and the directed information cost \eqref{eq:final_directed_cost} becomes
+\begin{equation}
+    \cost_{\text{info}}(\statepredicted, \control, \beliefpredicted) = -\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \left[ \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_{\timestart:\timeindex},\control_{\timestart:\timeindex}) - \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex)\right].
+    \label{eq:cost_under_a1}
+\end{equation}
+Under Assumption 3, the belief is static and at each timestep $\timeindex > \timestart$ is therefore independent of history $(\statepredicted_{\timestart:\timeindex-1}, \control_{\timestart:\timeindex-1})$. 
+This implies that given $(\statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex)$, the next state $\statepredicted_{\timeindex+1} = \dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex) + \statenoise_\timeindex$ is also independent of the history.
+Therefore, the first term in \cref{eq:cost_under_a1} simplifies as 
+\begin{equation}
+    \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_{\timestart:\timeindex}, \control_{\timestart:\timeindex}) = \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \belief_\timestart).
+    \label{eq:markov_requirement}
+\end{equation}
+Substituting into \cref{eq:cost_under_a1} results in 
+\begin{subequations}
+    \begin{align}
+        \cost_{\text{info}}(\statepredicted, \control, \beliefpredicted) &= -\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \left[ \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_{\timestart},\control_{\timestart}) - \entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \belief_\timestart)\right] \label{eq:cost_as_mi}\\ &= -\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \mutualinfo(\belief_\timestart; \statepredicted_{\timeindex+1} \mid \statepredicted_{\timeindex}, \control_{\timeindex}).
+    \end{align}
+\end{subequations}
+where $\mutualinfo(\belief_\timestart; \statepredicted_{\timeindex+1} \mid \statepredicted_{\timeindex}, \control_{\timeindex})$ is the conditional mutual information between the initial belief $\belief_\timestart$ and predicted state $\statepredicted_{\timeindex+1}$, conditioned on the previous predicted state and control, $\statepredicted_{\timeindex} \control_{\timeindex}$, respectively.
+This shows that, under Assumptions 1 and 3, our directed information cost \cref{eq:final_directed_cost} reduces to a mutual information cost.
+We now evaluate each entropy term and simplify further. 
+
+For the second term in \eqref{eq:cost_as_mi}, given $\statepredicted_\timeindex$, $\control_\timeindex$, and $\belief_\timestart$, the only randomness in $\statepredicted_{\timeindex+1}$ is the Gaussian state noise $\statenoise_\timeindex \sim \mathcal{N}(\mathbf{0}, \statenoisecov)$.
+Thus, $\entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \belief_\timestart) = \frac{1}{2}\log\det(2\pi e \, \statenoisecov)$, cf. \cite[Theorem~8.4.1]{cover1999elements}.
+
+To evaluate the first term in \eqref{eq:cost_as_mi}, we must marginalize over the belief.
+Under Assumption 2, the belief is Gaussian: $p(\beliefpredicted_\timeindex) = \mathcal{N}(\beliefpredicted_\timeindex;\beliefmean_\timestart, \beliefcov_\timestart)$.
+Under Assumption 4, $\statepredicted_{\timeindex+1}$ is an affine function of $\beliefpredicted_\timeindex$ plus Gaussian noise:
+\begin{equation}
+    \statepredicted_{\timeindex+1}(\beliefpredicted_{\timeindex}) = \dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefmean_\timestart) + \dynjac_\timeindex (\beliefpredicted_\timeindex - \beliefmean_\timestart) + \statenoise_\timeindex.
+\end{equation}
+Since affine transformations of Gaussian random variables remain Gaussian, marginalizing over $\beliefpredicted_\timeindex$ yields:
+\begin{equation}
+    p(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex) = \int p(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex, \beliefpredicted_\timeindex) p(\beliefpredicted_\timeindex) d\beliefpredicted_\timeindex = \mathcal{N}(\dynamics(\statepredicted_\timeindex, \control_\timeindex, \beliefmean_\timestart), \innovationcovpredicted_\timeindex),
+\end{equation}
+where $\innovationcovpredicted_\timeindex = \dynjac_\timeindex \beliefcov_\timestart \dynjac_\timeindex^\top + \statenoisecov$.
+Thus, $\entropy(\statepredicted_{\timeindex+1} \mid \statepredicted_\timeindex, \control_\timeindex) = \frac{1}{2}\log\det(2\pi e \, \innovationcovpredicted_\timeindex)$.
+Substituting both entropy terms yields the desired expression, as follows:
+\begin{subequations}
+    \begin{align}
+        \cost_{\text{info}}(\statepredicted, \control, \beliefpredicted) &= -\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \left[ \frac{1}{2}\log\det(2\pi e \, \innovationcovpredicted_\timeindex) - \frac{1}{2}\log\det(2\pi e \, \statenoisecov) \right]\\
+        &= -\frac{1}{2}\sum_{\timeindex=\timestart}^{\timestart+\horizon-1} \log\left( \frac{\det(\innovationcovpredicted_\timeindex)}{\det(\statenoisecov)} \right).
+    \end{align}
+\end{subequations}
+\qed
+\end{proof}
+
+\contribution[A general information-gathering cost based on directed information.]{
+Using our framework, we derive a novel information-gathering cost that captures the causal structure of sequential decision-making under dynamics uncertainty.
+Unlike existing approaches, which derive bespoke costs tailored to specific dynamics models or belief update procedures, our cost requires only minimal structural assumptions (Markov dynamics with additive noise) and makes no assumptions about the dynamics model, belief updater, belief dynamics, observations model, or planner.
+In \Cref{thm:mi_special_case}, we prove that the popular mutual information cost is a special case (cf. \cite{sukhija2023optimistic, buisson2020actively,lew2022safe,krause2007nonmyopic,zimmer2018safe,abraham2019active,vantilborgh2025dual,davydov2024first, palafox2025info} for examples).}
+
+\section{An Explicit Connection Between Information Gathering and Dynamics Parameter Learning}
+\label{sec:contribution3}
+
+
+\begin{wrapfigure}{r}{0.55\textwidth}
+\vspace{-20pt}
+\begin{algorithm}[H]
+{\small
+\SetAlgoLined
+\DontPrintSemicolon
+\caption{Extended Kalman Filter Belief Updater $\beliefupdater$}
+\label{alg:ekf}
+\KwIn{$\belief_\timeindex = \{\beliefmean_\timeindex, \beliefcov_\timeindex \}$, $\observation_{\timeindex+1}$, and $\control_\timeindex$.}
+{
+    \BlankLine
+    \tcp{1. Prediction Step}
+    $\beliefmean_{\timeindex+1|\timeindex} = \paramsdynamics(\beliefmean_{\timeindex})$\\
+    $\paramsprocjac_\timeindex = \frac{\partial \paramsdynamics}{\partial \params}(\beliefmean_\timeindex)$\\
+    $\beliefcov_{\timeindex+1|\timeindex} = \paramsprocjac_\timeindex \beliefcov_\timeindex \paramsprocjac_\timeindex^\top + \paramsnoisecov$\\
+    $\statepredicted_{\timeindex+1|\timeindex} = \dynamics(\state_{\timeindex}, \control_\timeindex, \beliefmean_{\timeindex+1|\timeindex})$\\
+    $\observationpredicted_{\timeindex+1|\timeindex} = \observationfn(\statepredicted_{\timeindex+1|\timeindex})$
+    \BlankLine
+    \tcp{2. Correction Step}
+    $\dynjac_{\timeindex} = \frac{\partial \dynamics}{\partial \params}(\state_{\timeindex}, \control_{\timeindex}, \beliefmean_{\timeindex+1|\timeindex})$\\
+    $\obsjac_{\timeindex} = \frac{\partial \observationfn}{\partial \state}(\statepredicted_{\timeindex+1|\timeindex})$\\
+    $\innovationcov_\timeindex = \obsjac_{\timeindex} \dynjac_\timeindex \beliefcov_{\timeindex+1|\timeindex} \dynjac_\timeindex^\top \obsjac_{\timeindex}^\top + \obsjac_{\timeindex} \statenoisecov \obsjac_{\timeindex}^\top$\\
+    $\kalmangain_\timeindex = \beliefcov_{\timeindex+1|\timeindex}\dynjac_\timeindex^\top \obsjac_{\timeindex}^\top \innovationcov_\timeindex^{-1}$
+    \\$\innovation_{\timeindex} = \observation_{\timeindex+1} - \observationpredicted_{\timeindex+1|\timeindex}$\\
+    $\beliefmean_{\timeindex+1} = \beliefmean_{\timeindex+1|\timeindex} + \kalmangain_\timeindex\innovation_{\timeindex}$\\
+    $\beliefcov_{\timeindex+1} = (\mathbf{I} - \kalmangain_\timeindex \obsjac_{\timeindex} \dynjac_\timeindex)\beliefcov_{\timeindex+1|\timeindex}$
+    \BlankLine
+    \Return{$\belief_{\timeindex+1} = \{\beliefmean_{\timeindex+1}, \beliefcov_{\timeindex+1} \}$}
+}
+}
+\end{algorithm}
+\vspace{-20pt}
+\end{wrapfigure}
+
+In this section, we show that minimizing the mutual information cost of \Cref{thm:mi_special_case} directly maximizes the information gain in the dynamics parameter learning process when using a linearized Bayesian belief updater.
+This analysis is enabled by the fact that our framework cleanly separates the learning process from the belief dynamics used during planning, and explicitly exposes causal dependencies between predicted beliefs, observations, and controls. 
+This modularity comes at \emph{no performance cost}; rather, it  makes explicit the design choices (belief updater and dynamics) that are generally left implicit in the literature.
+
+A common choice for the belief updater is the Extended Kalman Filter (EKF) shown in \cref{alg:ekf}, cf. \cite{thrun2002probabilistic,ljung1979asymptotic, goodwin2014adaptive}. 
+The EKF defines the parameter belief as the mean $\beliefmean_\timeindex$ and covariance $\beliefcov_\timeindex$ of a Gaussian distribution, i.e., $\belief_\timeindex = \{\beliefmean_\timeindex, \beliefcov_\timeindex\}$ (as in Assumption 2 in \Cref{thm:mi_special_case}).
+The EKF generalizes \cite{howell2025optimization,ollivier2018online} the bespoke Newton-like updates used in information-gathering literature, cf. \cite{davydov2024first,lew2022safe,harrison2024variational,harrison2020meta,hu2024active}. 
+
+% To see the explicit connection between the EKF and the mutual information cost, we rewrite the EKF's covariance update in (line 12,  \cref{alg:ekf}) in information form:
+% \begin{equation}
+%     \beliefcov_{\timeindex+1}^{-1} = \beliefcov_{\timeindex+1|\timeindex}^{-1} + \dynjac_\timeindex^\top (\statenoisecov)^{-1} \dynjac_\timeindex,
+% \end{equation}
+% The second term, $\dynjac_\timeindex^\top (\statenoisecov)^{-1} \dynjac_\timeindex$, is the EKF information gain.
+% Minimizing the mutual information cost \eqref{eq:mutual_info_cost} (i.e., maximizing $\det \innovationcovpredicted_\timeindex$) drives the agent toward states and controls where the Jacobian $\dynjac_\timeindex$ is large \david{in what sense? a matrix being large can be interpreted in many ways. also refine next sentence accordingly}.
+% A large $\dynjac_\timeindex$ is also precisely what makes the EKF information gain large.
+% Thus, minimizing the mutual information cost \eqref{eq:mutual_info_cost} simultaneously maximizes the information gain in the EKF update, providing a direct link between the planning cost and learning performance.
+
+To see the explicit connection between the EKF and the mutual information cost, we rewrite the EKF's covariance update in (line 12, \cref{alg:ekf}) in information form:
+\begin{equation}
+    \beliefcov_{\timeindex+1}^{-1} = \beliefcov_{\timeindex+1|\timeindex}^{-1} + \dynjac_\timeindex^\top (\statenoisecov)^{-1} \dynjac_\timeindex. 
+    \label{eq:}
+\end{equation}
+To compare with the mutual information cost, we express the EKF's information in the same units, i.e., $\log \det(\beliefcov_{\timeindex+1}^{-1})$.
+Under Assumption 3 in \Cref{thm:mi_special_case}, this simplifies to $\log \det(\beliefcov_\timestart^{-1} + \dynjac_\timeindex^\top (\statenoisecov)^{-1} \dynjac_\timeindex)$. 
+Both $\log \det(\beliefcov_{\timeindex+1}^{-1})$ and $\log \det(\innovationcovpredicted_\timeindex)$ from the mutual information cost \eqref{eq:mutual_info_cost} increase with the singular values of $\dynjac_\timeindex$.
+Thus, minimizing the mutual information cost simultaneously maximizes the EKF information gain, providing a direct link between the planning cost and learning performance.
+
+\contribution[An explicit connection between information gathering and learning.]{
+We show that minimizing a mutual information-based cost is equivalent to maximizing information gain in the belief update for the case of linearized Bayesian estimation. 
+To our knowledge, this is the first time this connection has been explicitly made, and the framework in \Cref{sec:contribution1,sec:contribution2} makes the analysis very straightforward.}

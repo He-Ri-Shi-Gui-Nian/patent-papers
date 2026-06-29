@@ -1,0 +1,222 @@
+
+\section{Graph-CoT-Aware LLM Inference} \label{sec: optimization}
+
+% \subsection{Multi-Agent Based Graph-CoT}
+
+% Existing Graph-CoT methods encourage LLMs to reason iteratively over a graph by generating a sequence of \textit{thought}, \textit{action}, and \textit{observation} steps using the same shared prefix. Each output is appended to the end of the prompt as a suffix for the next round. While Graph-CoT improves accuracy through chain-of-thought prompting, it also presents several limitations. First, Graph-CoT incurs high computational cost: (a) It generates a sequence of thought and action steps until the action returns a final answer in a predefined \texttt{Finish} format. For each step, the generated thought, action, and retrieved information are appended to the prompt, resulting in progressively longer interactions. (b) Both thought and action share the same long prefix, which includes the graph definition, examples, and function descriptions. (c) Most questions only require a small portion of information from the RAG, yet Graph-CoT stores extensive intermediate results. For example, as shown in Figure 3, answering the question "What is the average price of items commonly viewed with A?" only requires the number 2, but Graph-CoT retains many intermediate steps. These three factors significantly increase token consumption. Second, Graph-CoT suffers from high latency: in addition to long input sequences, the action component only calls predefined graph retrieval functions, limiting the action list to data retrieval and leaving all reasoning to the LLM. This underutilizes the retrieval mechanism and increases the number of steps. As illustrated in Figure 3, Graph-CoT requires 8 LLM calls to process a single query—one for each thought and action—while modern LLMs, when given appropriate examples, are capable of generating complex and accurate code in a single pass. In contrast, GLM handles the same query with just one LLM call.
+
+Building on \projectname’s multi-agent Graph-CoT reasoning framework, this section presents graph-cot aware LLM inference optimizations aimed at enhancing end-to-end inference efficiency, reducing end-to-end latency, and improving throughput. Specifically:
+(1) We propose a \textit{vertex-centric KV cache reuse model} that leverages the graph structure to share prefix KV caches across queries, reducing latency during the LLM prefill stage;
+(2) We introduce an efficient \textit{KV cache scheduling strategy} that minimizes redundant KV computations and improves cache hit rates under high-throughput workloads; 
+(3) We design a novel \textit{pipelined execution strategy} that overlaps retrieval with the LLM inference stage, effectively hiding retrieval latency and improving overall system responsiveness.
+
+\subsection{Vertex-Centric KV Cache Reuse Model} \label{sec:vertex_centric_kv}
+%In \textbf{Text RAG}, it is common to use text chunks as prefixes. Therefore, a common optimization is to precompute and cache the KV (key-value) cache for these text chunks in advance, reducing the prefill time.
+
+%However, in \textbf{Graph RAG}, we cannot do this because there is no fixed-length or easily partitionable unit like a text chunk. To address this issue, we propose the \textbf{Vertex-Centric Prefix KV Reuse Model}.
+
+%RAG systems typically operate on a finite knowledge base that a subset of chunks gets retrieved frequently by the system.
+
+Unlike text-based RAG systems, which benefit from well-defined chunk boundaries that enable efficient precomputation and prefix KV cache reuse, Graph RAG lacks such structural regularity. In Graph-CoT, retrieval typically occurs at the vertex level, where each vertex contributes a lightweight, atomic fact, such as a feature value or a local structural property (e.g., node degree). As a result, the retrieved context forms a flat and unordered collection of individual facts, limiting the effectiveness of KV cache reuse: during prefill, the model can often reuse only the first retrieved fact, reducing the benefits of caching.  
+
+To address this limitation, we introduce a \textbf{fine-grained retrieval unit} that aggregates richer contextual information per retrieval. Specifically, we define a \emph{vertex chunk} as a reusable, localized subgraph that consists of a central node and its 1-hop neighbours. This structure provides more meaningful context per retrieval, enabling higher KV cache reuse and reducing redundant computation. Formally, the vertex chunk for a given nodeID is defined as follows:
+
+\vspace{-0.5\baselineskip}
+\begin{verbatim}
+[Node:<nodeID> {k1:v1, k2:v2,...}]
+[neighbours:(n1 {k1:v1,...}),(n2 {k1:v1,...}),...]
+\end{verbatim}
+\vspace{-0.5\baselineskip}
+
+Here, \texttt{<nodeID>} denotes the central node, and each neighbour is represented by a unique identifier (e.g., \texttt{n1}, \texttt{n2}, etc.). The \texttt{k:v} pairs correspond to key-value attributes associated with each node.  
+
+To prevent an excessive number of neighbours from inflating the vertex chunk, we sort each vertex’s neighbours by weight (e.g., node degree) and retain only the top-$k$ nodes with the highest weights.  
+Additionally, using a coarser-grained retrieval unit can further reduce reasoning rounds: the LLM can directly select an entire vertex chunk for a given node in a single step rather than iteratively indexing all of the node’s information.  
+This approach reduces both the number of reasoning steps and the overall token overhead, improving efficiency in Graph-CoT workflows.
+
+
+\textbf{Vertex-Centric KV Cache Reuse Model.}  
+Consider the reasoning process for a non-deterministic query, where a notebook accumulates information from the Graph RAG over multiple iterations. As illustrated in Figure~\ref{fig:reuse_model}, in the first iteration, the notebook retrieves a vertex chunk associated with a specific node. The reasoning agent processes this chunk (vertex chunk 1), generating the corresponding KV cache. 
+Because the notebook retains this information, the same vertex chunk remains relevant across subsequent iterations, allowing its KV cache to be reused, thus eliminating redundant computation. In the second iteration, the same vertex chunk is reused, with its precomputed KV cache directly applied, avoiding recomputation. The reused chunk is highlighted in blue.
+Consider now a second, independent query that also retrieves the same vertex chunk. Since the KV cache for this chunk has already been computed, it can be reused without recomputation. 
+
+
+
+% \noindent This minimal syntax captures the core entity (\texttt{<nodeID>}) and its 1-hop neighbourhood, where each node is represented by its ID and a sparse set of key-value attributes. Such encoding ensures structural locality, semantic salience, and high compressibility, making it well-suited for input tokenization and KV-cache reuse in Graph RAG systems.
+
+
+% These pre-computed vertex-chunk are stored and managed by *** along with some metadata.
+% Precomputed vertex chunks are stored and managed by the Graph RAG cache controller along with associated metadata, including retrieval frequency, usage timestamp, and dependency fingerprints. This structure allows efficient reuse of encoder states, significantly reducing large language model (LLM) prefill latency—particularly in high-throughput or multi-hop graph reasoning tasks.
+
+% To address the challenge that Graph RAG lacks a fixed-length or easily partitionable unit unlike text chunks traditionally used for prefix KV caching, we propose a \textbf{vertex-centric prefix KV reuse model}. This design is motivated by the observation that, in most reasoning tasks, the LLM cannot anticipate which specific attributes of a node will be required. To accommodate this uncertainty, we define a \textbf{vertex chunk} as a unit comprising a node’s own features along with its 1-hop neighbourhood information. We precompute and cache the prefix KV representations for each vertex chunk, enabling efficient reuse during inference.
+
+
+
+%We observe that for reasoning tasks, in most cases, the LLM cannot determine in advance which specific feature of a node will be needed. As a result, the model often has to retrieve the full information of a node, including its 1-hop and even 2-hop neighbourhood data.
+
+%To optimize this process, we define a \textbf{vertex chunk} as the node's own information along with its 1-hop neighbourhood information, and precompute and cache its KV cache in advance.
+
+% \subsection{Graph-CoT and LLM Inference Collaboration Scheduling}
+% The main overhead of GLM consists of two components: the graph retriever and the LLM. To further reduce latency, we focus on efficient collaboration scheduling between graph retrieval and LLM inference.
+
+\begin{figure}[t]
+    \centerline{\includegraphics[width=1\linewidth]{figures/vertex_centric_reused.pdf}}
+    \caption{Example of prefix KV cache reuse model.}
+    \label{fig:reuse_model}
+\end{figure}
+
+\subsection{Priority-based KV Cache Eviction Policy}
+
+Existing LLM serving systems commonly employ prefix caching to accelerate inference and typically rely on a Least Recently Used (LRU) policy to manage full KV caches. Prefix caching allows queries that share the same prefix to reuse the KV cache directly, avoiding redundant computation. However, LRU policies often evict entries that will be needed in the near future, leading to unnecessary recomputation and inefficiencies. In particular, KV entries corresponding to information retrieved from the graph may be evicted under high workloads, even though they will be reused in subsequent reasoning steps. Conversely, suffixes generated by recently executed agents often change rapidly with task progress and are unlikely to be reused; yet, they are still temporarily retained in the cache.  
+
+To address these limitations, we observe that \textit{the likelihood of future reuse varies across different segments of agents’ inputs}. KV cache entries associated with low-reuse segments should be evicted first, while those with high expected reuse should be retained longer. Based on this insight, we propose a \textbf{priority-based KV cache eviction policy} that accounts for task-specific reuse patterns and manages cache retention more intelligently, reducing redundant computation and improving overall inference efficiency.
+
+Specifically, we introduce a four-tier priority-based KV cache eviction policy to manage prefix KV cache entries based on their expected reuse. Each computed KV entry is assigned a priority level that guides cache retention and eviction decisions under GPU memory constraints. As illustrated in Figure~\ref{fig:agent_prompt}, \projectname employs three LLM-based agents, each driven by a distinct prompt template. Each template is composed of a shared prefix and a query-specific suffix. The shared prefix remains constant across interactions and is reused frequently, making it critical for performance. As such, we assign these entries \textbf{Priority I} and keep them permanently cached throughout execution. For the \textit{reasoning agent}, the \textit{notebook} evolves incrementally during multi-step reasoning, with new content appended at each round. This leads to repeated reuse of notebook-related KV entries within a single query session, justifying their classification as \textbf{Priority II}. These entries are retained for the duration of the session. After the question is resolved, the notebook content is downgraded to \textbf{Priority III}, as it may still be relevant to future queries, particularly when similar reasoning chains or memory contexts are involved. In contrast, components that are less frequently reused, e.g., \textit{missed information} from the action agent or the \textit{question} input in the classification agent, are inexpensive to regenerate. These are assigned \textbf{Priority IV} and are the first to be evicted under memory pressure.
+
+Based on the assigned priorities, we implement an eviction policy that removes KV cache blocks in descending order of evictability when the cache is full. 
+% The system first evicts \textbf{Priority IV} entries, followed by \textbf{Priority III} entries if no \textbf{Priority IV} entries remain. If both \textbf{Priority IV} and \textbf{Priority III} are exhausted, the system proceeds to evict \textbf{Priority II} entries, using an LRU policy to determine the eviction order if multiple \textbf{Priority II} entries are present. 
+We evict KV-cache entries in descending priority: \textbf{Priority IV}, then \textbf{Priority III}, then \textbf{Priority II}. Eviction order is determined by LRU in any priority.
+Compared to vLLM’s single-queue LRU, our priority-based KV-cache eviction maintains multiple queues and evicts the lowest-priority entries first. This adds only modest scheduling overhead, which Figure~\ref{fig:optimize_comparison} shows is far outweighed by the resulting throughput and latency gains.
+
+
+
+% \begin{itemize}[leftmargin=*, wide, itemindent=0pt, parsep=0pt]
+%   \item \textbf{Priority I}: Entries that are critical for the current inference process and cannot be evicted. These are always retained in GPU memory.
+%   \item \textbf{Priority II}: Entries expected to be reused within the current session, retained until the session ends to avoid recomputation.
+%   \item \textbf{Priority III}: Entries that may be useful in future queries but are not immediately reused. These are evicted only when higher-priority entries require memory.
+%   \item \textbf{Priority IV}: Entries with minimal expected reuse, evicted first when memory is constrained.
+% \end{itemize}
+
+%Figure~\ref{fig:kv_cache} illustrates the prompt structure for the three agent types in \projectname. Both the classification and action agents use prompts with a long, shared prefix and a short, task-specific suffix (e.g., a question or a piece of missing information). While the suffix varies per query and is typically short and non-repetitive, the shared prefix remains identical across all instances of these agents when using the same Graph RAG. 
+
+% In real-world workloads, both the classification and action agents operate using prompts composed of a long, shared prefix and a short, task-specific suffix (e.g., a question or a piece of missing information), as illustrated in Figure~\ref{fig:kv_cache}. While the suffix varies per query and is typically short and non-repetitive, the shared prefix remains identical across all invocations of these agents under the same Graph RAG context. To eliminate redundant computation, we \textit{precompute the KV cache for the shared prefix during system warm-up}, store it in GPU memory, and designate it as non-evictable. The task-specific suffixes are cached opportunistically—only when memory permits—and are assigned low eviction priority. When memory pressure arises, these suffixes are the first to be discarded. Additionally, the action agent includes a "known information" segment that accumulates across reasoning steps. Since this segment is reused in subsequent interactions within the same query session, we preserve its KV cache until the session concludes. After the query is fully resolved, the cache entries associated with known information are safely evicted.
+
+% By categorizing KV caches based on priority, we improve the cache hit rate and reduce unnecessary swaps, which leads to better overall throughput.
+
+% \begin{algorithm}[h]
+% \caption{Multi-Priority Free Block Management}
+% \begin{algorithmic}[1]
+%     \State \textbf{Data structure:} MultiPriorityFreeQueue
+%         \State \quad queues: list of LRUQueues with indices [0, 1, 2] \Comment{Three priority levels}
+    
+%     \Function{Append}{block}
+%         \State $priority \gets \Call{GetRequestPriority}{block}$ \Comment{Get the block's priority}
+%         \State $\texttt{queues}[priority].Append(block)$ \Comment{Add block to corresponding queue}
+%     \EndFunction
+
+%     \Function{Evict}{$target\_count$}
+%         \State $evicted \gets 0$
+%         \For{$prio \in [2, 1, 0]$} \Comment{Prioritize high-priority blocks for eviction}
+%             \While{$queues[prio].size() > 0 \land evicted < target\_count$}
+%                 \State $block \gets queues[prio].PopLRU()$ \Comment{Remove least recently used block}
+%                 \State $\Call{FreeBlock}{block}$
+%                 \State $evicted \gets evicted + 1$
+%             \EndWhile
+%         \EndFor
+%         \State \Return $evicted$
+%     \EndFunction
+
+%     \Function{GetRequestPriority}{$block$}
+%         \State \Return $block.request.priority$ \Comment{Extract priority from metadata}
+%     \EndFunction
+% \end{algorithmic}
+% \end{algorithm}
+
+\textbf{Case Study.}
+Figure~\ref{fig:kv_cache} illustrates \projectname with node colors showing KV status:
+\textcolor{gray}{gray} = shared prefixes (always cached),
+\textcolor{green}{green} = newly added,
+\textcolor{blue}{blue} = active and still cached,
+\textcolor{red}{red} = evicted.
+Two questions (Q1, Q2) proceed as follows:
+\begin{enumerate}[leftmargin=*,  nosep]
+  \item Shared prefixes (Priority I) are cached. The C-Agent handles Q1 and Q2 (Priority IV) and classifies both as non-deterministic.
+  \item The R-Agent receives Q1 and Q2. Notebooks are empty, so both are inserted under the R-Agent prefix; the previous C-Agent KV entries are evicted.
+  \item The A-Agent receives the missing-information requests from the R-Agent; earlier R-Agent KV entries are evicted.
+  \item After executing the A-Agent snippets, facts \textit{info1} (Q1) and \textit{info2} (Q2) are added to notebooks (Priority II). Q2 is now complete, and \textit{info2} is downgraded to Priority III.
+  \item Only one new A-Agent request arrives for \textit{info3} (Q1, Priority II). \textit{info1} remains cached.
+  \item The R-Agent finalizes Q1 using the notebook with \textit{info1} and \textit{info3}. Since \textit{info1} is cached, only \textit{info3} and Q1 are reinserted. The response includes \texttt{Finish}, indicating completion.
+\end{enumerate}
+
+\iffalse
+\textbf{Case Study.}  
+Figure~\ref{fig:kv_cache} provides a detailed example of \projectname in action, with node colors indicating KV cache status:  
+\textcolor{gray}{Gray} nodes represent shared prefixes that are permanently cached in GPU memory,  
+\textcolor{green}{Green} nodes indicate newly added entries,  
+\textcolor{blue}{Blue} nodes are actively used and still cached,  
+and \textcolor{red}{Red} nodes have been evicted.
+The system processes two incoming questions, Q1 and Q2, as follows:
+\begin{enumerate}[leftmargin=*]
+  \item In the beginning, the shared prefixes of all agents are Priority I and the corresponding KV cache entries are therefore present. The server receives two requests from the c-agent containing Q1 and Q2 with Priority IV, which are appended to the shared prefix of c-agent. Both Q1 and Q2 are classified as non-deterministic.
+  
+  \item Then, the server receives two requests from the R-agent containing Q1 and Q2 with Priority IV. Since their notebooks are initially empty, both questions are inserted under the R-agent's shared prefix. Meanwhile, the KV cache entries for Q1 and Q2 from the c-agent are evicted.
+  
+  \item Next, the server receives two requests from the a-agent containing missing information with Priority IV generated by R-agent, and evicts the previous reasoning agent KV cache entries.
+  
+  \item After executing the code snippets generated by a-agent, the newly discovered facts info1 for Q1 and info2 for Q2 with Priority II are appended to corresponding notebooks. These updates are reflected in the R-agent. At this stage, the Q2 path in the reasoning agent tree is marked complete and info2 is reclassified as Priority III.
+
+  \item Now the server only receives one request from the a-agent containing miss info3 with Priority II. By this time, info1 from Q1 is still cached due to its Priority II status. 
+  
+  \item Finally, the server processes the final request from R-agent for Q1, now with a notebook containing info1 and info3. Since info1 is already cached, only info3 and Q1 need to be reinserted. The response includes a \texttt{Finish} marker, indicating that Q1 has been successfully completed.
+\end{enumerate}
+\fi
+
+
+\begin{figure}[t]
+    \centerline{\includegraphics[width=1\linewidth]{figures/kv_cache.pdf}}
+    \caption{KV cache scheduling example.}
+    \label{fig:kv_cache}
+\end{figure}
+
+
+\subsection{Pipelined Execution Strategy}
+% The LLM generation is typically the main performance bottleneck in retrieval-augmented generation (RAG) systems. However, as the vector database scales up or when higher retrieval precision is needed, the retrieval step itself may introduce non-trivial latency. To alleviate this, \projectname employs a pipelined execution strategy between the graph retriever and the LLM. The core idea is to overlap knowledge retrieval with LLM inference by exploiting the fact that the LLM often generates the retrieval command early in the decoding process. 
+
+% Specifically, the Action Agent outputs complete Python code snippets that combine predefined graph functions and general Python logic, typically beginning with a \texttt{RetrieveNode} call. During inference, the LLM generates tokens sequentially, and the code evolves incrementally. Importantly, only the \texttt{RetrieveNode} function incurs substantial computation time, as it triggers an actual vector search. Based on this observation, \projectname introduces a speculative pipelining strategy that breaks the retrieval process into two phases. During decoding, the system monitors each generated token to detect the appearance of the \texttt{RetrieveNode} call. As soon as it is identified, the retriever speculatively executes the query in parallel with ongoing LLM generation. A dedicated buffer—sized according to the batch size—is used to store the mapping between issued queries and their returned results. When the final code snippet is completed, if the required \texttt{RetrieveNode} has already been executed, the retriever skips redundant computation and directly reuses the buffered result. This overlapping of retrieval and inference significantly reduces end-to-end latency.
+
+% In typical retrieval-augmented generation (RAG) systems, the primary performance bottleneck lies in the latency of large language model (LLM) inference. Nevertheless, as the size of the vector store increases or higher retrieval precision is demanded, the retrieval stage itself can become a non-negligible source of delay. To address this challenge, \projectname introduces a pipelined execution framework that enables concurrent LLM-based agent decoding phase and Retriever agent retrieving phase, thereby effectively masking the retrieval latency within the LLM inference process.
+
+
+
+% \begin{algorithm}[t]
+% \caption{Pipelined Execution Strategy Workflow.}
+% \label{alg:pipeline}
+% \small
+% \begin{algorithmic}[1]
+% \Require Action Agent, Retriever, Cache
+% \State Initialize PartialCode $p \gets \{\}$
+% \For{$token$ \textbf{in} ActionAgent.stream()}
+%     \State $p.append(token)$
+%     \If{$p$ contains \texttt{RetrieveNode}}
+%         \State \textbf{spawn pipeline task:}
+%         \State \textit{query} $\gets$ extract input from \texttt{RetrieveNode}
+%         \If{\textit{query} in Cache}
+%             \State \textit{result} $\gets$ Cache[\textit{query}]
+%         \Else
+%             \State \textit{result} $\gets$ RetrieveNode(\textit{query})
+%             \State Cache[\textit{query}] $\gets$ \textit{result}
+%         \EndIf
+%         \State Replace \texttt{RetrieveNode} call with \textit{result} in $p$
+%     \EndIf
+% \EndFor
+% \State \Return $p$
+% \end{algorithmic}
+% \end{algorithm}
+
+
+Given the structure of our multi-agent Graph-CoT framework, we design a pipelining strategy to effectively hide the latency of the Graph RAG retriever. In particular, we observe that when executing code snippets generated by the action agent, the majority of retrieval latency stems from the \texttt{RetrieveNode} function due to the computational complexity involved in performing similarity searches within the vector database. This function typically appears only once, often as the first line of the code snippet. Based on this observation, we divide the action agent’s LLM inference into two stages: (1) the prefill stage and the decoding stage of the line containing the \texttt{RetrieveNode} call, and (2) the decoding stage of the remaining tokens. As illustrated in Figure~\ref{fig:pipeline}, the key idea is to pipeline the execution of the retriever with the second phase of the action agent. The green segment represents the prefill phase of the LLM. The yellow segment corresponds to the initial decoding stage, which includes the decoding of the \texttt{RetrieveNode} function call. Once this call is decoded, the retrieval process is immediately triggered. While the retriever executes (indicated by the pink segment), the LLM concurrently continues decoding the remaining tokens. The dashed arrow illustrates the overlap between retrieval execution and token generation. This overlap is the foundation of our pipelining strategy, which effectively hides retrieval latency and improves overall throughput in multi-agent execution.
+
+To this mechanism, the action agent generates output in a streaming fashion. Once a line containing the \texttt{RetrieveNode} function is detected, the system immediately spawns a pipeline task to execute the retrieval. The retrieved result then replaces the original function call within the partial code sequence, enabling the LLM to complete the remaining decoding based on the updated context.
+
+To further reduce retrieval latency, we integrate a caching mechanism tightly into the pipeline execution. Specifically, we maintain a bounded LRU global cache that maps \texttt{RetrieveNode} inputs (i.e., text queries) to their corresponding output NodeIDs. This cache prevents redundant computation for repeated retrievals. When a \texttt{RetrieveNode} call is detected during the first stage, the system first checks the cache for a match. If a cached result is found, it is reused directly; otherwise, the retrieval is executed and the result is inserted into the cache for future use.
+
+
+\begin{figure}[t]
+    \centerline{\includegraphics[width=.9\linewidth]{figures/pipeline.pdf}}
+    \caption{Pipelined execution strategy.}
+    \label{fig:pipeline}
+\end{figure}
+% In addition to core functionality, we implement a caching mechanism for the retriever agent to avoid redundant computations during repeated retrieval queries. Specifically, a dedicated cache maintains a mapping between input texts (i.e., retrieval queries) and their corresponding output NodeIDs, which are determined through vector similarity search within the Graph RAG framework. Upon completion of the LLM’s generation of a code snippet, the system checks whether the result for the corresponding \texttt{RetrieveNode} operation is already present in the buffer. If a cached result is found, it is reused directly, thereby bypassing redundant retrieval operations. This mechanism significantly reduces end-to-end latency, particularly in cases involving high-latency or computationally expensive retrieval processes.
+
+% For RAG, a common approach is to perform vector retrieval only after the LLM has generated a complete output, which is a time-consuming process. In contrast, \projectname benefits from the fact that the output of the action agent consists of complete code snippets, where the first line is often a vector retrieval operation, followed by other Python code. This provides an opportunity to hide the latency of vector retrieval. Specifically, since the LLM generates output tokens incrementally during decoding, we stream the output of the action agent and execute a line of code as soon as it contains a call to the \texttt{RetrieveNode} function, as illustrated in the figure. This enables vector retrieval to run in parallel with the decoding process of the action agent. Furthermore, we maintain a buffer for the \texttt{RetrieveNode} function, using an LRU (Least Recently Used) strategy to cache recent inputs and outputs.
+

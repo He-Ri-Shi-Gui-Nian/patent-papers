@@ -1,0 +1,88 @@
+
+\label{sec:3.2}
+% Existing works (Dense Retrieval)
+We introduce \textbf{G}enerative \textbf{S}ubgraph \textbf{R}etrieval (GSR), which autoregressively retrieves a knowledge subgraph $\hat{\KG}$.
+% from the candidate graph $\KG$.
+% The subgraph can be represented as a
+Since a knowledge subgraph can be represented as a set of triplets, retrieving sequences of knowledge triplets is equivalent to subgraph retrieval.
+Many subgraph retrieval methods in dialog generation~\cite{zhang2022subgraph,kang2022knowledge} compute the relevance score between the dialog history and each knowledge triplet and retrieve the triplets with the highest scores.
+
+However, these methods often suffer from the information bottleneck problem~\cite{izacard2020memory, luan2021sparse}, as they encode long, multi-turn dialog histories into a single fixed-length vector, which has a limited capacity to accurately represent complex multi-turn dialogs.
+Moreover, these approaches require independent knowledge graph encoders to represent knowledge graphs, which cannot fully leverage the pre-trained knowledge embedded in the pretrained language models.
+
+To address these limitations, generative subgraph retrieval casts graph retrieval as a graph generation, enabling more direct interaction between the dialog context and the knowledge graph by representing the graph with a token sequence.
+For effective generative retrieval, our GSR model incorporates two novel techniques: (1) Structure-aware knowledge graph linearization, which converts the knowledge graph into token sequences enriched with learnable special tokens that capture the connectivity and reverse relations between entities, and (2) Graph-constrained decoding, which ensures the language model to generate valid knowledge subgraphs by predicting the next tokens based not only on the language model's scores but also on the relational proximities of entities within the graph.
+
+
+\paragraph{Structure-aware knowledge graph linearization.}
+The goal of knowledge graph linearization is to convert a knowledge graph into a token sequence comprehensible to language models.
+Our structure-aware knowledge graph linearization augments a sequence of knowledge graph tokens with graph-specific learnable special tokens to help the language model understand the graph's structural information without separate graph encoders.
+Different from prior graph linearization methods such as \citet{xu-etal-2023-unsupervised}, which do not take into account multi-hop graph connections and reverse relations, our structure-aware knowledge graph linearization better captures and effectively represents the underlying structures of knowledge graphs.
+
+Specifically, if there are connected triplets~(\eg, $(e_1, r_1, e_2)$ and $(e_2, r_2, e_3)$), we efficiently represent the path as $\texttt{[Head]}$ $\Ent_1$ $\texttt{[Int{\textsubscript{\texttt{1}}}]}$ $\Rel_1$ $\texttt{[Int{\textsubscript{\texttt{2}}}]}$ $\Ent_2$ $\texttt{[Int{\textsubscript{\texttt{3}}}]}$ $\Rel_2$ $\dots\Ent_{l+1}$ $\texttt{[Tail]}$.
+To represent multiple disconnected triplets or paths, we insert $\texttt{[SEP]}$ between them.
+% Necessity of the reverse relations
+For more expressive representations of the special tokens, we use multiple consecutive tokens to represent each of $\texttt{[Int],[Rev]}$, which improves the performance as in Section \ref{sup_sec:aqa}.
+
+Additionally, since a knowledge graph can contain reverse relations, representing them is crucial in knowledge graph processing~\cite{feng2020scalable,qi2023investigation,zhu2024dyval}.
+Therefore, we introduce another special token $\texttt{[Rev]}$ for reverse relations when (1) there is a mentioned entity that is the tail of a triplet because the decoding always starts with one of the mentioned entities, or (2) two triplets are connected with opposite directions (\eg, $(e_1, r_1, e_2)$ and $(e_3, r_2, e_2)$). 
+We effectively represent reverse relations by adding special tokens $\texttt{[Rev{\textsubscript{\texttt{1}}}]}$ and $\texttt{[Rev{\textsubscript{\texttt{2}}}]}$ without modifying the relation tokens. For example, given a triplet $(e_3, r_2, e_2)$, the corresponding triplet with the reverse relation $(e_2, \tilde r_2, e_3)$ is represented as $\texttt{[Head]} \ \Ent_2 \ \texttt{[Rev{\textsubscript{\texttt{1}}}]} \ \Rel_2 \ \texttt{[Rev{\textsubscript{\texttt{2}}}]}  \ \Ent_{3} \ \texttt{[Tail]}$.
+
+In sum, we represent the subgraph $\hat{\KG}$ as the concatenation of the knowledge paths converted with the special tokens as follows:
+\begin{equation}
+\begin{split}
+\kpTokenSeq_{\hat{\KG}} =  &\texttt{[Head]}\Ent_1\texttt{[Int{\textsubscript{\texttt{1}}}]}\Rel_1\dots \\ &\Ent_{l+1}\texttt{[Tail]} \Sep\texttt{[Head]}\Ent_k\cdots.
+\end{split}
+\label{eq:kpg}
+\end{equation}
+All the special tokens are learnable with soft prompting.
+\textcolor{black}{They are learned with both downstream task loss and knowledge graph reconstruction loss, which will be introduced in Section~\ref{sec:method_training}.
+Our structure-aware knowledge graph linearization with the special tokens helps the language model capture knowledge graph information without any separate knowledge graph encoders, which leads to the full utilization of the power of PLMs.
+}
+
+
+\paragraph{Graph-constrained decoding.}
+The language model is prone to generating invalid or irrelevant subgraphs due to its bias, often disregarding the knowledge graph structures~\cite{de2021autoregressive,chen2022relation}.
+To address this issue, we introduce a graph-constrained decoding method that ensures the generation of valid and relevant subgraphs.
+Formally, given a dialog $\boldsymbol{x}$ and the previously generated segments of linearized knowledge path ${\pi}_{<t}$, the log probability of the next token $w$ is computed with $\log p_{\text{vocab}}\left(w|\boldsymbol{x}, {\pi}_{<t}, C_{\mathcal{M}} \right)$.
+Here, $C_{\mathcal{M}}$ represents a prefix tree derived from the ego-graph~\cite{zhu2021transfer} of a set of mentioned entities $e_m \in \mathcal{M}$ as depicted in Figure~\ref{fig:main}~(right).
+\jyp{
+The mentioned entities are the entities that appear in the input dialog history and correspond to entities in the knowledge graph~\cite{kang2022knowledge}.
+For example, given the dialog ``Do you know Lionel Messi?" in Figure~\ref{fig:main}, the entity `Messi' is a mentioned entity since it exists in the knowledge graph.
+}
+The next token prediction probability $p_{\text{vocab}}$ is restricted to tokens within the valid set defined by the constraint $C_{\mathcal{M}}$~(\ie, $({\pi}_{<t}, w) \in \mathcal{C}_{\mathcal{M}}$).
+This constraint ensures that only valid knowledge subgraphs are generated.
+
+In addition, to account for the importance of each entity in the knowledge graph, we introduce a graph-based next-token prediction probability, which is defined as:
+\begin{equation}
+% \small
+\label{eq:constraint}
+\begin{split}
+&\log\tilde{p}(w|\boldsymbol{x}, {\pi}_{<t}, C_{\mathcal{M}}) \\
+&= \alpha \cdot \log p_{\text{vocab}}\left(w|\boldsymbol{x}, {\pi}_{<t}, C_{\mathcal{M}} \right)\\&+ {(1-\alpha)}\cdot \log p_{\text{graph}}\left(w| {\pi}_{<t}, C_{\mathcal{M}} \right),
+\end{split}
+\end{equation}
+where $p_{\text{graph}}$ is the probability of predicting the next token based on graph structure, and $\alpha$ is a hyperparameter controlling the balance between the language model and graph-based predictions. 
+If the next token $w$ corresponds to a tokenized entity, the probability $p_{\text{graph}}$ is defined as:
+\begin{equation}
+    p_{\text{graph}}\left(w| {\pi}_{<t},  C_{\mathcal{M}}\right) \propto \mathcal{S}(e_i, \mathcal{M}),
+\end{equation}
+where $\mathcal{S}\left(e_i, \mathcal{M} \right)$ is the entity informativeness score of entity $e_i$ with respect to the mentioned entity set $\mathcal{M}$. 
+ In cases where all entities have identical informativeness scores, the next token prediction is only dependent on $p_{\text{vocab}}$.
+
+To capture the structural proximity between entity $e_i$ and mentioned entities $e_m \in \mathcal{M}$ on the graph, we define the structure-based entity Informative Score~(IS) as
+\begin{equation}
+    \mathcal{S}(e_i, \mathcal{M}) = \frac{1}{\lvert \mathcal{M}\rvert} \sum_{e_m\in \mathcal{M}}s(e_i, e_m),
+\end{equation}
+where $s(e_i, e_m)$ denotes the graph structural proximity between entity $e_i$ and $e_m$.
+The proximity can be measured using methods such as the shortest path and common neighbors~\cite{katz1953new,brin1998pagerank,gasteiger2018predict}.
+A typical approach for measuring graph structural proximity is counting the number of connections between node pairs, which can be defined as $s_{\text{con}}(e_i, e_m) = \sum_{\mathcal{N}(e_m)} \mathbf{1}(e_i=e_m)$, where $\mathcal{N}(e)$ is the neighborhood set of entity $e$.
+
+However, the connection-based proximity measurement fails to account for multi-hop relations.
+To address this, we introduce a Katz index{\textendash}based entity informativeness score~($\mathcal{IS}_{\text{katz}}$)~\cite{katz1953new}, formulated as follows:
+\begin{equation}
+\label{eq:katz}
+\mathcal{IS}_{\text{katz}}(e_i, \mathcal{M}) = \frac{1}{\lvert \mathcal{M}\rvert} \sum_{e_m\in \mathcal{M}}\sum_{k=1}^K \beta^k(\mathbf{A}^k)_{i,m},
+\end{equation}
+where $\mathbf{A}$ is the adjacency matrix of graph $\mathcal{G}$, $K$ denotes the maximum length of knowledge paths and $\beta^k$ means a weight of knowledge path of length $k$.
+Since the term $\mathbf{A}^k$ represents the number of paths between entity $e_i$ and $e_m$, this Katz index{\textendash}based entity informativeness score enables multi-hop relationship modeling, in contrast to the simple connection-based metrics.

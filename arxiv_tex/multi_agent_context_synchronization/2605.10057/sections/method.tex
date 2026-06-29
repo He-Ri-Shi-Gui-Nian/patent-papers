@@ -1,0 +1,198 @@
+\section{Method}
+\label{sec:method}
+
+
+\starname{} is a failure-aware routing framework for specialist composition in spatiotemporal reasoning.
+The key design is to separate specialist execution from inter-agent control: agents produce intermediate results and typed execution statuses, while the router decides which agent should act next.
+This separation is necessary because different failures require different successors.
+A malformed output, a missing upstream dependency, and a tool--query mismatch should not be collapsed into the same retry behavior.
+Given a query $q$, a state-conditioned routing policy $\pi$ composes a pool of specialist agents $\Agents$ through a shared blackboard $\Board$, and the final answer is produced by the fusion agent:
+\[
+\mathcal{F}(q) = a_{\sfuse}(\Board_K, q), \qquad \Board_K = \mathcal{E}(q, \pi, \Agents).
+\]
+The central object in \starname{} is a routing matrix indexed by current agent, task type, execution status, and next agent.
+
+\subsection{Failure-Aware Routing Formulation}
+\label{sec:formulation}
+
+We formalize specialist composition as routing over execution states:
+\[
+\mathcal{G} = (\Agents, \States, \Tasks, \pi, \Board, \Phi), \qquad
+\pi: \Agents \times \States \times \Tasks \to \Delta(\Agents)
+\]
+where $\Agents$ is the agent set, $\Tasks$ is a finite task-type set, $\Board$ is the blackboard state space, and $\Phi=\{\phi_a\}$ is the set of per-agent execution functions.
+The transition kernel $\pi$ maps the current agent, observed execution status, and task type to a distribution over next agents.
+
+The execution-status set is $\States = \{\sinit,\ssucc,\sfail,\sblock,\smiss\}.$
+Here, $\sinit$ and $\ssucc$ denote initialization and successful execution.
+The three error states have distinct operational meanings:
+$\sfail$ denotes a malformed result, $\sblock$ denotes a missing upstream dependency, and $\smiss$ denotes a tool--query mismatch.
+Recovery is treated as a routing problem rather than free-form generation.
+
+\subsection{State-Conditioned Routing Matrix}
+\label{sec:routing}
+
+The routing kernel combines stable nominal routes with learned recovery transitions:
+\begin{equation}
+\label{eq:dual_system}
+\pi(a' \mid a,s,t)=
+\begin{cases}
+\pi_1(a' \mid a,s,t), & (a,s,t)\in\Omega_1,\\
+\pi_2(a' \mid a,s,t), & \text{otherwise}.
+\end{cases}
+\end{equation}
+
+For nominal states $s\in\{\sinit,\ssucc\}$, \textbf{System~1} follows an expert successor function $\sigma_t$ for each task type $t$: $
+\pi_1(a' \mid a,s,t)=\indicator[a'=\sigma_t(a)].
+$
+For error states $s\in\{\sfail,\sblock,\smiss\}$, \textbf{System~2} uses a learned recovery matrix
+$
+\mathbf{M} \in \mathbb{R}^{N \times |\States| \times |\Tasks| \times N}_{\ge 0},
+$
+with
+\begin{equation}
+\label{eq:system2}
+\pi_2(a' \mid a,s,t)=\mathbf{M}[a,s,t,a']
+=\frac{\mathbf{C}[a,s,t,a']}{\sum_{a''}\mathbf{C}[a,s,t,a'']}.
+\end{equation}
+
+Each row $\mathbf{M}[a,s,t,\cdot]$ is a recovery profile: conditioned on the current agent $a$, task type $t$, and status $s$, it assigns mass to candidate successor agents.
+Thus, the same agent and task type can route differently under $\sfail$, $\sblock$, and $\smiss$.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/matrix_slice_figure.pdf}
+\caption{State-conditioned routing matrix slices for a representative task type. Each panel visualizes a row $\mathbf{M}[a,s,t,\cdot]$ with fixed current agent $a$ and task type $t$ but different execution status $s$. The differing successor distributions show that recovery is conditioned on the type of failure rather than treated as a generic retry action.}
+\label{fig:matrix_slice}
+\vspace{-0.8em}
+\end{figure}
+
+
+
+\subsection{Specialist Execution via Extract--Compute--Deposit}
+\label{sec:agent_pool}
+
+Each agent $a \in \Agents^{(1)}$ exposes a computation menu $\mathcal{M}_a$ of deterministic functions and executes
+\begin{equation}
+\label{eq:agent_protocol}
+\phi_a(\Board, q) = \bigl(s,\; \Board \cup \{(a, m^*(\theta))\}\bigr),
+\end{equation}
+where $m^*=\texttt{select}(q,\Board,\mathcal{M}_a)$ is the LLM-selected computation, $\theta=\texttt{extract}(q,\Board)$ are the extracted parameters, and $m^*(\theta)$ is the deterministic output.
+The LLM handles computation selection and parameter extraction, while numerical, geometric, temporal, and graph operations are delegated to deterministic solvers.
+Each specialist returns an updated blackboard and a status $s\in\States$, making execution outcomes observable to the routing matrix.
+The HEAD agent produces the query profile, the FUSION agent synthesizes the final answer, and full menus are provided in Appendix~\ref{app:agents}.
+
+\begin{figure}[!htbp]
+\centering
+\begin{minipage}{0.68\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/star_figure_2.pdf}
+\end{minipage}
+\hfill
+\begin{minipage}{0.28\textwidth}
+    \small
+    \textbf{Routing feedback loop.}
+    The routing matrix dispatches specialists based on the current agent, task type, and execution status.
+    After execution, specialists write typed status signals to the blackboard, which updates subsequent routing decisions.
+\end{minipage}
+\caption{Failure-aware routing and execution feedback in \starname{}. Specialists return typed signals such as \textsc{Success}, \textsc{Block}, \textsc{Miss}, and \textsc{Fail}; the execution-state blackboard stores these signals and supports subsequent routing and final fusion.}
+\label{fig:routing_feedback}
+\vspace{-0.8em}
+\end{figure}
+
+\subsection{Failure-Aware Matrix Training}
+\label{sec:matrix_training}
+
+For each training query $(q_i,y_i)$ with task type $t_i$, we execute the pipeline, record the trace
+$
+\xi_i=[(a^{(i)}_0,s^{(i)}_0),\ldots],
+$
+and determine final-answer correctness $r_i \in \{0,1\}$.
+Observed transitions are weighted as
+$
+w(r_i)=r_i+\alpha(1-r_i), \qquad \alpha \in (0,1),
+$
+so successful traces receive weight $1$ and unsuccessful traces receive attenuated weight $\alpha$.
+The weighted count tensor is
+\begin{equation}
+\label{eq:count_tensor}
+\mathbf{C}[a,s,t,a']
+=
+\sum_i \sum_j
+w(r_i)\,
+\indicator\!\bigl[a^{(i)}_j=a,\; s^{(i)}_j=s,\; t_i=t,\; a^{(i)}_{j+1}=a'\bigr].
+\end{equation}
+Row-normalizing $\mathbf{C}$ yields the recovery matrix $\mathbf{M}$ in Eq.~\ref{eq:system2}.
+When an agent enters an error state during training, candidate recovery specialists are also evaluated on the same query, and successful recoveries are added to the corresponding row of $\mathbf{C}$.
+This augmentation is used only to construct the matrix; at inference time, routing is determined by $\mathbf{M}$ without oracle recovery signals.
+A terminal constraint enforces $a_{\sfuse}$ as an absorbing state. The role of $\alpha$ is to retain information from unsuccessful traces so that recovery transitions remain observable.
+The empirical precision--coverage trade-off of $\alpha$ is analyzed in Appendix~\ref{app:alpha}.
+
+
+
+\subsection{Inference with Parallel Activation}
+\begin{algorithm}[!htbp]
+\caption{\starname{} inference}
+\label{alg:execution}
+\small
+\begin{algorithmic}[1]
+\REQUIRE Query $q$, kernel $\pi$, agents $\Agents$, threshold $\tau$, max steps $T$
+\STATE $\Board_0 \gets \emptyset$, \; $\mathcal{R} \gets \emptyset$
+\STATE $(t,p)\gets \phi_{a_{\shead}}(\Board_0,q)$; \; $\Board_1\gets \{(\shead,p)\}$; \; $a\gets a_{\shead}$; \; $s\gets \ssucc$
+\FOR{$k=1,\ldots,T$}
+    \STATE $\Agents_{\text{next}} \gets \{a' : \pi(a' \mid a,s,t)\ge \tau\} \setminus \mathcal{R}$
+    \IF{$a_{\sfuse}\in\Agents_{\text{next}}$}
+        \RETURN $a_{\sfuse}(\Board_k,q)$
+    \ENDIF
+    \STATE $\{(s_{a'},\Board^{a'})\}_{a'} \gets \texttt{scatter}\bigl(\{\phi_{a'}(\Board_k,q)\}_{a'\in\Agents_{\text{next}}}\bigr)$
+    \STATE $\Board_{k+1}\gets \Board_k \cup \bigcup_{a'} \Board^{a'}$
+    \STATE $\mathcal{R}\gets \mathcal{R}\cup\{a' : s_{a'}=\sfail\}$
+    \STATE $(a,s)\gets \texttt{pivot}(\{(a',s_{a'})\}_{a'\in\Agents_{\text{next}}})$
+\ENDFOR
+\RETURN $a_{\sfuse}(\Board_T,q)$
+\end{algorithmic}
+\end{algorithm}
+\vspace{-1.0em}
+
+
+At inference time, the router activates all successor agents whose probabilities exceed a threshold $\tau$.
+The system can execute multiple plausible successors in parallel when the routing matrix assigns mass to several candidates.
+The activated agents run in a scatter--gather step, deposit their outputs into the blackboard, and return typed statuses.
+A fixed pivot rule then selects the next control state from the returned statuses.
+Error statuses are prioritized for recovery, while failed agents are retired to avoid repeated malformed executions. Detailed inference algorithm is shown in Algorithm~\ref{alg:execution}.
+
+
+\begin{figure}[t]
+\centering
+\vspace{-0.5em}
+\includegraphics[width=0.85\textwidth]{figures/routing-example.pdf}
+\vspace{-0.5em}
+\caption{Routing example through the dual-system kernel. System~1 nominal routes (green arrows) handle $\ssucc$ transitions, while System~2 learned recovery transitions (red arrows) handle $\sfail$, $\sblock$, and $\smiss$ by escalating to alternative specialists or rerouting to fill missing dependencies.}
+\vspace{-1em}
+\label{fig:routing}
+\end{figure}
+
+\subsection{Recovery Reachability}
+\label{sec:theory}
+
+Failure-aware training is necessary for representing recovery transitions in the learned routing matrix.
+If training retains only successful traces, then error-state rows that are visited only by unsuccessful executions remain empty. Unsuccessful traces are not merely negative examples: they provide evidence needed to populate otherwise empty recovery rows of the routing matrix.
+Theorem~\ref{thm:recovery}shows the recovery reachability dominance, while the full proof are deferred to Appendix~\ref{app:proofs}.
+
+\begin{theorem}[Recovery Reachability Dominance]
+\label{thm:recovery}
+Let $\mathbf{M}^{\alpha}$ be the transition matrix trained with $w(r)=r+\alpha(1-r)$ for $\alpha>0$, and let $\mathbf{M}^{0}$ be the success-only matrix.
+For any error state $(a,s,t)$ with $s\in\{\sfail,\sblock,\smiss\}$,
+\[
+\bigl|\,\textup{supp}\,\mathbf{M}^\alpha[a, s, t, \cdot]\,\bigr| \;\geq\; \bigl|\,\textup{supp}\,\mathbf{M}^0[a, s, t, \cdot]\,\bigr|,
+\]
+with strict inequality whenever at least one unsuccessful trace traverses $(a,s,t)$ with a successor not observed in successful traces.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+From Eq.~\ref{eq:count_tensor}, each transition count is weighted by $w(r)=r+\alpha(1-r)$.
+When $\alpha>0$, both successful and unsuccessful traces contribute nonzero weight, so any successor observed from an error state remains represented in the corresponding row of $\mathbf{M}^{\alpha}$ after normalization.
+When $\alpha=0$, unsuccessful traces contribute zero weight, so successors observed only in unsuccessful executions disappear from $\mathbf{M}^{0}$.
+The support containment follows immediately, and the inequality is strict whenever an unsuccessful trace contributes a successor not observed in successful traces.
+\end{proof}
+

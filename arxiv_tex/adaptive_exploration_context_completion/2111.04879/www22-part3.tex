@@ -1,0 +1,136 @@
+\section{Evolutionary Concept Learning}%
+\label{sec:approach}
+
+In this section, we give a brief introduction to description logics and define the task of concept learning before introducing our novel approach EvoLearner for this task. We represent description logic concepts as abstract syntax trees which form the individuals of the evolutionary algorithms. The initial population of individuals is obtained via biased random walks originating from the positive examples. Subsequently, the population evolves from generation to generation by (1)~generating offspring via crossover operations, (2)~subjecting some of the offspring to mutations, and (3)~selecting the fittest individuals. Data properties are handled similarly to classical decision trees by maximizing information gain~\citep{Quinlan1986Induction}.
+
+\input{figures/table-description-logics}
+
+\paragraph{Description Logics.}
+
+Description logics~\cite{Kroetzsch2012Description} are widely used to express rules in knowledge bases, e.g., to express which instances belong to a class. These rules are represented by logical expressions such as the union $A \sqcup B$, intersection $A \sqcap B$, and negation $\neg A$ of concepts $A$ and $B$. While different description logics offer different trade-offs between expressiveness and reasoning complexity, in this paper, we employ the description logic $\mathcal{ALCQ(D)}$ because it contains the basic logical operators of all description logics ($\mathcal{ALC}$) as well as cardinality restrictions ($\mathcal{Q}$) and support for data properties ($\mathcal{D}$), which we found to be important for many real-world applications. Table~\ref{tab:description-logics} gives an overview of the different constructs.
+
+\paragraph{Task: Concept Learning in Description Logics.}
+We define the task of concept learning following \citet{Lehmann2010Concept}. Let $\mathcal{K}=(\mathcal{T}, \mathcal{A})$ be a knowledge base where $\mathcal{T}$ refers to the terminological box (TBox) expressed in $\mathcal{ALCQ(D)}$ and $\mathcal{A}$ refers to the assertion box (ABox). The ABox describes
+conceptual facts $C(x)$ where $x \in N_I$ is an instance,%
+\footnote{In this paper, we refer to description logic \emph{individuals} as \emph{instances} in order to distinguish them from evolutionary individuals which represent description logic concepts.}
+relational facts $r(x, y)$ with $x,y \in N_I$,
+Boolean facts $b(x, y)$ with $x \in N_I$ and $y \in \{\mathit{true}, \mathit{false}\}$,
+and numeric facts $d(x, y)$ with $x \in N_I$ and $y \in \mathbb{R}.$
+Given a knowledge base $\mathcal{K}$, positive examples $E^+\subseteq N_I$, and negative examples $E^- \subseteq N_I$, the objective is to find a concept $C$ in $\mathcal{ALCQ(D)}$ that covers as many of the positive examples as possible while covering as few of the negative examples as possible. In the ideal case, together with $\mathcal{K}' := \mathcal{K} \cup \{ C \}$, it should follow that $\mathcal{K}' \models C(e^+)$ for all $ e^+ \in E^+$ and $\mathcal{K'} \not\models C(e^-)$ for all $e^- \in E^-$, i.e., the concept $C$ provides an explanation for the positive examples but not for the negative examples. Note that it is not always possible to perfectly cover all positives and negatives in practice due to noisy training data with $E^{+} \cap E^{-}\neq \emptyset$. Moreover, the perfect solution $\{e_1^+\} \wedge  \ldots \wedge \{e_n^+ \} \wedge \neg \{e_1^-\}\wedge \ldots \wedge \neg \{e_m^-\}$ is often undesirable as it might not generalize to new, unseen data. Hence, the performance is measured with traditional metrics such as accuracy and $F_1$-measure~\citep{Westphal2019SML-Bench}.
+
+\paragraph{Reasoning and Graph Representation of Knowledge Base.}
+Following Lehmann~et~al.~\cite{Lehmann2010Concept,Lehmann2011Class}, we assume the knowledge base $\mathcal{K}$ to be static during concept learning and we employ a two-step reasoning process: (1)~We employ the OWL reasoner Pellet to derive the instances of named classes and the relationships between them. The resulting graph allows to (approximately) answer all instance checks.
+(2)~Following a closed-world assumption, queries are evaluated by set operations between instances of named classes.
+
+\paragraph{Tree Representation of Concepts.}
+As is common in genetic programming, concepts are represented as trees: inner nodes represent operators and leaves represent terminals, which can be atomic concepts in case of object properties and numbers and Booleans in case of data properties. Figure~\ref{fig:tree-example} shows an example.
+
+\input{figures/figure-tree-example}
+
+\subsection{Initialization via Biased Random Walks}%
+\label{subsec:initialization}
+
+We specifically tailored population initialization to concept learning to find good solutions as fast as possible, and we show that our method based on biased random walks significantly outperforms standard initialization methods for genetic pro\-gram\-ming, like \textsc{Grow}, \textsc{Full}, and \textsc{RampedHalfHalf}~\citep{Koza1992GP}. We seed the initial population of the evolutionary algorithm as follows: starting from a positive example in the knowledge graph, we perform a biased random walk and convert it to a concept which we add to the initial population. In this context, biased means that different outgoing edges are taken non-uniformly with a certain probability. Each generated concept consists of an atomic concept and sequences of role restrictions to describe its type and properties, respectively. Our algorithms are available as pseudocode in the appendix in Section~\ref{subsec:pseudocode}.
+
+In the following, we describe our steps informally and illustrate them with the example shown in Figure~\ref{fig:init-example} from the Family dataset~\citep{Richards1995Automated}. Given positive and negative examples, the goal is to learn the concept of an \texttt{Uncle}:
+\begin{equation}
+\begin{split}
+	\texttt{Male} \sqcap ((\exists \texttt{married.}\exists \texttt{hasSibling.Parent}) \ \sqcup \\ (\exists \texttt{hasSibling.Parent}))%
+	\label{eq:expected-solution}
+\end{split}
+\end{equation}
+The positive example we use to build an individual is \texttt{Person 1}.
+
+\input{figures/figure-init-example}
+
+\paragraph{Input and Precomputation}
+Given a knowledge base~$\mathcal{K}$ and positive examples~$E^+$, we count all their types and super types: for each example $e \in E^+$, we increment the count $\mathit{ct}[t]$ for (super) type $t$ except for \texttt{Thing}.\footnote{In other words, $\mathit{ct}[C]$ expresses the number of instances of an atomic concept $C$.}
+
+\begin{enumerate}
+		\item\label{item1-rw} \textit{Select an example and one of its types}: Uniformly randomly pick an example \mbox{$e^{+} \in E^{+}$}. Then select one of its types~$t$, where each of its types is weighted according to its precomputed counts $\mathit{ct}[t]$. In a pilot study, we experimented with sampling the types uniformly randomly. However, weighting the types by their relative frequency performed slightly better. In our example, \texttt{Person 1} with its type \texttt{Male} is picked.
+		
+		\medskip
+		\textbf{Example:} \texttt{Male}
+		\medskip
+
+		\item\label{item2-rw} \textit{Randomly select up to $\mathit{maxT}$ outgoing triples of~$e^{+}$, where $\mathit{maxT}$ is a hyperparameter}: Let $R = \{r \ | \ \mathcal{K} \models r(e^+, \cdot)\}$\ be the set of outgoing relations of $e^{+}$:%
+\footnote{These are either object or data properties but not ``type relations'' since in description logics, the class of instances is expressed in the form of $C(x)$ rather than by means of relations $r$.}
+		\begin{itemize}[noitemsep,topsep=0pt]
+		    \item Uniformly randomly select up to $\mathit{maxT}$ relations $r$ from $R$ without replacement (duplicate relations are not considered to increase variety). For each selected relation $r$, uniformly randomly choose an object $o$, yielding the triple $r(e^{+}, o)$.
+		    \item If less than $\mathit{maxT}$ triples $r(e^{+}, o)$ have been selected so far, uniformly randomly choose further triples $r(e^{+}, o)$ regardless of $r$ until either $\mathit{maxT}$ triples have been selected or all outgoing triples of~$e^{+}$ have been selected.
+		\end{itemize}
+		Having selected up to $\mathit{maxT}$ triples $r(e^{+}, o)$, their relations are added to the concept with either a union or an intersection, each with 50\% probability, as follows:
+		\begin{itemize}[noitemsep,topsep=0pt]
+		  \item In case $r$ is an object property, the relation is added as an existential restriction.
+		  \item In case $r$ is a Boolean concrete role, the relation is added as a value restriction $r=o$, where $o \in \{\mathit{true}, \mathit{false}\}$ represents the actual value found in the graph
+		  \item In case $r$ is a numeric concrete role, the split $\bar{v}_i$ closest to $o$ is selected from a precomputed set of potential splits (see Section~\ref{subsec:data_properties}). Then the value restriction $r \leq \bar{v}_i$ is added if $o \leq \bar{v}_i$ and the value restriction $r \geq \bar{v}_i$ otherwise.
+		\end{itemize}
+		We experimented with different values for $\mathit{maxT}$ and chose $\mathit{maxT}:=2$ because smaller values performed significantly worse in terms of $F_1$-measure, and larger values did not improve $F_1$ but tended to increase concept length (Table~\ref{tab:maxt}).
+		In our example, we walked along the \texttt{married} relation to \texttt{Person~2} and along the \texttt{hasChild} yielding the following incomplete concept with placeholders ($\ldots$):
+		
+		\medskip
+		
+	    \textbf{Example:} $\texttt{Male} \sqcap (\exists \texttt{married} \ldots  \sqcap \exists \texttt{hasChild} \ldots)$
+	    
+	    \medskip
+	    
+	    \item\label{item3-rw} \textit{Complete incomplete subconcepts}.  For each incomplete subconcept $C$ with a placeholder, let $o$ be the entity in the knowledge graph corresponding to the placeholder.
+	    \begin{itemize}[noitemsep,topsep=0pt]
+	        \item With a 50\% chance, the subconcept $C$ is extended by another triple as in Step~2.
+	        \item Finally, subconcept $C$ is completed by uniformly randomly selecting a type of $o$. If $o$ does not have a specific type, the top concept $\top$ (a.k.a.\ \texttt{Thing}) is selected.
+	    \end{itemize}
+	    
+	    In our example, the \texttt{married}-subconcept is extended by another relation and a type, whereas the \texttt{hasChild}-subconcept is extended only by a type:
+	    
+		\medskip
+		
+		\textbf{Example:} $\texttt{Male} \sqcap ((\exists \texttt{married.}\exists \texttt{hasSibling.Parent})  \sqcap\\ (\exists \texttt{hasChild.Child}))$
+\end{enumerate}
+
+Steps 1--3 generate one concept, i.e., one evolutionary individual, and are repeated until the specified population size of the evolutionary algorithm is reached. Since the initialization is random, one positive example can serve as the starting point of multiple concepts. Our objective is not to find a perfect solution immediately, but to start with a diverse population providing good crossover material. As can be seen in the generated example solution, the part $\exists \texttt{hasChild.Child}$ is not part of the desired concept of an \texttt{Uncle}, see Solution~\eqref{eq:expected-solution}, whereas the second part is: $\exists \texttt{married.}\exists \texttt{hasSibling.Parent}$. Apart from starting at positive examples, we also experimented with starting at negative examples and negating the concept; however, this did not improve $F_1$-measure. The runtime of our method scales linearly with the population size, and in all our experiments with population sizes up to $1,000$ individuals, the initialization took less than two seconds.  Atomic concepts and relations not selected to be part of the initial population can be introduced later by our mutation operator, which deletes and inserts new concepts (see Section~\ref{subsec:evolutionary-algorithm}).
+
+\subsection{Data Properties}%
+\label{subsec:data_properties}
+
+To overcome the problems of suboptimal data property thresholds and long runtimes outlined in Section~\ref{sec:introduction}, we adopt the idea of information gain~\citep{Quinlan1986Induction}, originally proposed for decision tree induction, and transfer it to concept learning: when generating value restrictions of the form $d \leq v$ and $d \geq v$, where $d$ is a numeric concrete role and $v$ is a threshold~(see Table~\ref{tab:description-logics}), we determine $v$ as to maximize information gain. Our evaluation results show that this approach significantly improves the performance.
+
+Given a data property $d$ from the knowledge base $\mathcal{K}$ and a set $E$ of positive and negative examples, the split maximizing information gain is computed following~\citet{Quinlan1986Induction}: Let $V_d^{E} = \{v | \mathcal{K} \models d(e,v) \wedge e \in E \}$ be the set of all values for the data property~$d$ and examples~$E$. We sort all values $v_i \in V_d^E$, and for each pair of adjacent values $(v_i, v_{i+1})$, we compute the pair's mean $\bar{v_i} = (v_i + v_{i+1})/2$ for consideration as a potential split with information gain
+\begin{equation}
+\scalemath{0.91}{%
+	\mathit{IG}(E, \bar{v_i}) = H(E) - H(E|\bar{v_i})
+   =  H(E) - \left(\frac{|E_L|}{|E|} H(E_L) + \frac{|E_R|}{|E|}  H(E_R)\right)\,,}
+\end{equation}
+where $E_i^L = \{e| \left(\mathcal{K} \models d(e, u)\right) \wedge e \in E \wedge u \leq \bar{v_i} \}$ and $E_i^R = \{e|\left(\mathcal{K} \models d(e, u)\right) \wedge e \in E \wedge u > \bar{v_i} \}$ are the two sets produced by splitting $E$ on $\bar{v_i}$. In the formula, $H$ refers to the entropy
+\begin{equation}
+\scalemath{0.91}{%
+		H(E) = - \sum_{c \in \{+, -\}} \Pr(E = c) \log \Pr(E = c)\,,}
+\end{equation}
+with $\Pr(E=c)$ denoting the fraction of positive/negatives examples in $E$; for example, with 4 positive and 3 negative examples, $H(E) = -4/7 \log(4/7) - 3/7 \log(3/7)$.
+As proven by \citet{Fayyad1992Handling}, if all examples with values $v_i$ and $v_{i+1}$ belong to the same class, a split between the two values cannot lead to a partition maximizing information gain. Hence, at most $\min(|E^{+}|, |E^{-}|) < |E|$ splits need to be tried, yielding a runtime of $O(|E| \cdot \log |E|)$ due to the sorting.
+
+When computing the graph representation of the knowledge base (see beginning of Section~\ref{sec:approach}), we precompute up to $k$ splits $\bar{v_i}$ per data property. We do so in a greedy fashion and take interactions between data properties into account as follows: We start with the set $E=E^{-} \cup E^{+}$ of positive and negative examples, and for each data property $d$ we compute the split $\bar{v}_i$ maximizing information gain along with its sets $E_i^L$ and $E_i^R$ which we add to a list of example sets. Once we have computed the best split for each data property, we sort the list of example sets according to entropy in descending order. Then for each data property $d$ and for each example set $E$ in the list, we compute the split that maximizes information gain. The process terminates once we have found $k$ splits per data property or there are less than $k$ splits per property. Intuitively, our computation is equivalent to computing one decision tree for each data property and traversing these decision trees in a breadth-first search from tree level to tree level, where each level is traversed in the order of decreasing entropy until we have found $k$ splits per data property. In our experiments, we chose $k=10$, and the whole computation of splits took less than a second for all learning problems. In future work, further non-precomputed splits might be obtained on the fly.
+
+Within our approach, we add the precomputed splits to our graph representation of the knowledge base and employ them at two points: (1)~during the initialization phase described in Section~\ref{subsec:initialization}, when a numeric property is selected, we select the \emph{closest} split to the actual value of the data property; (2)~during the mutation described in Section~\ref{subsec:evolutionary-algorithm}, when a new subtree is randomly generated, a \emph{random} split from the precomputed splits is selected. For Boolean value restrictions, we pick the actual data value in the initialization and the mutation operator randomly picks a value $\mathit{true}$ or $\mathit{false}$; for cardinality restrictions, we pick a value $\{1, 2, \ldots, N\}$ where $N$ is a hyperparameter, which was set to $5$ in our experiments. In future work, this hyperparameter might be determined automatically based on the underlying data and it might vary from property to property.
+
+\subsection{Selection, Crossover, and Mutation}%
+\label{subsec:evolutionary-algorithm}
+
+Starting from an initial population of evolutionary individuals represented as concept trees, selection, crossover, and mutation operators randomly generate new offspring based on their parents (algorithm \texttt{eaSimple}\cite{back2018evolutionary}).
+
+To select the fittest individuals, a tournament selection is performed in a first pass over the population (\texttt{selTournament}): Let $n$ be the population size. Then $n$ tournaments are performed, where in each tournament a small number of individuals $k$ is chosen uniformly randomly with replacement and the fittest individual among them is selected. In a second pass over the population,  a crossover operator combines the information of two parents generating two descendants. In a third pass, a mutation operator randomly modifies single individuals. In our experiments, we employ one-point crossover (\texttt{cxOnePoint}) and the uniform mutation operation (\texttt{mutUniform}).%
+\footnote{\url{https://deap.readthedocs.io/en/master/api/tools.html}}
+The one-point crossover operator randomly chooses a cut point (i.e., a node in the parse tree) in both individuals and swaps the subtrees below the cut points. The mutation operation uniformly randomly selects a node in the tree and replaces it with a randomly generated tree: the tree is generated with the \textsc{RampedHalfHalf} method with height 1 to 3~\citep{Koza1992GP}. Following~\citet{Koza1992GP}, we employ a tournament size of~$k=7$ and apply the crossover operation to two consecutive individuals in a population with 90\% probability and the mutation operation with 10\% probability. In a pilot study, we experimented with further crossover operators (e.g., \texttt{cx\-One\-Point\-Leaf\-Biased}), mutation operators (e.g., \texttt{mut\-Shrink}, \texttt{mut\-Node\-Re\-place\-ment}, \texttt{mut\-Insert},  Table~\ref{tab:mutation}), and probabilities. Many combinations yielded good results and our chosen combination only slightly outperformed other combinations we tried. The whole process is called a generation and is repeated until the maximum number of generations is reached or a timeout occurs. The population size stays constant.
+
+\subsection{Fitness Function and Bloat Control}
+
+We measure the fitness of each evolutionary individual, i.e., each concept~$C$, in terms of $\mathit{accuracy}$ on the positive and negative examples in the training set. $\mathit{Accuracy}$ is defined as the ratio of correct predictions among all predictions
+\begin{equation}
+\mathit{accuracy}(C) = \frac{| E^{+} \cap R(C)| + |E^{-} \setminus R(C)|}{|E^{+}| + |E^{-}|}\,,
+\end{equation}
+with $R(C)$ denoting the individuals retrieved for concept $C$ via our graph representation. To control bloat, i.e., overly long concepts that do not generalize to new, unseen data, we apply linear parametric parsimony pressure~\citep{Luke2006Bloat} yielding the fitness function
+\begin{equation}
+		\mathit{fitness}(C) := \mathit{accuracy}(C) \cdot x - \mathit{length}(C)\,,
+\end{equation}
+where the $\mathit{length}(C)$ of an individual denotes the number of nodes in the tree (e.g., length~7 in Figure~\ref{fig:tree-example}) and where $x$ is a weighting factor that can be set as a hyperparameter. In a pilot study, as per~\citet{Luke2006Bloat}, we experimented with different values for~$x$ between 1,024 and 8,192 and decided to use $x=2,048$. We obtained similar results for a wide range of values. However, smaller values slightly decreased performance in terms of $F_1$-measure. Larger values were only beneficial for few datasets and learning problems.
+
+In addition, we set a static depth limit $d$ for the tree depth of individuals since bloat control often performs better if combined with such a limit~\citep{Luke2006Bloat}. In our experiments, we set $d=17$ as previously done in the literature~\citep{Luke2006Bloat, Koza1992GP}. We also experimented with other bloat control methods such as proportional and double tournament~\citep{Luke2006Bloat} without significant improvements.

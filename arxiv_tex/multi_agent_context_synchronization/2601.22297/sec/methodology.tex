@@ -1,0 +1,54 @@
+\section{Methodology}
+\label{methodology}
+
+We propose Self-Debate Reinforcement Learning (\SDRL{}), an online reinforcement learning framework that trains a \emph{single} policy to improve both (i) single-agent reasoning and (ii) \emph{private critique} required by Multi-Agent Debate (MAD). Section~\ref{subsec:single_agent_reasoning} introduces how \SDRL{} uses verifiable rewards to train the model for single-agent reasoning. Section~\ref{subsec:debate_ability} introduces how \SDRL{} equips a single model with the private critique ability to discriminate between different opinions during debate interactions.
+
+\subsection{Single-agent reasoning}
+\label{subsec:single_agent_reasoning}
+
+To improve the model’s reasoning ability in the single-agent setting, \SDRL{} follows the GRPO framework~\cite{shao2024deepseekmath} and optimizes the policy using verifiable rewards. For each prompt $q$, \SDRL{} samples $n$ independent responses  $\{o_i\}_{i=1}^n \sim \pi_\theta(\cdot \mid q)$ from the current policy and assigns a sparse outcome reward $r_j \in \{+1,-1\}$ based on the correctness of the final answer. We then compute advantages for each response using Eq.~\ref{eq:advantage}. To prepare candidate responses for debate training, we follow DAPO~\cite{yu2025dapo} to oversample prompts and filter out those whose responses yield zero advantages. This ensures that each prompt has responses corresponding to different final answers, capturing diverse opinions and reasoning trajectories.
+
+\begin{algorithm}[t]
+\footnotesize
+\caption{Self-Debate Reinforcement Learning (\SDRL{})}
+\label{alg:sdrl}
+\vspace{-0.4em}
+\begin{algorithmic}[1]
+\Require Policy $\pi_\theta$, prompt set $\mathcal{D}=\{q_i\}_{i=1}^N$, initial rollouts $n$, debate rollouts $n_d$, training steps $K$
+\Ensure Updated policy $\pi_{\theta_{\mathrm{updated}}}$
+
+\For{$t=1,\dots,K$}
+  \State Sample mini-batch $\mathbf{q}\subseteq\mathcal{D}$ and initialize $\mathbf{B}\leftarrow\emptyset$
+  \For{each $q\in\mathbf{q}$}
+    \State Sample initial rollouts $\{o_i\}_{i=1}^n\sim\pi_\theta(\cdot\mid q)$ and compute advantages $\{A_i\}_{i=1}^n$
+    \State $\mathbf{B}\leftarrow \mathbf{B}\cup\{(q,\{o_i\}_{i=1}^n,\{A_i\}_{i=1}^n)\}$
+    \State Select debate pair $(o^1,o^2)$ from $\{o_i\}_{i=1}^n$ and construct debate prompt $q_d$
+    \State Sample debate rollouts $\{o_j^d\}_{j=1}^{n_d}\sim\pi_\theta(\cdot\mid q_d)$ and compute advantages $\{A_j^d\}_{j=1}^{n_d}$
+    \State $\mathbf{B}\leftarrow \mathbf{B}\cup\{(q_d,\{o_j^d\}_{j=1}^{n_d},\{A_j^d\}_{j=1}^{n_d})\}$
+  \EndFor
+  \State Update $\pi_\theta$ using the RL optimizer on $\mathbf{B}$
+\EndFor
+\State \Return $\pi_{\theta_{\mathrm{updated}}}$
+\end{algorithmic}
+\vspace{-0.3em}
+\end{algorithm}
+
+\subsection{Debate training}
+\label{subsec:debate_ability}
+
+To improve the model's private critique ability, \SDRL{} constructs debate contexts that expose the policy to conflicting reasoning trajectories. Producing a correct final answer in these contexts requires the model to exercise private critique by distinguishing reliable reasoning from flawed trajectories. Given the initial rollout set for a prompt $q$, we construct a debate pair by selecting two responses from the candidate response pool, which is formed from the first-round responses generated for single-agent reasoning. Selecting two responses to form a debate pair is a computationally efficient design choice that induces the fundamental private critique behavior and generalizes to settings with more candidate responses.
+
+\textbf{Debate pair construction.}
+Let $\mathcal{O}(q)=\{o_i\}_{i=1}^n$ denote the initial rollouts, which we use as the candidate pool, and let $a(o_i)$ be the extracted final answer of rollout $o_i$.
+\SDRL{} constructs a debate pair $\mathcal{P}(o^1, o^2)$ by selecting two candidates from $\mathcal{O}(q)$ using one of two pairing rules:
+\begin{enumerate}
+    \item \emph{Random pairing}. It samples two rollouts uniformly from $\mathcal{O}(q)$.
+    This induces a broad distribution of pair diversity.
+    Some pairs exhibit genuine disagreement, while others share the same final answer but differ in their reasoning trajectories, which can provide useful training signals for confirmation rather than unconditional revision.
+    \item \emph{Frequency-based pairing}. It first identifies the most common answer $a_1$ and the second most common answer $a_2$ in $\{a(o_i)\}_{i=1}^n$.
+    This rule more consistently exposes the model to the dominant competing beliefs expressed by its current policy, yielding sharper disagreement instances and therefore requiring stronger private critique ability.
+\end{enumerate}
+ We evaluate both constructions and use the same downstream prompting and optimization for either choice. 
+
+\textbf{Debate prompt formulation.}
+Given a selected pair $\mathcal{P}(o^1, o^2)$, we build a debate prompt $q_d$ by serializing the two candidate responses into a two-turn conversation, and then prompt the model to deliberate over both responses and produce a final answer. The detailed conversation format and prompt template are shown in the Appendix. For \emph{frequency-based pairing}, we randomize the order of $a_1$ and $a_2$ to prevent positional heuristics. Since the most common answer $a_1$ typically has a higher probability of being correct, always placing $a_1$ as the first response in $q_d$ could encourage the model to select the first-position answer rather than perform critical analysis of the underlying reasoning trajectories.

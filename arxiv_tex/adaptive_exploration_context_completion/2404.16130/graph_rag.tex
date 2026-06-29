@@ -1,0 +1,469 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2023
+\PassOptionsToPackage{authoryear, sort}{natbib}
+
+% ready for submission
+% \usepackage{neurips_2024}
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+ \usepackage[preprint]{neurips_2024}
+
+\usepackage{import}%
+\usepackage{graphicx}%
+\usepackage{comment}%
+\usepackage{multirow}%
+\usepackage{amsmath,amssymb,amsfonts}%
+\usepackage{amsthm}%
+\usepackage{mathrsfs}%
+\usepackage[title]{appendix}%
+\usepackage[usenames, dvipsnames]{xcolor}%
+\usepackage{textcomp}%
+\usepackage{manyfoot}%
+\usepackage{booktabs}%
+\usepackage{array}
+\usepackage{algorithm}%
+\usepackage{algorithmicx}%
+\usepackage{algpseudocode}%
+\usepackage{listings}%
+\usepackage{longtable}%
+\usepackage[most]{tcolorbox}%
+\usepackage{booktabs}
+\usepackage{enumerate}
+\usepackage{url}
+\def\UrlBreaks{\do\/\do-}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{array} % required for text wrapping in tables
+\usetikzlibrary{shapes, arrows, positioning, fit}
+\usepackage{tabularx}
+\usepackage{placeins}
+
+\renewcommand{\subsectionautorefname}{Section}%
+\renewcommand{\subsubsectionautorefname}{Section}%
+
+\hypersetup{
+    colorlinks=true,
+    allcolors=[rgb]{0 0 0.5}
+    }
+
+\urlstyle{same}
+
+\title{From Local to Global: A GraphRAG Approach to Query-Focused Summarization}
+
+\author{%
+    Darren Edge\textsuperscript{1†} 
+    \And Ha Trinh\textsuperscript{1†} 
+    \And Newman Cheng\textsuperscript{2} 
+    \And Joshua Bradley\textsuperscript{2} 
+    \And Alex Chao\textsuperscript{3} 
+    \And Apurva Mody\textsuperscript{3} 
+    \And Steven Truitt\textsuperscript{2} 
+    \And Dasha Metropolitansky\textsuperscript{1}\\ 
+    \And Robert Osazuwa Ness\textsuperscript{1}
+    \And Jonathan Larson\textsuperscript{1} \\\\
+  \textsuperscript{1}Microsoft Research\\
+  \textsuperscript{2}Microsoft Strategic Missions and Technologies\\
+  \textsuperscript{3}Microsoft Office of the CTO\\
+  \\ 
+  \texttt{\{daedge,trinhha,newmancheng,joshbradley,achao,moapurva,} \\
+  \small
+\texttt{steventruitt,dasham,robertness,jolarso\}@microsoft.com} \\ \\
+\small
+\textsuperscript{†}These authors contributed equally to this work 
+}
+\pgfplotsset{compat=1.18}
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+The use of retrieval-augmented generation (RAG) to retrieve relevant information from an external knowledge source enables large language models (LLMs) to answer questions over private and/or previously unseen document collections.
+However, RAG fails on global questions directed at an entire text corpus, such as ``What are the main themes in the dataset?'', since this is inherently a query-focused summarization (QFS) task, rather than an explicit retrieval task.
+Prior QFS methods, meanwhile, do not scale to the quantities of text indexed by typical RAG systems. 
+To combine the strengths of these contrasting methods, we propose \textit{GraphRAG}, a graph-based approach to question answering over private text corpora that scales with both the generality of user questions and the quantity of source text.
+Our approach uses an LLM to build a graph index in two stages: first, to derive an entity knowledge graph from the source documents, then to pregenerate community summaries for all groups of closely related entities.
+Given a question, each community summary is used to generate a partial response, before all partial responses are again summarized in a final response to the user.
+For a class of global sensemaking questions over datasets in the 1 million token range, we show that GraphRAG leads to substantial improvements over a conventional RAG baseline for both the comprehensiveness and diversity of generated answers.
+
+\end{abstract}
+
+\section{Introduction}
+
+Retrieval augmented generation (RAG)~\citep{lewis2020retrieval} is an established approach to using LLMs to answer queries based on data that is too large to contain in a language model's \emph{context window}, meaning the maximum number of \emph{tokens} (units of text) that can be processed by the LLM at once ~\citep{liu-etal:2023:tacl, kuratov2024search}.
+In the canonical RAG setup, the system has access to a large external corpus of text records and retrieves a subset of records that are individually relevant to the query and collectively small enough to fit into the context window of the LLM. The LLM then generates a response based on both the query and the retrieved records \citep{dang2006duc, yao2017recent, baumel2018query, laskar2020query}.
+This conventional approach, which we collectively call \emph{vector RAG}, works well for queries that can be answered with information localized within a small set of records.
+However, vector RAG approaches do not support \textit{sensemaking} queries, meaning queries that require global understanding of the entire dataset, such as "\emph{What are the key trends in how scientific discoveries are influenced by interdisciplinary research over the past decade?}"
+
+\textit{Sensemaking} tasks require reasoning over ``\emph{connections
+(which can be among people, places, and events) in order to anticipate their trajectories and act effectively}''~\citep{klein2006amaking}.
+LLMs such as GPT~\citep{brown2020language, achiam2023gpt}, Llama~\citep{touvron2023llama}, and Gemini~\citep{team2023gemini} excel at sensemaking in complex domains like scientific discovery~\citep{ai4science2023impact} and intelligence analysis~\citep{ranade2023fabula}.
+Given a sensemaking query and a text with an implicit and interconnected set of concepts, an LLM can generate a summary that answers the query.
+The challenge, however, arises when the volume of data requires a RAG approach, since vector RAG approaches are unable to support sensemaking over an entire corpus.
+
+In this paper, we present \textbf{GraphRAG} -- a graph-based RAG approach that enables sensemaking over the entirety of a large text corpus.
+GraphRAG first uses an LLM to construct a knowledge graph, where nodes correspond to key entities in the corpus and edges represent relationships between those entities. 
+Next, it partitions the graph into a hierarchy of communities of closely related entities, before using an LLM to generate community-level summaries. These summaries are generated in a bottom-up manner following the hierarchical structure of extracted communities, with summaries at higher levels of the hierarchy recursively incorporating lower-level summaries.
+Together, these community summaries provide global descriptions and insights over the corpus.
+Finally, GraphRAG answers queries through map-reduce processing of community summaries; in the map step, the summaries are used to provide partial answers to the query independently and in parallel, then in the reduce step, the partial answers are combined and used to generate a final global answer.
+
+The GraphRAG method and its ability to perform global sensemaking over an entire corpus form the main contribution of this work. To demonstrate this ability, we developed a novel application of the LLM-as-a-judge technique ~\citep{zheng2024judging} suitable for questions targeting broad issues and themes where there is no ground-truth answer.
+This approach first uses one LLM to generate a diverse set of global sensemaking questions based on corpus-specific use cases, before using a second LLM to judge the answers of two different RAG systems using predefined criteria (defined in \autoref{sec:criteria}).
+We use this approach to compare GraphRAG to vector RAG on two representative real-world text datasets.
+Results show GraphRAG strongly outperforms vector RAG when using GPT-4 as the LLM.
+
+GraphRAG is available as open-source software at \url{https://github.com/microsoft/graphrag}.
+In addition, versions of the GraphRAG approach are also available as extensions to multiple open-source libraries, including LangChain~\citep{LangchainGraphRAG}, LlamaIndex~\citep{LlamaIndexGraphRAG}, NebulaGraph~\citep{NebulaGraph}, and Neo4J~\citep{Neo4jGraphRAG}.
+
+\section{Background}
+
+\subsection{RAG Approaches and Systems}
+
+RAG generally refers to any system where a user query is used to retrieve relevant information from external data sources, whereupon this information is incorporated into the generation of a response to the query by an LLM (or other generative AI model, such as a multi-media model).
+The query and retrieved records populate a prompt template, which is then passed to the LLM~\citep{ram2023context}.
+RAG is ideal when the total number of records in a data source is too large to include in a single prompt to the LLM, i.e. the amount of text in the data source exceeds the LLM's context window.   
+
+In canonical RAG approaches, the retrieval process returns a set number of records that are semantically similar to the query and the generated answer uses only the information in those retrieved records.
+A common approach to conventional RAG is to use text embeddings, retrieving records closest to the query in vector space where closeness corresponds to semantic similarity \citep{gao2023retrieval}.
+While some RAG approaches may use alternative retrieval mechanisms, we collectively refer to the family of conventional approaches as \emph{vector RAG}.
+GraphRAG contrasts with vector RAG in its ability to answer queries that require global sensemaking over the entire data corpus.
+
+GraphRAG builds upon prior work on advanced RAG strategies.
+GraphRAG leverages summaries over large sections of the data source as a form of "self-memory" (described in~\citealt{cheng2024lift}), which are later used to answer queries as in~\citealt{mao2020generation}). These summaries are generated in parallel and iteratively aggregated into global summaries, similar to prior techniques~\citep{shao2023enhancing, wang2024feb4rag, su2020caire, feng2023retrieval, trivedi2022interleaving, khattab2022demonstrate, gao2023retrieval}.
+In particular, GraphRAG is similar to other approaches that use hierarchical indexing to create summaries (similar to~\citealt{kim2023tree, sarthi2024raptor}).
+GraphRAG contrasts with these approaches by generating a graph index from the source data, then applying graph-based community detection to create a thematic partitioning of the data. 
+
+\subsection{Using Knowledge Graphs with LLMs and RAG}
+\label{sec:graphlit}
+
+Approaches to knowledge graph extraction from natural language text corpora include rule-matching, statistical pattern recognition, clustering, and embeddings~\citep{yates-etal-2007-textrunner, mooney, kimprob, knowitall}.
+GraphRAG falls into a more recent body of research that use of LLMs for knowledge graph extraction~\citep{melnyk2022knowledge, representationlearning, openai2023chatgpt, ban2023query, zhang2024causal, Trajanoska2023EnhancingKG, yao2023exploring, yates-etal-2007-textrunner}.
+It also adds to a growing body of RAG approaches that use a knowledge graph as an index~\citep{gao2023retrieval}.
+Some techniques use subgraphs, elements of the graph, or properties of the graph structure directly in the prompt ~\citep{baek2023knowledge, he2024g, zhang2023graph} or as factual grounding for generated outputs~\citep{kang2023knowledge, ranade2023fabula}.
+Other techniques~\citep{wang2023knowledge} use the knowledge graph to enhance retrieval, where at query time an LLM-based agent dynamically traverses a graph with nodes representing document elements (e.g., passages, tables) and edges encoding lexical and semantical similarity or structural relationships.
+GraphRAG contrasts with these approaches by focusing on a previously unexplored quality of graphs in this context: their inherent \emph{modularity}~\citep{newman2006modularity} and the ability to partition graphs into nested modular communities of closely related nodes (e.g., Louvain,~\citealt{blondel2008fast}; Leiden,~\citealt{Traag2019Leiden}).
+Specifically, GraphRAG recursively creates increasingly global summaries by using the LLM to create summaries spanning this community hierarchy.
+
+\subsection{Adaptive benchmarking for RAG Evaluation}
+Many benchmark datasets for open-domain question answering exist, including HotPotQA~\citep{yang2018hotpotqa}, MultiHop-RAG~\citep{tang2024multihop}, and MT-Bench~\citep{zheng2024judging}.
+However, these benchmarks are oriented towards vector RAG performance, i.e., they evaluate performance on explicit fact retrieval. 
+In this work, we propose an approach for generating a set of questions for evaluating global sensemaking over the entirety of the corpus.
+Our approach is related to LLM methods that use a corpus to generate questions whose answers would be summaries of the corpus, such as in~\cite{xu2021text}.
+However, in order to produce a fair evaluation, our method avoids generating the questions directly from the corpus itself (as an alternative implementation, one can use a subset of the corpus held out from subsequent graph extraction and answer evaluation steps).
+
+\emph{Adaptive benchmarking} refers to the process of dynamically generating evaluation benchmarks tailored to specific domains or use cases.
+Recent work has used LLMs for adaptive benchmarking to ensure relevance, diversity, and alignment with the target application or task \citep{yuan2024s, zhang2024darg}.
+In this work, we propose an adaptive benchmarking approach to generating global sensemaking queries for the LLM.
+Our approach builds on prior work in LLM-based persona generation, where the LLM is used to generate diverse and authentic sets of personas \citep{salminen2024deus, shin2024understanding, kosinski2024evaluating}.
+Our adaptive benchmarking procedure uses persona generation to create queries that are representative of real-world RAG system usage.
+Specifically, our approach uses the LLM to infer the potential users would use the RAG system and their use cases, which guide the generation of corpus-specific sensemaking queries.
+
+\subsection{RAG evaluation criteria}
+Our evaluation relies on the LLM to evaluate how well the RAG system answers the generated questions.
+Prior work has shown LLMs to be good evaluators of natural language generation, including work where LLMs evaluations were competitive with human evaluations~\citep{wang2023chatgpt,zheng2024judging}.
+Some prior work proposes criteria for having LLMs quantify the quality of generated texts such as ``fluency" ~\citep{wang2023chatgpt}
+Some of these criteria are generic to vector RAG systems and not relevant to global sensemaking, such as ``context relevance", ``faithfulness", and ``answer relevance" (RAGAS,~\citealt{es2023ragas}).
+Lacking a gold standard for evaluation, one can quantify relative performance for a given criterion by prompting the LLM to compare generations from two different competing models (LLM-as-a-judge,~\citep{zheng2024judging}).
+In this work, we design criteria for evaluating RAG-generated answers to global sensemaking questions and evaluate our results using the comparative approach.
+We also validate results using statistics derived from LLM-extracted statements of verifiable facts, or ``claims."
+
+\section{Methods}
+\subsection{GraphRAG Workflow}
+
+\autoref{fig:pipeline} illustrates the high-level data flow of the GraphRAG approach  and pipeline.
+In this section, we describe the key design parameters, techniques, and implementation details for each step.
+
+\import{}{flow_figure.tex}
+
+\subsubsection{Source Documents \texorpdfstring{\texorpdfstring{$\rightarrow$}{-->}}{-->} Text Chunks}
+
+To start, the documents in the corpus are split into text chunks.
+The LLM extracts information from each chunk for downstream processing.
+Selecting the size of the chunk is a fundamental design decision; longer text chunks require fewer LLM calls for such extraction (which reduces cost) but suffer from degraded recall of information that appears early in the chunk~\citep{liu-etal:2023:tacl, kuratov2024search}.
+See \autoref{app:entity} for prompts and examples of the recall-precision trade-offs.
+
+\subsubsection{Text Chunks \texorpdfstring{$\rightarrow$}{-->} Entities \& Relationships}
+
+In this step, the LLM is prompted to extract instances of important \emph{entities} and the \emph{relationships} between the entities from a given chunk. 
+Additionally, the LLM generates short descriptions for the entities and relationships. To illustrate, suppose a chunk contained the following text:
+
+\begin{quote}
+NeoChip's (NC) shares surged in their first week of trading on the NewTech Exchange.
+However, market analysts caution that the chipmaker's public debut may not reflect trends for other technology IPOs.
+NeoChip, previously a private entity, was acquired by Quantum Systems in 2016.
+The innovative semiconductor firm specializes in low-power processors for wearables and IoT devices.
+\end{quote}
+
+The LLM is prompted such that it extracts the following:
+\begin{itemize}
+    \item The entity \texttt{NeoChip}, with description ``NeoChip is a publicly traded company specializing in low-power processors for wearables and IoT devices."
+    \item The entity \texttt{Quantum Systems}, with description ``Quantum Systems is a firm that previously owned NeoChip."
+    \item A relationship between \texttt{NeoChip} and \texttt{Quantum Systems}, with description ``Quantum Systems owned NeoChip from 2016 until NeoChip became publicly traded."
+\end{itemize}
+These prompts can be tailored to the domain of the document corpus by choosing domain appropriate few-shot exemplars for in-context learning~\citep{brown2020language}.
+For example, while our default prompt extracts the broad class of ``named entities'' like people, places, and organizations and is generally applicable, domains with specialized knowledge (e.g., science, medicine, law) will benefit from few-shot exemplars specialized to those domains.
+
+The LLM can also be prompted to extract \emph{claims} about detected entities.
+\emph{Claims} are important factual statements about entities, such as dates, events, and interactions with other entities.
+As with entities and relationships, in-context learning exemplars can provide domain-specific guidance. Claim descriptions extracted from the example tetx chunk are as follows:
+\begin{itemize}
+    \item NeoChip's shares surged during their first week of trading on the NewTech Exchange.
+    \item NeoChip debuted as a publicly listed company on the NewTech Exchange.
+    \item Quantum Systems acquired NeoChip in 2016 and held ownership until NeoChip went public.
+\end{itemize}
+
+See \autoref{app:prompts} for prompts and details on our implementation of entity and claim extraction.
+
+\subsubsection{Entities \& Relationships \texorpdfstring{$\rightarrow$}{-->} Knowledge Graph}
+The use of an LLM to extract entities, relationships, and claims is a form of abstractive summarization -- these are meaningful summaries of concepts that, in the case of relationships and claims, may not be explicitly stated in the text.
+The entity/relationship/claim extraction processes creates multiple instances of a single element because an element is typically detected and extracted multiple times across documents.
+
+In the final step of the knowledge graph extraction process, these instances of entities and relationships become individual nodes and edges in the graph.
+Entity descriptions are aggregated and summarized for each node and edge.
+Relationships are aggregated into graph edges, where the number of duplicates for a given relationship becomes edge weights.
+Claims are aggregated similarly.
+
+In this manuscript, our analysis uses exact string matching for \emph{entity matching} -- the task of reconciling different extracted names for the same entity~\citep{barlaug2021neural, christen2012data, elmagarmid2006duplicate}. 
+However, softer matching approaches can be used with minor adjustments to prompts or code.
+Furthermore, GraphRAG is generally resilient to duplicate entities since duplicates are typically clustered together for summarization in subsequent steps.
+
+\subsubsection{Knowledge Graph \texorpdfstring{$\rightarrow$}{-->} Graph Communities}
+
+Given the graph index created in the previous step, a variety of community detection algorithms may be used to partition the graph into communities of strongly connected nodes (e.g., see the surveys by~\citet{fortunato2010community} and~\citet{jin2021survey}).
+In our pipeline, we use Leiden community detection~\citep{Traag2019Leiden} in a hierarchical manner, recursively detecting sub-communities within each detected community until reaching leaf communities that can no longer be partitioned. 
+
+Each level of this hierarchy provides a community partition that covers the nodes of the graph in a mutually exclusive, collectively exhaustive way, enabling divide-and-conquer global summarization.
+An illustration of such hierarchical partitioning on an example dataset can be found in \autoref{app:graph}.
+
+\subsubsection{Graph Communities \texorpdfstring{$\rightarrow$}{-->} Community Summaries}
+The next step creates report-like summaries of each community in the community hierarchy, using a method designed to scale to very large datasets.
+These summaries are independently useful as a way to understand the global structure and semantics of the dataset, and may themselves be used to make sense of a corpus in the absence of a specific query.
+For example, a user may scan through community summaries at one level looking for general themes of interest, then read linked reports at a lower level that provide additional details for each subtopic.
+Here, however, we focus on their utility as part of a graph-based index used for answering global queries.
+
+GraphRAG generates community summaries by adding various element summaries (for nodes, edges, and related claims) to a community summary template.
+Community summaries from lower-level communities are used to generate summaries for higher-level communities as follows:
+
+\begin{itemize}
+    \item \emph{Leaf-level communities}. The element summaries of a leaf-level community  are prioritized and then iteratively added to the LLM context window until the token limit is reached.
+    The prioritization is as follows: for each community edge in decreasing order of combined source and target node degree (i.e., overall prominence), add descriptions of the source node, target node, the edge itself, and related claims.
+    \item \emph{Higher-level communities}. If all element summaries fit within the token limit of the context window, proceed as for leaf-level communities and summarize all element summaries within the community.
+    Otherwise, rank sub-communities in decreasing order of element summary tokens and iteratively substitute sub-community summaries (shorter) for their associated element summaries (longer) until they fit within the context window.
+\end{itemize}
+
+\subsubsection{Community Summaries \texorpdfstring{$\rightarrow$}{-->} Community Answers \texorpdfstring{$\rightarrow$}{-->} Global Answer}
+\label{sec:querytime}
+
+Given a user query, the community summaries generated in the previous step can be used to generate a final answer in a multi-stage process.
+The hierarchical nature of the community structure also means that questions can be answered using the community summaries from different levels, raising the question of whether a particular level in the hierarchical community structure offers the best balance of summary detail and scope for general sensemaking questions (evaluated in~\autoref{sec:eval}).
+
+For a given community level, the global answer to any user query is generated as follows:  
+
+\begin{itemize}
+    \item \emph{Prepare community summaries}. Community summaries are randomly shuffled and divided into chunks of pre-specified token size.  This ensures relevant information is distributed across chunks, rather than concentrated (and potentially lost) in a single context window.
+    \item \emph{Map community answers}. Intermediate answers are generated in parallel. The LLM is also asked to generate a score between 0-100 indicating how helpful the generated answer is in answering the target question. Answers with score 0 are filtered out.
+    \item \emph{Reduce to global answer}. Intermediate community answers are sorted in descending order of helpfulness score and iteratively added into a new context window until the token limit is reached. This final context is used to generate the global answer returned to the user.
+\end{itemize}
+
+\subsection{Global Sensemaking Question Generation}
+To evaluate the effectiveness of RAG systems for global sensemaking tasks, we use an LLM to generate a set of corpus-specific questions designed to asses high-level understanding of a given corpus, without requiring retrieval of specific low-level facts.
+Instead, given a high-level description of a corpus and its purposes, the LLM is prompted to generate personas of hypothetical users of the RAG system.
+For each hypothetical user, the LLM is then prompted to specify tasks that this user would use the RAG system to complete.
+Finally, for each combination of user and task, the LLM is prompted to generate questions that require understanding of the entire corpus. Algorithm 1 describes the approach.
+
+\noindent\hrulefill
+
+\vspace{-5px}
+\textbf{Algorithm 1: Prompting Procedure for Question Generation}
+
+\vspace{-10px}
+\noindent\hrulefill
+
+\begin{algorithmic}[1]
+\State \textbf{Input:} Description of a corpus, number of users $K$, number of tasks per user $N$, number of questions per (user, task) combination $M$.
+\State \textbf{Output:} A set of $K*N*M$ high-level questions requiring global understanding of the corpus.
+
+\Procedure{GenerateQuestions}{}
+    \State Based on the corpus description, prompt the LLM to:
+    \begin{enumerate}
+        \item Describe personas of $K$ potential users of the dataset.
+        \item For each user, identify $N$ tasks relevant to the user.
+        \item Specific to each user \& task pair, generate $M$ high-level questions that:
+        \begin{itemize}
+            \item Require understanding of the entire corpus.
+            \item Do not require retrieval of specific low-level facts.
+        \end{itemize}
+    \end{enumerate}
+    \State Collect the generated questions to produce $K*N*M$ test questions for the dataset.
+\EndProcedure
+\end{algorithmic}
+\noindent\hrulefill
+\label{alg:question_generation}
+
+For our evaluation, we set $K=M=N=5$ for a total of 125 test questions per dataset.
+\autoref{tab:sample_queries} shows example questions for each of the two evaluation datasets.
+\FloatBarrier
+\import{}{question_table.tex}
+
+\subsection{Criteria for Evaluating Global Sensemaking}
+\label{sec:criteria}
+
+Given the lack of gold standard answers to our activity-based sensemaking questions, we adopt the head-to-head comparison approach using an LLM evaluator that judges relative performance according to specific criteria.
+We designed three target criteria capturing qualities that are desirable for global sensemaking activities.
+
+\autoref{app:eval_prompts} shows the prompts for our head-to-head measures computed using an LLM evaluator, summarized as:
+\begin{itemize}
+    \item \emph{Comprehensiveness}. How much detail does the answer provide to cover all aspects and details of the question?
+    \item \emph{Diversity}. How varied and rich is the answer in providing different perspectives and insights on the question?
+    \item \emph{Empowerment}. How well does the answer help the reader understand and make informed judgments about the topic?
+\end{itemize}
+
+Furthermore, we use a ``control criterion'' called \emph{Directness} that answers \emph{``How specifically and clearly does the answer address the question?"}.
+In plain terms, directness evaluates the concision of an answer in a generic sense that applies to any generated LLM summarization.
+We include it to behave as a reference against which we can judge the soundness of results for the other criteria.
+Since directness is effectively in opposition to comprehensiveness and diversity, we would not expect any method to win across all four criteria.
+
+In our evaluations, the LLM is provided with the question, the generated answers from two competing systems, and prompted to compare the two answers according to the criterion before giving a final judgment of which answer is preferred. 
+The LLM either indicates a winner; or, it returns a tie if they are fundamentally similar.
+To account for the inherent stochasticity of LLM generation, we run each comparison with multiple replicates and average the results across replicates and questions.
+An illustration of LLM assessment for answers to a sample question can be found in \autoref{app:question}.
+
+\section{Analysis}
+\label{sec:eval}
+
+\subsection{Experiment 1}
+\subsubsection{Datasets}
+
+We selected two datasets in the one million token range, each representative of corpora that users may encounter in their real-world activities:
+
+\textbf{Podcast transcripts}. Public transcripts of \emph{Behind the Tech with Kevin Scott}, a podcast featuring conversations between Microsoft CTO Kevin Scott and various thought leaders in science and technology ~\citep{BehindTheTech}.
+This corpus was divided into 1669 $\times$ 600-token text chunks, with 100-token overlaps between chunks ($\sim$1 million tokens).
+
+\textbf{News articles}. A benchmark dataset comprised of news articles published from September 2013 to December 2023 in a range of categories, including entertainment, business, sports, technology, health, and science ~\citep{tang2024multihop}.
+The corpus is divided into 3197 $\times$ 600-token text chunks, with 100-token overlaps between chunks ($\sim$1.7 million tokens).
+
+\subsubsection{Conditions}
+
+We compared six conditions including GraphRAG at four different graph community levels (\textbf{C0}, \textbf{C1}, \textbf{C2}, \textbf{C3}), a text summarization method that applies our map-reduce approach directly to source texts (\textbf{TS}), and a vector RAG ``semantic search'' approach (\textbf{SS}):
+
+\begin{itemize}
+\item \textbf{CO}. Uses root-level community summaries (fewest in number) to answer user queries.
+\item \textbf{C1}. Uses high-level community summaries to answer queries. These are sub-communities of C0, if present, otherwise C0 communities projected downwards.
+\item \textbf{C2}. Uses intermediate-level community summaries to answer queries. These are sub-communities of C1, if present, otherwise C1 communities projected downwards.
+\item \textbf{C3}. Uses low-level community summaries (greatest in number) to answer queries. These are sub-communities of C2, if present, otherwise C2 communities projected downwards.
+\item \textbf{TS}. The same method as in~\autoref{sec:querytime}, except source texts (rather than community summaries) are shuffled and chunked for the map-reduce summarization stages.
+\item \textbf{SS}. An implementation of vector RAG in which text chunks are retrieved and added to the available context window until the specified token limit is reached.
+\end{itemize}
+
+The size of the context window and the prompts used for answer generation are the same across all six conditions (except for minor modifications to reference styles to match the types of context information used).
+Conditions only differ in how the contents of the context window are created.
+
+The graph index supporting conditions \textbf{C0}-\textbf{C3} was created using our generic prompts for entity and relationship extraction, with entity types and few-shot examples tailored to the domain of the data. 
+
+\subsubsection{Configuration}
+
+We used a fixed context window size of 8k tokens for generating community summaries, community answers, and global answers (explained in \autoref{app:window}).
+Graph indexing with a 600 token window (explained in \autoref{app:self_reflection}) took 281 minutes for the Podcast dataset, running on a virtual machine (16GB RAM, Intel(R) Xeon(R) Platinum 8171M CPU @ 2.60GHz) and using a public OpenAI endpoint for \texttt{gpt-4-turbo} (2M TPM, 10k RPM).
+
+We implemented Leiden community detection using the graspologic library \citep{chung2019graspy}.
+The prompts used to generate the graph index and global answers can be found in \autoref{app:sys_prompts}, while the prompts used to evaluate LLM responses against our criteria can be found in \autoref{app:eval_prompts}.
+A full statistical analysis of the results presented in the next section can be found in \autoref{app:stats}.
+
+\subsection{Experiment 2}
+To validate the comprehensiveness and diversity results from Experiment 1, we implemented claim-based measures of these qualities. We use the definition of a factual claim from \citet{afacta}, which is “a statement that explicitly presents some verifiable facts.” For example, the sentence “California and New York implemented incentives for renewable energy adoption, highlighting the broader importance of sustainability in policy decisions” contains two factual claims: (1) California implemented incentives for renewable energy adoption, and (2) New York implemented incentives for renewable energy adoption.
+
+To extract factual claims, we used \textbf{Claimify} \citep{claimify}, an LLM-based method that identifies sentences in an answer containing at least one factual claim, then decomposes these sentences into simple, self-contained factual claims. We applied Claimify to the answers generated under the conditions from Experiment 1. After removing duplicate claims from each answer, we extracted 47,075 unique claims, with an average of 31 claims per answer.
+
+We defined two metrics, with higher values indicating better performance:
+\begin{enumerate}
+\item \textbf{Comprehensiveness}: Measured as the average number of claims extracted from the answers generated under each condition.
+\item \textbf{Diversity}: Measured by clustering the claims for each answer and calculating the average number of clusters.
+\end{enumerate}
+
+For clustering, we followed the approach described by \citet{padmakumar}, which involved using Scikit-learn’s implementation of agglomerative clustering \citep{perdregosa}. Clusters were merged through “complete” linkage, meaning they were combined only if the maximum distance between their farthest points was less than or equal to a predefined distance threshold. The distance metric used was $1 - \text{ROUGE-L}$. Since the distance threshold influences the number of clusters, we report results across a range of thresholds.
+
+\section{Results}
+
+\subsection{Experiment 1}
+
+The indexing process resulted in a graph consisting of 8,564 nodes and 20,691 edges for the Podcast dataset, and a larger graph of 15,754 nodes and 19,520 edges for the News dataset.
+\autoref{tab:community summaries} shows the number of community summaries at different levels of each graph community hierarchy.
+
+\import{}{measures_figure.tex}
+
+\import{}{community_table.tex}
+
+\textbf{Global approaches vs. vector RAG}. As shown in \autoref{fig:relativemeasures} and \autoref{tab:stats_analysis}, global approaches significantly outperformed conventional vector RAG (\textbf{SS}) in both comprehensiveness and diversity criteria across datasets.
+Specifically, global approaches achieved comprehensiveness win rates between 72-83\% (p\textless .001) for Podcast transcripts and 72-80\% (p\textless.001) for News articles, while diversity win rates ranged from 75-82\% (p\textless.001) and 62-71\% (p\textless.01) respectively.
+Our use of directness as a validity test confirmed that vector RAG produces the most direct responses across all comparisons. 
+
+\textbf{Empowerment}. Empowerment comparisons showed mixed results for both global approaches versus vector RAG (\textbf{SS}) and GraphRAG approaches versus source text summarization (\textbf{TS}).
+Using an LLM to analyze LLM reasoning for this measure indicated that the ability to provide specific examples, quotes, and citations was judged to be key to helping users reach an informed understanding.
+Tuning element extraction prompts may help to retain more of these details in the GraphRAG index.
+
+\textbf{Community summaries vs. source texts}.  When comparing community summaries to source texts using GraphRAG, community summaries generally provided a small but consistent improvement in answer comprehensiveness and diversity, except for root-level summaries.
+Intermediate-level summaries in the Podcast dataset and low-level community summaries in the News dataset achieved comprehensiveness win rates of 57\% (p\textless.001) and 64\% (p\textless.001), respectively.
+Diversity win rates were 57\% (p=.036) for Podcast intermediate-level summaries and 60\% (p\textless.001) for News low-level community summaries.
+\autoref{tab:community summaries} also illustrates the scalability advantages of GraphRAG compared to source text summarization: for low-level community summaries (\textbf{C3}), GraphRAG required 26-33\% fewer context tokens, while for root-level community summaries (\textbf{C0}), it required over 97\% fewer tokens. 
+For a modest drop in performance compared with other global methods, root-level GraphRAG offers a highly efficient method for the iterative question answering that characterizes sensemaking activity, while retaining advantages in comprehensiveness (72\% win rate) and diversity (62\% win rate) over vector RAG.
+
+
+
+\subsection{Experiment 2}
+
+\autoref{tab:claim_comp} shows the results for the average number of extracted claims (i.e., the claim-based measure of comprehensiveness) per condition. For both the News and Podcast datasets, all global search conditions (\textbf{C0-C3}) and source text summarization (\textbf{TS}) had greater comprehensiveness than vector RAG (\textbf{SS}). The differences were statistically significant (p\textless.05) in all cases. These findings align with the LLM-based win rates from Experiment 1. 
+
+\autoref{tab:claim_div} contains the results for the average number of clusters, the claim-based measure of diversity. For the Podcast dataset, all global search conditions had significantly greater diversity than \textbf{SS} across all distance thresholds (p\textless.05), consistent with the win rates observed in Experiment 1. For the News dataset, however, only \textbf{C0} significantly outperformed \textbf{SS} across all distance thresholds (p\textless.05). While \textbf{C1-C3} also achieved higher average cluster counts than \textbf{SS}, the differences were statistically significant only at certain distance thresholds. In Experiment 1, all global search conditions significantly outperformed \textbf{SS} in the News dataset – not just \textbf{C0}. However, the differences in mean diversity scores between \textbf{SS} and the global search conditions were smaller for the News dataset than for the Podcast dataset, aligning directionally with the claim-based results. 
+
+For both comprehensiveness and diversity, across both datasets, there were no statistically significant differences observed among the global search conditions or between global search and \textbf{TS}.
+
+Finally, for each pairwise comparison in Experiment 1, we tested whether the answer preferred by the LLM aligned with the winner based on the claim-based metrics. Since each pairwise comparison in Experiment 1 was performed five times, while the claim-based metrics provided only one outcome per comparison, we aggregated the Experiment 1 results into a single label using majority voting. For example, if \textbf{C0} won over \textbf{SS} in three out of five judgments for comprehensiveness on a given question, \textbf{C0} was labeled the winner and \textbf{SS} the loser.  However, if \textbf{C0} won twice, \textbf{SS} won once, and they tied twice, then there was no majority outcome, so the final label was a tie.
+
+We found that exact ties were rare for the claim-based metrics. One possible solution is to define a tie based on a threshold (e.g., the absolute difference between the claim-based results for condition A and condition B must be less than or equal to $x$). However, we observed that the results were sensitive to the choice of threshold. As a result, we focused on cases where the aggregated LLM label was not a tie, representing 33\% and 39\% of pairwise comparisons for comprehensiveness and diversity, respectively. In these cases, the aggregated LLM label matched the claim-based label in 78\% of pairwise comparisons for comprehensiveness and 69-70\% for diversity (across all distance thresholds), indicating moderately strong alignment.
+
+\import{}{claim_comp_table.tex}
+\import{}{claim_div_table.tex}
+
+\section{Discussion}
+
+\subsection{Limitations of evaluation approach}
+Our evaluation to date has focused on sensemaking questions specific to two corpora each containing approximately 1 million tokens.
+More work is needed to understand how performance generalizes to datasets from various domains with different use cases.
+Comparison of fabrication rates, e.g., using approaches like SelfCheckGPT~\citep{manakul2023selfcheckgpt}, would also strengthen the current analysis.
+
+\subsection{Future work}
+The graph index, rich text annotations, and hierarchical community structure supporting the current GraphRAG approach offer many possibilities for refinement and adaptation.
+This includes RAG approaches that operate in a more local manner, via embedding-based matching of user queries and graph annotations.
+In particular, we see potential in hybrid RAG schemes that combine embedding-based matching with just-in-time community report generation before employing our map-reduce summarization mechanisms.
+This ``roll-up'' approach could also be extended across multiple levels of the community hierarchy, as well as implemented as a more exploratory ``drill down'' mechanism that follows the information scent contained in higher-level community summaries.
+
+\emph{Broader impacts}. As a mechanism for question answering over large document collections, there are risks to downstream sensemaking and decision-making tasks if the generated answers do not accurately represent the source data.
+System use should be accompanied by clear disclosures of AI use and the potential for errors in outputs.
+Compared to vector RAG, however, GraphRAG shows promise as a way to mitigate these downstream risks for questions of a global nature, which might otherwise be answered by samples of retrieved facts falsely presented as global summaries.
+
+\section{Conclusion}
+
+We have presented GraphRAG, a RAG approach that combines knowledge graph generation and query-focused summarization (QFS) to support human sensemaking over entire text corpora.
+Initial evaluations show substantial improvements over a vector RAG baseline for both the comprehensiveness and diversity of answers, as well as favorable comparisons to a global but graph-free approach using map-reduce source text summarization. 
+For situations requiring many global queries over the same dataset, summaries of root-level communities in the entity-based graph index provide a data index that is both superior to vector RAG and achieves competitive performance to other global methods at a fraction of the token cost.
+
+\import{}{acks.tex}
+
+\medskip
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\bibliographystyle{apalike}
+\bibliography{bibliography}
+
+\appendix
+
+\newpage
+\import{}{appendix.tex}
+
+
+
+\end{document}

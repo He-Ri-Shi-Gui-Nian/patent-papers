@@ -1,0 +1,82 @@
+\section{Evaluation Setup}
+\label{sec:evaluation}
+
+We evaluate \OurApproach{}, our KGQA approach, on the LC-QuAD dataset of complex questions constructed from the DBpedia KG~\cite{DBLP:conf/semweb/TrivediMDL17}.
+% Firstly, we validate the correctness of the proposed message-passing algorithm using the gold-standard annotations by translating each SPARQL query into our question interpretation model.
+First, we report the evaluation results of the end-to-end approach, which incorporates our message-passing algorithm in addition to the initial question interpretation (question parser and matching functions).
+Second, we analyze the fraction and sources of errors produced by different KGQA components, which provides a comprehensive perspective on the limitations of the current state-of-the-art for KGQA, the complexity of the task, and limitations of the benchmark.
+Our implementation and evaluation scripts are open-sourced.\footnote{\url{https://github.com/svakulenk0/KBQA}}
+
+\OurParagraph{Baseline.}
+We use WDAqua~\cite{DBLP:journals/corr/abs-1803-00832} as our baseline; to the best of our knowledge, the results produced by WDAqua are the only published results on the end-to-end question answering task for the LC-QuAD benchmark to date.
+It is a rule-based framework that integrates several KGs in different languages and relies on a handful of SPARQL query patterns to generate SPARQL queries and rank them as likely question interpretations.
+We rely on the evaluation results reported by the authors~\cite{DBLP:journals/corr/abs-1803-00832}.
+WDAqua results were produced for the full LC-QuAD dataset, while other datasets were used for tuning the approach.
+
+\OurParagraph{Metrics.}
+We follow the standard evaluation metrics for the end-to-end KGQA task, i.e., we report precision (P) and recall (R) macro-averaged over all questions in the dataset, and then use them to compute the F-measure (F). 
+Following the evaluation setup of the QALD-9 challenge~\cite{DBLP:conf/semweb/UsbeckGN018} we assign both precision and recall equal to 0 for every question in the following cases: (1) for \smalltt{SELECT} questions, no answer (empty answer set) is returned, while there is an answer (non-empty answer set) in the ground truth annotations; (2) for \smalltt{COUNT} or \smalltt{ASK} questions, an answer differs from the ground truth; (3) for all questions, the predicted answer type differs from the ground truth.
+In the ablation study, we also analyze the fraction of questions with errors for each of the components separately, where an error is a not exact match with the ground-truth answer.
+
+\OurParagraph{Hardware.}
+We used a standard commodity server to train and evaluate \OurApproach{}: Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz, RAM 16 GB DDR4 SDRAM 2400 MHz, 240 GB SSD, NVIDIA GP102 GeForce GTX 1080 Ti.
+
+\subsection{The LC-QuAD dataset}
+\label{sec:dataset}
+The LC-QuAD dataset\footnote{\url{https://github.com/AskNowQA/LC-QuAD}}~\cite{DBLP:conf/semweb/TrivediMDL17} contains 5K question-query pairs that have correct answers in the DBpedia KG (2016-04 version).
+The questions were generated using a set of SPARQL templates by seeding them with DBpedia entities and relations, and then paraphrased by human annotators.
+All queries are of the form \smalltt{ASK}, \smalltt{SELECT}, and \smalltt{COUNT}, fit to subgraphs with diameter of at most 2-hops, contain 1--3 entities and 1--3 properties.
+
+We used the train and test splits provided with the dataset (Table~\ref{tab:dataset}).
+Two queries with no answers in the graph were excluded.
+All questions are also annotated with ground-truth reference spans\footnote{\url{https://github.com/AskNowQA/EARL}} to evaluate performance of entity linking and relation detection~\cite{DBLP:conf/semweb/DubeyBCL18}.
+
+\begin{table}
+\centering
+\caption{Dataset statistics: number of questions across the train and test splits; number of complex questions that reference more than one triple; number of complex questions that require two hops in the graph through an intermediate answer-entity.}
+\label{tab:dataset}
+\begin{tabular}{lrrr}
+\toprule
+ & \multicolumn{3}{c}{Questions} \\
+\cmidrule{2-4}
+Split & All & Complex & Compound  \\
+\midrule
+all  & 4,998 (100\%)       &     3,911 (78\%)       & 1,982 (40\%)           \\
+train  & 3,999 \phantom{0}(80\%)       &      3,131 (78\%)           & 1,599 (40\%)          \\
+test   & 999 \phantom{0}(20\%)        &       780 (78\%)          & 383 (38\%)         \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Implementation details}
+\label{sec:implementation}
+
+Our implementation uses the English subset of the official DBpedia 2016-04 dump losslessly compressed into a single HDT file\footnote{\url{http://fragments.dbpedia.org/hdt/dbpedia2016-04en.hdt}}~\cite{FMPGPA:13}.
+HDT is a state-of-the-art compressed RDF self-index, which scales linearly with the size of the graph and is, therefore, applicable to very large graphs in practice.
+This KG contains 1B triples, more than 26M entities (\emph{dbpedia.org} namespace only) and 68,687 predicates.
+Access to the KG for subgraph extraction and class constraint look-ups is implemented via the Python HDT API.\footnote{\url{https://github.com/Callidon/pyHDT}}
+This API builds an additional index \cite{martinez2012exchange} to speed up all look-ups, and consumes the HDT mapped in disk, with a ${\sim}$3\% memory footprint.\footnote{Overall, DBpedia 2016-04 takes 18GB in disk, and 0.5GB in main memory.}
+
+Our end-to-end KGQA solution integrates several components that can be trained and evaluated independently.
+The pipeline includes two supervised neural networks for (1)~question type detection and (2)~reference extraction; and unsupervised functions for (3)~entity and (4)~predicate matching, and (5)~message passing.
+
+\OurParagraph{Parsing.}
+Question type detection is implemented as a bi-LSTM neural-network classifier trained on pairs of question and type.
+We use another biLSTM+CRF neural network for extracting references to entities, classes and predicates for at most two hops using the set of six labels: \{``E1'', ``P1'', ``C1'', ``E2'', ``P2'', ``C2''\}.
+Both classifiers use GloVe word embeddings pre-trained on the Common Crawl corpus with 840B tokens and 300 dimensions~\cite{pennington2014glove}. 
+
+\OurParagraph{Matching.}
+The labels of all entities and predicates in the KG (\texttt{\small rdfs: label} links) are indexed into two separate catalogs and embedded into two separate vector spaces using the English FastText model trained on Wikipedia~\cite{bojanowski2017enriching}.
+We use two ranking functions for matching and assigning the corresponding confidence scores: index-based for entities and embedding-based for predicates.
+The index-based ranking function uses BM25~\cite{manning2010introduction} to calculate confidence scores for the top-500 matches on the combination of n-grams and Snowball stems.\footnote{
+    \url{https://www.elastic.co/guide/en/elasticsearch/reference/current}}
+Embedding-based confidence scores are computed using the Magnitude library\footnote{\url{https://github.com/plasticityai/magnitude}}~\cite{patel2018magnitude} for the top-50 nearest neighbors in the FastText embedding space.
+
+Many entity references in the LC-QuAD questions can be handled using simple string similarity matching techniques; e.g., `companies' can be mapped to ``http://dbpedia.org/ontology/Comp\-any''.
+We built an ElasticSearch (Lucene) index to efficiently retrieve such entity candidates via string similarity to their labels.
+The entity labels were automatically generated from entity URIs by stripping the domain part of the URI and lower-casing, e.g., entity ``http://dbpedia.org/ontology/Company'' received the label ``company'' to better match question words.
+LC-QuAD questions also contain more complex paraphrases of the entity URIs that require semantic similarity computation beyond fuzzy string matching, such as ``movie'' refers to ``http://dbpedia.org/ontology/Film'', ``stockholder'' to ``http://dbpedia.org/property/owner'' or ``has kids'' to `http://dbpedia.org/ontology/child'.
+We embeded entity and predicate labels with FastText~\cite{bojanowski2017enriching} to detect semantic similarities beyond string matching.
+
+Index-based retrieval scales much better than nearest neighbour computation in the embedding space, which is a crucial requirement for the 26M entity catalog.
+In our experiments, syntactic similarity was sufficient for entity matching in most of the cases, while property matching required capturing more semantic variations and greatly benefited from using pre-trained embeddings.

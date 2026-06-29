@@ -1,0 +1,53 @@
+
+To initiate the visual grounding process, we employ Grounding DINO \cite{groundingdino}, a state-of-the-art open-set object detector, to extract visual primitives from raw video frames. 
+% 为了启动视觉定位过程，我们采用了最先进的开放集目标检测器 Grounding DINO \cite{groundingdino}，从原始视频帧中提取视觉基元。
+Crucially, Grounding DINO operates as a vision-language model, necessitating semantically rich textual prompts to guide the localized detection of specific entities. 
+% 关键在于，Grounding DINO 作为一个视觉语言模型运行，需要语义丰富的文本提示来指导特定实体的定位检测。
+Consequently, we implement a multi-modal ingestion layer that aggregates contextual signals: we first transcribe the audio track via Automatic Speech Recognition (ASR) and extract on-screen text via Optical Character Recognition (OCR) from sampled discrete frames. 
+% 因此，我们实现了一个多模态信息采集层来聚合上下文信号：首先，我们通过自动语音识别 (ASR) 转录音频轨道，然后通过光学字符识别 (OCR) 从采样的离散帧中提取屏幕文本。
+These extracted textual streams are then consolidated and filtered to serve as high-confidence query prompts for the visual detector. 
+% 这些提取的文本流随后被整合和过滤，作为视觉检测器的高置信度查询提示。
+Upon execution, the model outputs structured spatiotemporal tuples for each identified entity, encompassing both the temporal interval and spatial coordinates.
+% 执行后，模型会为每个识别出的实体输出结构化的时空元组，其中包含时间间隔和空间坐标。
+The structure of this component is shown in the Fig. \ref{fig:level1}.
+
+
+\textbf{Feature Encoding and Semantic Abstraction.}
+% 特征编码和语义抽象。
+To facilitate robust entity association, we utilize the pre-trained CLIP-ViT \cite{clip} encoder to project each cropped visual primitive into a high-dimensional latent space. 
+% 为了实现稳健的实体关联，我们利用预训练的 CLIP-ViT 编码器将每个裁剪后的视觉基元投影到高维潜在空间。
+This step abstracts raw pixel data into semantic feature vectors, enabling the quantification of semantic consistency across frames. 
+% 这一步骤将原始像素数据抽象为语义特征向量，从而能够量化帧间的语义一致性。
+Formally, we denote the $i$-th extracted visual primitive at frame $t$ as a tuple $v_i^{(t)} = (t, b_i, \mathbf{f}_i)$, where $t$ is the timestamp, $b_i \in \mathbb{R}^4$ represents the bounding box coordinates $(x, y, w, h)$, and $\mathbf{f}_i \in \mathbb{R}^d$ is the normalized feature vector.
+% 形式上，我们将第 t 帧提取的第 i 个视觉基元表示为一个元组 $v_i^{(t)} = (t, b_i, \mathbf{f}_i)$，其中 $t$ 为时间戳，$b_i \in \mathbb{R}^4$ 表示边界框坐标 $(x, y, w, h)$，$\mathbf{f}_i \in \mathbb{R}^d$ 为归一化特征向量。
+
+\textbf{Spatiotemporal Association via Bipartite Matching.}
+% 通过二分匹配的时空关联.
+Due to the potential sparsity of frame sampling in real-world applications, identical objects may exhibit non-overlapping bounding boxes between adjacent keyframes. To address this, we formulate the object tracking task as a frame-to-frame bipartite matching problem. We define a composite similarity metric $P(v_i, v_j)$ combining semantic and spatial coherence.
+% 由于实际应用中帧采样可能存在稀疏性，同一目标在相邻关键帧之间可能出现边界框不重叠的情况。为了解决这个问题，我们将目标跟踪任务建模为帧间二分图匹配问题。我们定义了一个综合相似度度量 $P(v_i, v_j)$，该度量结合了语义和空间一致性。
+
+First, the \textbf{semantic similarity} between two feature vectors is calculated using the cosine similarity:
+% 首先，使用余弦相似度计算两个特征向量之间的语义相似度：
+\begin{equation}
+    S_{semantic}(v_i, v_j) = \frac{\mathbf{f}_i \cdot \mathbf{f}_j}{\|\mathbf{f}_i\|_2 \|\mathbf{f}_j\|_2}
+\end{equation}
+
+Second, to handle spatial displacement, we employ the Generalized Intersection over Union (GIoU) as the \textbf{spatial similarity} metric:
+% 其次，为了处理空间位移，我们采用广义交并比（GIoU）作为空间相似性度量：
+\begin{equation}
+    S_{spatial}(v_i, v_j) = \text{IoU}(b_i, b_j) - \frac{|C \setminus (b_i \cup b_j)|}{|C|}
+\end{equation}
+where $C$ denotes the smallest convex hull (or enclosing box) covering both $b_i$ and $b_j$, and $|\cdot|$ represents the area.
+% 其中 $C$ 表示覆盖 $b_i$ 和 $b_j$ 的最小凸包（或包围盒），$|\cdot|$ 表示面积。
+
+The \textbf{comprehensive affinity score} is then derived via a gated fusion mechanism:
+% 然后通过门控融合机制得出\textbf{综合亲和力评分}：
+\begin{equation}
+    P(v_i, v_j) = \mathbb{I}[S_{semantic} > \tau_{sem}] \cdot \left( \alpha \cdot S_{semantic} + (1-\alpha) \cdot S_{spatial} \right)
+\end{equation}
+where $\mathbb{I}[\cdot]$ is an indicator function serving as a semantic consistency gate (implemented via thresholding or ReLU in practice), and $\alpha$ is a balancing hyperparameter.
+% 其中 $\mathbb{I}[\cdot]$ 是一个指示函数，用作语义一致性门（在实践中通过阈值或 ReLU 实现），而 $\alpha$ 是一个平衡超参数。
+
+Finally, we employ the Hungarian Algorithm to solve the global assignment problem based on affinity matrix $P$. Matched primitives are linked to form a \textbf{Spatiotemporal Tubelet}, denoted as $\mathcal{T}_k = \{v_k^{(t_1)}, v_k^{(t_2)}, \dots, v_k^{(t_m)}\}$, representing the continuous trajectory of the $k$-th entity.
+% 最后，我们采用匈牙利算法，基于亲和矩阵 $P$ 解决全局分配问题。匹配的基元连接起来形成一个时空管，记为 $\mathcal{T}_k = \{v_k^{(t_1)}, v_k^{(t_2)}, \dots, v_k^{(t_m)}\}$，表示第 $k$ 个实体的连续轨迹。
+

@@ -1,0 +1,211 @@
+\section{Introduction}
+% The advent of Large Language Models (LLMs)~\cite{ouyang2022training,achiam2023gpt} has redefined expectations for Artificial Intelligence, offering new opportunities for Question Answering (QA) tasks due to their impressive language understanding and generation capabilities.
+% However, directly applying LLMs to QA is challenging because of hallucination \cite{huang2025survey} and knowledge cutoffs \cite{cheng2024dated}.
+% While injecting knowledge through continue learning is a possible solution, it is computationally expensive and risks catastrophic forgetting~\cite{kirkpatrick2017overcoming}, where models lose previously acquired knowledge.
+% To address this issue, Retrieval-Augmented Generation (RAG) \cite{guu2020retrieval,lewis2020retrieval}, a technique enabling LLMs to incorporate external knowledge via prompts, has drawn significant attention among researchers.
+
+The advent of Large Language Models (LLMs)~\cite{ouyang2022training,achiam2023gpt} has redefined expectations for Artificial Intelligence, offering new opportunities for many domains.
+Despite their versatility, LLMs suffer from hallucination \cite{huang2025survey} and knowledge cutoffs \cite{cheng2024dated}.
+While injecting knowledge through continuous learning is a possible solution, it is computationally expensive and risks catastrophic forgetting~\cite{kirkpatrick2017overcoming}.
+% where models lose previously acquired knowledge.
+To address this issue, Retrieval-Augmented Generation (RAG) \cite{guu2020retrieval,lewis2020retrieval}, a technique enabling LLMs to incorporate external knowledge via prompts, has drawn significant attention among researchers.
+
+
+
+% Compared with single-hop questions, which have a one-turn retrieve-then-answer pipeline,
+% Most advanced RAG systems~\cite{PoG, Search-o1, RoG, shao2023enhancing, khattab2022demonstrate} adopt a multi-turn pipeline to effectively address complex questions.
+% This involves decomposing the question, retrieving information for each sub-question, and synthesizing a final answer.
+% Such a system can be naturally conceptualized as an agent taking charge of making a plan on how to answer the question, interacting with external data sources, and conducting necessary reasoning~\cite{ToG,ToG2,Search-o1}.
+% This process generates more fine-grain queries and allows search engines to return more related passages, hence improving the overall performance.
+% Despite the effectiveness of multi-turn interaction, it also incurs the problem of long-context.
+% For example, for the query \textit{Who has been member of national people’s congress among the founders of Tencent company?},
+% the RAG system will first try to search information of the founders of Tencent then find who satisfy the property.
+% However, the Tencent company has $5$ co-founders and each one has fruitful experience, which puts a very long text in single one LLM window.
+% Since LLMs has difficulty to capture information in long-context~\cite{liu2024lost}, the naive practice leads to a problem.
+% Moreover, most existing RAG workflow primarily rely on in-context learning~\cite{ICL} to let LLMs to follow pre-defined instruction.
+% Usually, this involves researchers to put a few example to demonstrate how to finish the work to LLMs.
+% The more precise you write, and the more you can cover cover coner cases, you can have better performance.
+% The in-context demonstration also incurs long-context problem.
+
+
+% However, in-context learning~(ICL) has several intrinsic limitations in the QA task. First, including few-shot demonstrations requires the LLM to process more tokens for every question, which not only reduces inference speed but also increases the risk of performance degradation due to attention dispersion caused by excessively sequence lengths.
+% Second, for different types of complex questions, one may need to provide demonstrations tailored to the specific question type to ensure effectiveness. Furthermore, in-context learning operates as a form of analogy-based reasoning, which does not improve the underlying fundamental capability of LLMs to handle QA tasks. Consequently, the model may struggle with uncommon questions in specialized domains. Therefore, to develop a powerful and efficient QA agent, applying post-training on LLMs becomes essential.
+
+%Since the backbone LLMs are not specifically pre-trained on these subtasks, existing approaches 主要通过in-context demonstration对模型进行指导。% 然而，ICL是有局限性的：including few-shot demonstration 需要 LLM process更多的token，这会降低推理速度，而且，过长的sequence length可能导致注意力涣散，导致性能下降。此外，对于不同类型的complex question，使用者需要提供对应类型的demonstration prompt才能保证有效。而且，in-context learning的过程是学习指令跟随的过程，模型处理QA 问题的能力并没有得到实质性的提升。对于小众领域的不常见类型的题目，还是会出错。因此，To develop a truly powerful and efficient QA agent, 对LLM施加恰当的posttraining是必要的。
+
+% However, existing approaches remain imperfect - agents are not explicitly trained to plan, interact, and gather information, instead relying solely on LLMs' inherent capabilities combined with few-shot prompting. To develop a truly powerful and efficient QA agent, post-training becomes essential.
+% 最后落到 需要提供guidance上。
+
+Most advanced RAG systems~\cite{PoG, Search-o1, RoG, shao2023enhancing, khattab2022demonstrate} employ a multi-turn pipeline to effectively address complex questions. This process typically involves decomposing the initial question into sub-questions, retrieving relevant information for each, and synthesizing a final answer. Such an approach allows for the generation of more fine-grained queries, enabling search engines to return more relevant passages and ultimately enhancing overall performance.
+
+% Despite its effectiveness, this multi-turn interaction introduces a significant challenge: the long-context problem. For instance, to answer the query, “\textit{Who has been a member of the National People’s Congress among the founders of Tencent company?}”, a RAG system would first retrieve information about Tencent's founders and then identify which individuals meet the specified criterion. However, Tencent has five co-founders; each with an extensive biography.
+% Aggregating this information results in a large volume of text within a single LLM context window.
+Despite its effectiveness, this multi-turn interaction introduces a significant challenge: the long-context problem. 
+For instance, to answer the query, ``\textit{Which U.S.\ presidents previously served as governors?}'', a RAG system must first identify all U.S.\ presidents and then retrieve biographical information to determine which individuals held gubernatorial positions before their presidency. 
+Each president has an extensive historical record, and aggregating such information results in a large volume of retrieved text within a single LLM context window. Given that LLMs struggle to capture information accurately in long contexts~\cite{liu2024lost}, this naive aggregation can lead to performance degradation.
+
+Moreover, this issue is compounded by the reliance of In-Context Learning (ICL)~\cite{ICL} to guide the LLM's behavior in most RAG workflows. This technique requires providing few-shot demonstrations within the prompt to instruct the model on the desired task. The performance of ICL is highly dependent on the precision and comprehensiveness of these examples, especially their ability to cover corner cases. Consequently, these detailed demonstrations further inflate the context length, exacerbating the long-context problem.
+
+To address the aggregation problem, we propose \textbf{Mujica} (Multi-hop Joint Intelligence for Complex Question Answering), a multi-agent RAG system designed for complex queries.
+Mujica consists of two core modules: a \textbf{Planner} and a \textbf{Worker}.
+The Planner initiates the process by analyzing the original query, decomposing it into sub-questions, and delegating them to the Worker.
+Based on the responses from the Worker, the Planner iteratively formulates new queries until it has sufficient information to finalize an answer or reaches the iteration limit.
+The Worker, in turn, receives sub-questions from the Planner, retrieves relevant passages from search engines, and returns concise summaries. This planner-worker architecture enables a clear separation between high-level reasoning and low-level retrieval.
+By maintaining a clean, summary-based history in the Planner's context, Mujica effectively mitigates the long-context problem. 
+
+% Training QA agents remains a challenging task. While ground truth answers are typically available, the golden reasoning paths required to derive these answers are often absent in real-world scenarios and mainstream QA datasets~\cite{yang2018hotpotqa,trivedi2021musique, QALD-10}. Due to the lack of intermediate supervision signals, directly applying supervised finetuning~(SFT) on QA agents becomes infeasible. A naive and intuitive solution is to employ larger-scale LLMs to generate reasoning paths and transfer the knowledge into smaller models through knowledge distillation. However, this approach is computationally expensive and lacks scalability, making it impractical for further improving the most advanced LLMs. Considering the aforementioned limitations, reinforcement learning~(RL) emerges as a promising alternative, allowing LLMs to autonomously improve their capabilities. Recent works~\cite{RAG-Gym, IM-RAG} propose to employ the intrinsic reasoning capability of LLMs to generate ``pseudo'' golden reasoning paths. As training progresses, the quality of the generated reasoning paths generally improves, gradually approaching the effectiveness of knowledge distillation. 
+% ``This self-refinement process not only reduces computational costs but also allows the model to align its reasoning with task-specific requirements, enhancing the overall performance without reliance on external large-scale models.''
+
+
+% In order to eliminate the need for few-shot demonstrations introduced in the ICL, 
+% post-training becomes necessary for a complex RAG system like Mujica.
+% Due to the fact that RAG systems are highly customized, there is no unified training data for Supervised FineTuning (SFT).
+% Given the scarcity of training data for trajectories in RAG-based workflows,
+% this post-training process naturally evolves into a reinforcement learning (RL) problem, 
+% where the policy is defined by the RAG system and the reward is determined by the system's performance.
+% However, optimizing the RAG system using RL is not straightforward due to the complex interactions between the agents and the search engine.
+% To tackle this issue, 
+% we present \underline{\textbf{M}}inimalist polic\underline{\textbf{y}} \underline{\textbf{G}}radient \underline{\textbf{O}}ptimization (\textbf{MyGO}) -- 
+% a simple and efficient RL algorithm designed specifically for such intricate RAG systems.
+To eliminate the need for cumbersome few-shot demonstrations in in-context learning (ICL), post-training is a crucial step for a complex RAG system like Mujica.
+However, the highly customized nature of such systems means that unified datasets for Supervised Fine-Tuning (SFT) are generally unavailable.
+This scarcity of trajectory data naturally frames the post-training process as a Reinforcement Learning (RL) problem, where the RAG system constitutes the policy and its performance on a task determines the reward.
+Nevertheless, optimizing this policy via RL is non-trivial due to the intricate interactions between the agents and the search engine.
+To tackle this challenge, we introduce Minimalist policy Gradient Optimization (\textbf{MyGO}), a simple and efficient RL algorithm specifically designed for such complex RAG systems.
+
+
+
+\begin{figure*}[t]
+	\centering
+	\includegraphics[width=\textwidth]{./figures/pipeline.pdf}
+	\caption{The end-to-end architecture of the proposed Mujica framework.}
+	\label{pipeline}
+    % \vspace{-1.em}
+\end{figure*}
+
+% Nevertheless, directly employing existing RL solutions for LLM post-training (e.g., PPO~\cite{schulman2017proximal} and GRPO~\cite{shao2024deepseekmath}) on complex question answering tasks is resource-intensive and inefficient. In order to stabilize the training process, these approaches~\cite{schulman2017proximal,shao2024deepseekmath,team2025kimi,guo2025deepseek} apply gradient rescaling for individual data samples, which is primarily achieved through importance sampling and the clipping mechanism. However, gradient rescaling lowers the contribution of certain useful training samples, particularly for those with higher rewards. 
+% Moreover, deploying proximity optimization-based RL solutions requires additional resources to hold a reference model, which further increases the computational complexity. It is also worth noting that the aforementioned approaches mainly focus on mathematical problems or code generation, which are typical one-turn generation scenarios. When being adapted to multi-turn complex question answering, the algorithmic and implementation inefficiencies will become more pronounced. 
+% 
+% Designing and deploying RL training techniques is never an easy job -- interacting with complex environments typically leads to high computational cost and training instability -- especially for LLM-QA agents~\cite{hu2024openrlhf, sheng2024hybridflow, zhong2025streamrl}.
+% Previous work has spent significant efforts to stabilize the training and/or reduce the training complexity~\cite{schulman2015trust, schulman2017proximal, shao2024deepseekmath,team2025kimi,guo2025deepseek}.
+% These methods focus on mathematical problems or code generation, but are limited to one-turn generation.
+% In contrast, QA agents  in a more sophisticated context for multi-hop QA problems are required % the agent 
+% to interact with the search tools multiple times in order to retrieve the necessary information. %, which turns out to be a multi-turn problem.
+% In this situation, the existing approaches would require substantial effort to effectively post-train QA agents, that involves both heavy hyperparameter tuning and increased implementation complexity.
+
+% model 
+% 1. formulate the Question-answering agent as a conversational framework, and devise our solution Multi-hop Joint Intelligence for Complex Question Answering 
+% 2. 同步执行多个subquestion
+% In this work, we approach the design of a question answering agent from a conversational perspective, and devise our solution \textbf{Mujica}: a \underline{\textbf{M}}ulti-hop \underline{\textbf{J}}oint \underline{\textbf{I}}ntelligence for \underline{\textbf{C}}omplex \underline{\textbf{Q}}uestion \underline{\textbf{A}}nswering. Mujica consists of two modules: 1) \underline{\textit{planner}}, and 2) \underline{\textit{worker}}, each of which serves as a user and an assistant for the other. The \textit{planner} extracts subquestions, organizes them into a directed acyclic graph~(DAG), and iteratively calls the \textit{worker} to solve each subquestion based on their interdependencies. The \textit{worker} serves as a mini-RAG system responsible for interacting with external databases and answering each subquestion assigned by the \textit{planner}. This design allows conditionally independent subquestions to be resolved simultaneously, thereby improving efficiency. 
+
+% Furthermore, we rethink the cons of policy gradient optimization in RL, and accordingly propose \underline{\textbf{M}}inimalist polic\underline{\textbf{y}} \underline{\textbf{G}}radient \underline{\textbf{O}}ptimization (\textbf{MyGO}) to optimize Mujica.
+
+We designed MyGO to be minimalist, deliberately avoiding components like reward weighting, importance sampling, or token clipping that are common in other algorithms.
+This approach stands in contrast to methods like Proximal Policy Optimization (PPO)~\cite{schulman2017proximal}, which requires an auxiliary value network to stabilize training, and Group Relative Policy Optimization (GRPO)~\cite{shao2024deepseekmath}, which must generate multiple trajectories per query for reward normalization, exacerbating latency.
+The key innovation in MyGO lies in its sampling strategy. By sampling trajectories from an asymptotically approximate optimal policy, we can directly use Maximum Likelihood Estimation (MLE) for policy updates.
+This insight allows MyGO to be implemented easily within standard SFT frameworks, lending it high stability during training and simplifying hyperparameter tuning.
+We provide a detailed theoretical justification for the validity of this approach and show through empirical experiments on various datasets that Mujica-MyGO effectively improves RAG performance across different LLMs.
+
+
+
+% In this work, we revisit the fundamentals of policy gradient optimization in RL, and accordingly propose \underline{\textbf{M}}inimalist polic\underline{\textbf{y}} \underline{\textbf{G}}radient \underline{\textbf{O}}ptimization (\textbf{MyGO}).
+% Unlike previous methods  focusing on improving the policy gradient designs such as  clipping the importance sampling~\cite{schulman2017proximal} or tweaking the advantage functions, MyGO shifts the burden to the sampling strategy designs, and allows to directly use Maximum Likelihood Estimation (MLE) to update policy, using the simple supervised finetuning frameworks.
+% On the one hand,
+% the utilization of MLE makes MyGO easy to implement, stable in training, and hyper-parameter-tuning-friendly.
+% On the other hand, our proposed sampling strategy enables sampling trajectories from the asymptotically approximate optimal policy through ``rejection sampling''.
+% We provide detailed theoretical justification for the validity of MyGO.
+% The empirical improvements across various QA benchmarks also demonstrate the effectiveness of our proposed method.
+
+
+
+% We theoretically and empirically show the effectiveness of MyGO.
+
+
+
+% \fixme{address why we need to simplify}
+% \fixme{problem of RL: 1. engineering problem 2. unstable training 3. complex multi-turn generation}
+% Scaling RL for LLMs poses serious engineering problem \cite{hu2024openrlhf, sheng2024hybridflow, zhong2025streamrl} - PPO \cite{schulman2017proximal} requires to deploy four LLMs simultaneously.
+% For efficient LLMs inference, we need inference engines \cite{kwon2023efficient, zheng2024sglang}.
+% For optimized LLMs training, we need training engines \cite{rajbhandari2020zero, zhao2023pytorch}.
+% A effective RL must coordinate limited computing resource between two monsters.
+% Recent progress in RL4LLM successively alleviates the burden by replacing the value network with statistical estimation \cite{guo2025deepseek, shao2024deepseekmath, team2025kimi}.
+% These method focus on math or code generation, which are one-turn generation.
+% However, the agent must interact with the environment, which makes its training into a multi-turn problem.
+% The problem has three dimensions: complex schedule of LLM infrastructure, unstable training of RL \cite{mnih2015human}, and complex sampling in multi-turn generation.
+% Empirically, Numerical instabilities plague the training process of our LLMs.
+% To simplify LLM agent training, we propose \textbf{M}inimalist polic\textbf{y} \textbf{G}radient \textbf{O}ptimization (\textbf{MyGO}).
+% MyGO samples optimal trajectories by rejection sampling and uses Maximum Likelihood Estimation (MLE) to update policy.
+% MyGO is easy to implement, stable in training, and hyper-parameter-tuning friendly.
+% We theoretically and empirically show the effectiveness of MyGO.
+
+% In this paper, we rethink the design of QA agent and summarize the principle, QA as dynamic programming.
+% Based on this principle, we design our own agent workflow and train the agent with MyGO.
+% The effectiveness of workflow and of training method have been proved by strong experiment results.
+
+
+
+
+
+% \fixme{For backing up}
+
+
+% The advent of Large Language Models (LLMs)~\cite{ouyang2022training,achiam2023gpt} redefines people's expectation towards Artificial Intelligence.
+% Despite their versatility \cite{brown2020language, rafailov2023direct, zhang2023moqagpt, yao2023tree, zhang-etal-2024-exploring-best}, there are mainly two problems preventing directly adopting LLMs as Question Answering (QA) system, knowledge cut-off \cite{cheng2024dated} and hallucination \cite{huang2025survey}.
+% % why finetune leads to catastragot forggetting
+% Due to catastrophic forgetting \cite{kirkpatrick2017overcoming}, current technology cannot inject up-to-date knowledge to LLMs massively and constantly after the pre-training stage, which leads to the knowledge-cutoff of LLMs.
+% \fixme{explain the logic of forgetting}
+% On the other hand, hallucination refers the phenomenon that LLMs could generate plausible answers given some rare queries, which raises the concern of LLMs' reliability and robustness to attack.
+% \fixme{delete robustness?}
+% To overcome these shortcomings, Retrieval-Augmented Generation (RAG) \cite{gao2023retrieval}, leveraging outer knowledge to facilitate generation, seems to be a remedy.
+
+% Compared with traditional QA systems \cite{zhu2021adaptive, yin2023rethinking} based on Pre-trained Language Models \cite{devlin2019bert, clark2020electra}, LLMs with RAG are more capable and flexible.
+% Current state-of-the-art RAG systems \cite{PoG, Search-o1, RoG, shao2023enhancing, khattab2022demonstrate} usually adopt divide-and-conquer strategy for complex questions: they decompose the question, search information for each sub-question, and summarize the final answer.
+% Such systems align with the concept of autonomous agents with search tools, who can make a plan, interact with search engine, and gather the information \cite{zhou2024language, ReAct, schick2023toolformer}.
+% However, the agent ability solely rely on their foundation models and few-shot demonstration.
+
+% \fixme{ icl slow, put knowledge into weight,}
+% To avoid the dilemma of prompt engineering, to learn from data, to accelerate inference, \textit{we must fine-tune QA agents}.
+
+% The difficulty of training QA agents lies in data.
+% QA agent is a all-rounder: it needs to reason and plan, do question decomposition, do query rewrite \cite{zhang-etal-2024-exploring-best, mo-etal-2023-convgqr}, text summarization \cite{pu2023summarization}.
+% For each single NLP task, we have corresponding dataset \cite{yang2018hotpotqa, trivedi2021musique, see-etal-2017-get, rastogi2019scaling}.
+% However, training a QA agent requires a good combination of all them and goes beyond them.
+% It is unrealistic to train the agent on each sub-task, put it in the QA pipeline, then expect it to work.
+% We must train it in an end-to-end manner.
+% This leads to the weak supervision problem.
+% The agent will be given a question and find an answer.
+% However, the process to reach the answer lacks supervision.
+% One can consider the intermediate process as a special Chain-of-Thought.
+% But the agent can only learn from the signal of final answer, no intermediate supervision, which leads to a Reinforcement Learning (RL) problem - the agent learns from their own experience.
+
+
+% % Although LLMs only need text, what we actually need are agent's experiences.
+% % These experiences include questions, question decomposition, retrieved context, response to the retrieved, and the final answer.
+% % We have QA datasets containing question-answer pairs \cite{yang2018hotpotqa}; some of them \cite{trivedi2021musique} even contain gold decomposed sub-questions.
+% % However, these data are not enough.
+% % We need a complete trajectory containing how the agent response to the environment.
+% % In reality, there is no perfect retriever, even the search query is correct, there is no guarantee of the correctness of the retrieved context.
+% % The agent needs to learn to use the retriever.
+% % Therefore, all the data must be collected by the agent itself, which leads to a reinforcement learning problem.
+
+% % \fixme{address why we need to simplify}
+% % \fixme{problem of RL: 1. engineering problem 2. unstable training 3. complex multi-turn generation}
+% \fixme{In previous paragraphs we argued the rationalities and necessities of using RL, here, our key arguments should focus on the ``challenges'' brought by using RL.}
+% \fixme{The main challenge of using RL is its ``complexity'', use key points in GRPO and PPO to illustrate. these points can lead to significant challenge in engineering and stability.}
+% Scaling RL for LLMs poses serious engineering problem \cite{hu2024openrlhf, sheng2024hybridflow, zhong2025streamrl} - PPO \cite{schulman2017proximal} requires to deploy four LLMs simultaneously.
+% For efficient LLMs inference, we need inference engines \cite{kwon2023efficient, zheng2024sglang}.
+% For optimized LLMs training, we need training engines \cite{rajbhandari2020zero, zhao2023pytorch}.
+% A effective RL must coordinate limited computing resource between two monsters.
+% Recent progress in RL4LLM successively alleviates the burden by replacing the value network with statistical estimation \cite{guo2025deepseek, shao2024deepseekmath, team2025kimi}.
+% These method focus on math or code generation, which are one-turn generation.
+% However, the agent must interact with the environment, which makes its training into a multi-turn problem.
+% The problem has three dimensions: complex schedule of LLM infrastructure, unstable training of RL \cite{mnih2015human}, and complex sampling in multi-turn generation.
+% Empirically, Numerical instabilities plague the training process of our LLMs.
+% To simplify LLM agent training, we propose \textbf{M}inimalist polic\textbf{y} \textbf{G}radient \textbf{O}ptimization (\textbf{MyGO}).
+% MyGO samples optimal trajectories by rejection sampling and uses Maximum Likelihood Estimation (MLE) to update policy.
+% MyGO is easy to implement, stable in training, and hyper-parameter-tuning friendly.
+% We theoretically and empirically show the effectiveness of MyGO.
+
+% In this paper, we rethink the design of QA agent and summarize the principle, QA as dynamic programming.
+% Based on this principle, we design our own agent workflow and train the agent with MyGO.
+% The effectiveness of workflow and of training method have been proved by strong experiment results.

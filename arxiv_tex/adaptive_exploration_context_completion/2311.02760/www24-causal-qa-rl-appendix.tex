@@ -1,0 +1,112 @@
+\clearpage
+
+\section{Appendices}
+
+We give further details on our causality graph, our QA dataset, pseudocode for training our RL agent, and the confusion table of results. Finally, we report additional experiments regarding the beam width in the decoding phase, show example paths found by our agent, and perform a manual analysis of the found paths.
+
+\subsection{Causality Graph CauseNet}
+\label{sec:causenet}
+
+CauseNet~\cite{Heindorf2020Causenet} is a large-scale causality graph extracted from web sources like Wikipedia and ClueWeb12. The following table shows its precision according to a manual evaluation, number of entities, and number of relations as reported by~\citet{Heindorf2020Causenet}:
+\begin{table}[h]
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{@{}lccc@{}} 
+  \toprule
+  \textbf{Graph} & \textbf{Precision} & \textbf{|Entities|} & \textbf{|Relations|}\\
+  \toprule
+  CauseNet & 96\% & 80,223 & 197,806\\
+  \bottomrule
+\end{tabular}
+\end{table}
+
+
+\newcommand{\pattern}[1]{\texttt{\fontsize{9.5pt}{10pt}\selectfont [#1]}\xspace}
+
+\subsection{QA Dataset Construction}
+\label{sec:dataset}
+
+We construct two datasets of binary causal questions for our experiments: MS MARCO and SemEval. For our MS MARCO dataset, we extracted all binary causal questions from the MS MARCO subset of the Webis-CausalQA-22 corpus~\cite{Bondarenko2022CausalQA}.%
+\footnote{\url{https://doi.org/10.5281/zenodo.7476615}}
+To do so, we build upon
+\citet{Heindorf2020Causenet} to extract questions via patterns of the form
+\begin{center}
+\small
+\texttt{\selectfont [question word]?\xspace}
+\texttt{\selectfont [cause/effect]\xspace}
+\texttt{\selectfont [cue word]\xspace}
+\texttt{\selectfont [cause/effect]\xspace}
+\end{center}
+where the \texttt{\selectfont [question word]\xspace} placeholder either represents one of the question words from Table~\ref{table-cue-words} (bottom) or is empty. The \texttt{\selectfont [cue word]\xspace} placeholder represents words that are good indicators for causal relations together with their appropriate prepositions. The original approach only considers \textit{cause} in different verb forms, e.g., infinitive, past, or progressive. We extend this to a greater number of causal cue words. Specifically, we use the collection from \citet{Girju2002CausalCue} who curated a collection of causal cue words and ranked them by their frequency and ambiguity, i.e., how often they appear in text and how often they refer to a causal relation. Among these, we selected the ones that were ranked with high frequency and low ambiguity. Table~\ref{table-cue-words} shows the full list of 23 words.
+
+Moreover, the \texttt{\selectfont [cause/effect]\xspace} placeholder represents causal concepts, where one takes the role of the cause and the other the role of the effect. The order depends on the question word and the causal cue word. As done by \citet{Heindorf2020Causenet}, we place a few restrictions on the questions to keep the concepts simple and increase the probability that they can be found in CauseNet. The restrictions are enforced by filtering questions based on POS-Tags from the Stanford CoreNLP~\cite{Manning2014NLP}, e.g., we disallow coordinating conjunctions and subordinating conjunctions. The full list is shown in Table~\ref{table-cue-words} on the bottom right. Finally, we check whether the questions are answered with ``yes'' or ``no'' and remove 
+any further explanation.
+
+The SemEval dataset was processed as described in Section~\ref{subsec:experimental-setup}.
+
+\input{tables/causal-que-words}
+
+
+\subsection{Pseudocode for Training the RL Agent}
+\label{sec:pseudocode-training}
+
+In the following, we describe the training procedure of our reinforcement learning agent. This includes the pre-processing of the questions, the sampling of path rollouts, and the update rules for the weights of the agent. We start with the observation that CauseNet~\cite{Heindorf2020Causenet} does not contain negative information. Thus, we only train the agent on positive causal questions, i.e., questions whose answer is ``yes''. Similarly, we must remove all questions where the cause, effect, or both cannot be found in CauseNet.
+
+Algorithm~\ref{alg:algorithm} displays the pseudocode of the whole training phase. The pseudocode assumes that only positive causal questions, where cause and effect can be found in CauseNet, remain in the given $questions$. First, we pre-process the questions by linking the cause and effect to the corresponding entities $e_c$ and $e_e$ in CauseNet. This is followed by the computation of embeddings for the question and entities.\footnote{We use GloVe~\cite{Pennington2014Glove} embeddings to embed the questions and entities. For more details, see Section~\ref{subsec:experimental-setup}.} Next, the weights $\theta$ and $\psi$ of the agent are initialized. In the default setup, both are initialized randomly. In the case of a preceding supervised learning phase (Section~\ref{subsec:supervised}), the weights of the policy network $\theta$ are initialized with the resulting weights from the supervised learning.
+
+\input{figures/algorithm}
+
+Afterward, we start sampling path rollouts from the environment via the current policy network $\pi_\theta(a_t | s_t)$. Each path rollout has the same length $T$. Hence, the agent should learn to use the \textit{STAY} action in case it arrives at the target entity before a length of $T$ is reached. Given a pre-processed question $q$, we construct the first state $s_0$. Subsequently, the agent interacts with the environment for $T$ time steps. At each time step, the agent applies an action $a_t$ and receives a reward $r_t$ while the environment evolves via the transition function $\delta(s_t, a_t)$ to the next state $s_{t+1}$. This procedure is continued until a full batch of path rollouts is accumulated.
+
+The training of the agent is facilitated via the Synchronous Advantage Actor-Critic (A2C)~\cite{Mnih2016A2C} algorithm. The policy network $\pi_\theta(a_t | s_t)$ takes the role of the actor while the value network $V_\theta(s_t)$ takes the role of the critic. We briefly experimented with Proximal Policy Optimization (PPO)~\cite{Schulman2017PPO} but found no significant performance improvements. Thus, the update rule for the policy network $\pi_\theta(a_t | s_t)$ becomes
+\begin{equation}
+  \nabla_{\theta} J(\theta) = - \frac{1}{B} \sum_{i}^{B} \sum_{t=0}^{T-1} \nabla_{\theta} \log(\pi_{\theta} (a_t | s_t)) \, \mathcal{A}_{t}^{\psi}
+\end{equation}
+where $B$ is the batch size, T the path rollout length, and $\mathcal{A}_{t}^{\psi}$ the generalized advantage estimate (GAE)~\cite{Schulman2016GAE}. GAE introduces two hyperparameters, the discount factor $\gamma$ and a smoothing factor $\lambda$ which controls the trade-off between bias and variance~\cite{Schulman2016GAE, Sutton1998RL}.
+
+As commonly done, we add an entropy regularization term to the objective~\cite{Das2018Minerva, Kaiser2021Reinforcement}. The entropy regularization should help the agent with the exploitation vs. exploration tradeoff. Specifically, it should encourage exploration during training and the resulting policy should be more robust and have a higher diversity of explored actions. We compute the average entropy of the action distribution of $\pi_{\theta}(a_t | s_t)$ over all actions $a_t \in \mathcal{A}(s_t)$ at each time step $t$ and take the average over the whole batch:
+\begin{equation}
+	H_{\pi_\theta} = \frac{1}{B(T-1)} \sum_{i}^{B} \sum_{t=0}^{T-1} (- \hspace{-0.3cm}\sum_{a_t \in \mathcal{A}(s_t)} \hspace{-0.3cm} \pi_\theta(a_t | s_t) \log \pi_\theta(a_t | s_t))
+\end{equation}
+The final update for the policy network becomes
+\begin{equation}
+  \theta = \theta - lr \cdot(\nabla_{\theta} J(\theta) + \beta H_{\pi_\theta})
+\end{equation}
+where $lr$ is the learning rate and $\beta$ is a hyperparameter that determines the weight of the entropy regularization term.
+
+Simultaneously, we update the value network $V_{\psi}(s_t)$ via the mean-squared error between the $\lambda$-return and the predictions of the value network
+\begin{equation}
+		\nabla_{\psi} J(\psi)= \frac{1}{B (T-1)} \sum_{i}^{B} \sum_{t=0}^{T-1} \nabla_{\psi} (R_t(\lambda) - V_{\psi}(s_t))^2
+\end{equation}
+where $R_t(\lambda)$ is the $\lambda$-return~\cite{Sutton1998RL, Peng2018Mimic}. Therefore, the update for the value network becomes:
+\begin{equation}
+  \psi = \psi - lr \cdot \nabla_{\psi} J(\psi)
+\end{equation}
+
+
+\input{tables/confusion-table}
+
+\subsection{Confusion Table}
+Table~\ref{table-confusion-table} shows the confusion table corresponding to our evaluation results in Section~\ref{sec:evaluation}.
+
+
+\subsection{Decoding Analysis}
+\label{sec:decoding-analysis}
+
+In the following, we investigate the effects of different beam widths on the MS MARCO test set. We experiment with beam widths of 1, 5, 10, and 50 and present the results in Figure \ref{figure-beam-search-whole-path}. As the beam width increases, accuracy also increases. For example, the difference between a width of 1 and a width of 50 is 0.09 points accuracy after 2000 steps. In general, beam search can be viewed as an interpolation between greedy decoding and BFS. If the beam width is set high, the agent performs close to an exhaustive search. We can already observe this effect when looking at step 0. As the beam width increases, the accuracy without any learning also increases slightly, e.g., for widths of 10 and 50 from 0.18 to 0.21. Having said this, even beam width 50 only starts at 0.21 and still has a lot of learning progress afterwards and the performance of width 50 does not reach the performance of supervised learning suggesting that 50 is still a reasonable beam width.
+
+\input{figures/beam-width-experiment}
+
+\input{tables/examples}
+
+\subsection{Example Paths}
+
+Table~\ref{table-examples} illustrates a few example paths found by our agent. The paths can be used to follow the complete reasoning chain to examine the mechanisms of how a cause produces an effect. Moreover, the first example demonstrates the agent's ability to utilize the \textit{STAY} action; the third example shows how the agent learned to use inverse edges to recover from mistakes.
+
+\subsection{Manual Path Analysis}
+\label{sec:manual-analysis}
+
+\input{tables/manual-evaluation.tex}
+
+It has previously been found that 0.96\% of triples in CauseNet are correct as judged by a human annotator~\cite{Heindorf2020Causenet}. Similarly, we investigated manually in how far the paths found by our 3-hop agent are correct. For each question, we inspected the top path according to its probability as returned by the agent. A path is rated as correct if evidence for it could be found via a web search; a path is wrong if counter-evidence could be found; a path is borderline if the human annotator found it difficult to make a definite decision, e.g., because conflicting evidence was found or because the path contained overly generic intermediate nodes.% such as ``side effects'' or ``problems''.
+
+Across datasets, about 53\%--64\% of answers were rated as correct, 25\%--27\% as borderline, and 11\%--20\% as wrong. Many of the wrong answers are due to inverse edges, namely 16 out of 23 for MS MARCO and 2 out of 6 for SemEval. Nevertheless, as discussed in Section~\ref{sec:discussion}, inverse edges often help to improve accuracy and $F_1$-score. The higher percentage of correct answers for SemEval compared to MS MARCO may be explained by the fact that answering MS MARCO questions tends to require more hops, increasing the risk of errors accumulating (cf. Table~\ref{table-evaluation}). Overall, the manual analysis highlights the need to develop improved causality graphs and question-answering approaches in future work. 

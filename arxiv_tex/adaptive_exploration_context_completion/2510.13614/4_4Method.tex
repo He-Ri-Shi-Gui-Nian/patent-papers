@@ -1,0 +1,242 @@
+% \subsection{Experience Memory}
+% \label{sec:memory}
+
+% The experience memory layer serves as the long-term knowledge base of \mot, 
+% storing reasoning trajectories, toolkit selection patterns, and verified temporal facts. 
+% It bridges different reasoning cycles by enabling the model to retrieve relevant exemplars 
+% and to continually refine its decision-making through accumulated experiences. 
+% Unlike static prompt libraries, this layer operates as a dynamic, self-evolving memory that 
+% supports both retrieval and continual adaptation across diverse temporal question types.
+
+% \myparagraph{Experience retrieval}
+% During the recursive reasoning process, each sub-task may query the experience pool 
+% $\mathcal{E}_{pool}$ to obtain relevant exemplars for decomposition, seed selection, or toolkit usage. 
+% Each experience record stores both textual metadata and its dense vector representation, 
+% allowing efficient similarity search through an embedding index built with FAISS.  
+% Given a current sub-question $q_i$ and its indicator $\Ind_i$, the system encodes them 
+% into joint semantic–temporal embeddings and retrieves top-$W_{\text{exp}}$ similar examples:
+% \[
+% \mathcal{E}_{\text{match}} = 
+% \textsf{RetrieveExperience}(\mathcal{E}_{pool}, q_i, \Ind_i, W_{\text{exp}}).
+% \]
+% To accelerate lookup, a high-frequency buffer is maintained to cache recently accessed examples.  
+% Entries in this buffer are ranked using a hybrid metric combining embedding similarity and hit frequency:
+% \[
+% \textsf{Score}(E_j) = \lambda_{\text{sim}}\cos(e_{q_i}, e_{E_j}) 
+% + \lambda_{\text{hit}}\textsf{Count}(E_j),
+% \]
+% where frequently retrieved exemplars gain temporary priority for reuse.  
+% This design allows the system to maintain both long-term memory and a short-term “working cache” 
+% for fast adaptation during ongoing reasoning.
+
+% \myparagraph{Experience update}
+% After a reasoning cycle concludes, all verified sub-questions, selected toolkits, and 
+% their reasoning paths are recorded back into $\mathcal{E}_{pool}$. 
+% Each record includes textual content, structured indicators, execution parameters, 
+% temporal constraints, and corresponding embeddings for both the question and indicator.  
+% This dual representation enables precise semantic alignment and fast vector retrieval.  
+% New entries are inserted into both the global memory and the local buffer;  
+% obsolete or low-value traces are periodically evicted to prevent redundancy.  
+% Through continuous recording and pruning, the experience pool evolves with the system’s reasoning behaviour, 
+% serving as a compact yet expressive representation of past knowledge.
+
+% \myparagraph{Continual adaptation}
+% The memory layer supports adaptive refinement by re-weighting and reorganizing stored exemplars over time.  
+% High-confidence records are prioritized during retrieval, 
+% while outdated or inconsistent examples gradually decay in influence.  
+% The embedding index is periodically rebalanced to maintain uniform distribution, 
+% ensuring efficient similarity search even as the number of experiences grows.  
+% This continual adaptation allows \mot\ to focus on temporally relevant reasoning strategies 
+% and to generalize better across evolving temporal domains.
+
+% \myparagraphunderline{Integration with reasoning}
+% The experience memory interacts tightly with the recursive reasoning loop described in Section~\ref{sec:recursion}.  
+% At runtime, it serves as a shared repository for experience-guided decomposition, toolkit selection, and answer synthesis.  
+% After each reasoning session, verified results, including embeddings, sufficiency status, and hit statistics, are 
+% propagated back to memory, updating both the long-term index and the fast-access buffer.  
+% This design closes the reasoning–learning loop, enabling \mot\ to continuously refine its temporal reasoning ability 
+% through a cycle of retrieval, execution, and self-improvement.
+
+
+% \vspace{-3mm}
+\subsection{Experience Memory}
+\label{sec:memory}
+
+% The experience memory layer serves as the long-term knowledge base of \mot, 
+% storing reasoning trajectories, toolkit selection patterns, and verified temporal facts. 
+% It bridges different reasoning cycles by enabling the model to retrieve relevant exemplars 
+% and to continually refine its decision-making through accumulated experiences. 
+% Unlike static prompt libraries, this layer operates as a dynamic, self-evolving memory that 
+% supports both retrieval and continual adaptation across diverse temporal question types.
+
+
+After each reasoning episode, verified temporal paths and toolkit decisions are stored for future reuse, 
+forming the foundation of the experience memory layer.  
+This layer serves as the long-term knowledge base of \mot, 
+recording reasoning trajectories, toolkit selection patterns, and verified temporal facts.  
+It bridges different reasoning cycles by allowing the model to retrieve relevant exemplars 
+and continually refine its decision-making through accumulated experience.  
+Unlike static prompt libraries, the memory operates as a dynamic, self-evolving component supporting both retrieval and continual adaptation across diverse question types.
+The pseudo-code of the section is shown in Algorithm \ref{algorithm:memory} of Appendix \ref{appendix:alg}.
+
+
+\myparagraph{Experience retrieval}
+During the Tree of Time reasoning process, each sub-task may query the experience pool 
+$\mathcal{E}_{pool}$ to obtain relevant exemplars for decomposition, seed selection, or toolkit usage.  
+All retrieval operations (e.g., $\text{GetTypeExp}$, $\text{GetDecompExp}$, $\text{GetToolkitExp}$) 
+are implemented under a unified interface: 
+$\mathcal{E} = 
+\textsf{RetrieveExperience}(\mathcal{E}_{pool}, q_i, \Ind_i, \tau, W_{\text{exp}}),$
+where $\tau=\text{Type}(Q)$ denotes the temporal type of the current reasoning context. 
+Each query is restricted to the memory subset that shares the same type label $\tau$, 
+ensuring contextual consistency and preventing cross-type noise.  
+Every experience record stores both textual metadata and its dense embeddings, one for the question text 
+and another for its indicator, allowing semantic–temporal similarity search through a FAISS-based index \cite{douze2024faiss}.  The incorrect samples are used as warnings.
+
+To accelerate lookup, a high-frequency buffer caches recently accessed exemplars.  
+Entries in this buffer are ranked by a hybrid metric combining embedding similarity and hit frequency:
+$
+\textsf{Score}(E_j) = \lambda_{\text{sim}}\cos(e_{q_i}, e_{E_j}) 
++ \lambda_{\text{hit}}\textsf{Count}(E_j),
+$
+so that frequently used exemplars gain higher reuse priority.  
+This dual-layer design allows \mot\ to balance long-term generalization with short-term adaptability during ongoing reasoning.
+
+
+% ========== MultiTQ ==========
+\begin{table}[t]
+\centering
+\caption{Performance comparison on \textbf{MultiTQ} (Hits@1, \%). Best in \textbf{bold}, second-best \underline{underlined}.}
+\vspace{-3mm}
+\label{tab:main_results_multiTQ}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{l c c c c c c}
+\toprule
+\multirow{2}{*}{\textbf{Model}} & \multirow{2}{*}{\textbf{LLM}} & \multirow{2}{*}{\textbf{Overall}} & \multicolumn{2}{c}{\textbf{Question Type}} & \multicolumn{2}{c}{\textbf{Answer Type}} \\
+\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+ &  &  & \textbf{Multiple} & \textbf{Single} & \textbf{Entity} & \textbf{Time} \\
+\midrule
+BERT\cite{devlin2019bert}        & \multirow{2}{*}{--} & 8.3 & 6.1 & 9.2 & 10.1 & 4.0 \\
+ALBERT\cite{lan2019albert}      &                      & 10.8 & 8.6 & 11.6 & 13.9 & 3.2 \\
+\midrule
+EmbedKGQA\cite{saxena2020improving}   & \multirow{3}{*}{--} & 20.6 & 13.4 & 23.5 & 29.0 & 0.1 \\
+CronKGQA\cite{saxena2021question}    &                      & 27.9 & 13.4 & 33.7 & 32.8 & 15.6 \\
+MultiQA\cite{chen2023multi}     &                      & 29.3 & 15.9 & 34.7 & 34.9 & 15.7 \\
+\midrule
+ChatGPT     & \multirow{6}{*}{GPT-3.5-Turbo} & 10.2 & 7.7  & 14.7 & 13.7 & 2.0 \\
+KG-RAG\cite{ARI}      &                                     & 18.5 & 16.0 & 20.0 & 23.0 & 7.0 \\
+ReAct KB\cite{ARI}    &                                     & 21.0 & 13.6 & 63.5 & 31.3 & 30.0 \\
+ARI\cite{ARI}         &                                     & 38.0 & 68.0 & 21.0 & 39.4 & 34.4 \\
+TempAgent\cite{qianyihu-etal-2025-time}   &                                     & 53.9 & 16.8 & 68.4 & 47.8 & 66.1 \\
+\midrule
+\multirow{4}{*}{\textbf{MemoTime}} 
+ & GPT-4o-mini  & 64.2 & 40.3 & 73.0 & 61.5 & 70.8 \\
+ & Qwen3-32B    & 68.2 & 42.5 & 77.6 & 62.1 & 81.7 \\
+ & DeepSeek-V3  & \underline{73.0} & \underline{45.9} & \underline{82.9} & \underline{67.7} & \underline{84.6} \\
+ &\cellcolor{blue!6}  GPT-4-Turbo  & \cellcolor{blue!6} \textbf{77.9} & \cellcolor{blue!6} \textbf{53.8} & \cellcolor{blue!6} \textbf{86.8} & \cellcolor{blue!6} \textbf{74.5} & \cellcolor{blue!6} \textbf{85.3} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\myparagraph{Experience update}
+After a reasoning cycle concludes, all verified sub-questions, selected toolkits, and reasoning paths 
+are recorded back into $\mathcal{E}_{pool}$.  
+Each record includes textual content, structured indicators, execution parameters, temporal constraints, 
+and corresponding embeddings for both the question and the indicator.  
+This dual representation supports precise semantic alignment and fast vector retrieval.  
+New entries are inserted into both the global memory and the buffer; 
+obsolete or low-value traces are periodically pruned to prevent redundancy.  
+Through continuous recording and pruning, the experience pool evolves alongside the system’s reasoning behaviour, 
+serving as a compact yet expressive representation of accumulated knowledge.
+
+\myparagraphunderline{Cross-type augmentation}
+While retrieval is type-restricted, the memory layer supports cross-type augmentation during updates.  
+When a sub-question from one temporal type exhibits high structural similarity with exemplars in another, 
+the new record is annotated with multiple secondary type labels.  
+This mechanism enables \mot\ to share transferable reasoning patterns across related temporal operators 
+(\eg  \text{BeforeLast} and \text{AfterFirst}), forming an interconnected experience graph that 
+improves recall and diversity without sacrificing retrieval precision.
+
+\myparagraph{Continual adaptation}
+The memory layer continuously re-weights and reorganizes stored exemplars based on retrieval frequency, 
+temporal freshness, and reasoning success.  
+High-confidence exemplars are prioritized in future retrievals, 
+while outdated or inconsistent examples gradually decay in influence.  
+The embedding index is periodically rebalanced to maintain uniform coverage and retrieval efficiency.  
+This self-adaptive mechanism ensures that \mot\ focuses on temporally relevant reasoning strategies 
+and generalizes effectively to unseen question types.
+
+\myparagraphunderline{Integration with reasoning}
+The experience memory interacts closely with the Tree of Time reasoning loop described in Section~\ref{sec:recursion}.  
+At runtime, it acts as a shared repository for experience-guided decomposition, toolkit selection, and answer synthesis.  
+After each reasoning session, verified results, including embeddings, type labels, sufficiency status, and hit statistics, are 
+propagated back into memory, updating both the long-term index and the fast-access buffer.  
+This design closes the reasoning–learning loop, enabling \mot\ to continually refine its temporal reasoning ability 
+through iterative retrieval, execution, and self-improvement.
+
+
+
+% \subsection{Experience Memory}
+% \label{sec:memory}
+
+% The experience memory layer serves as the long-term knowledge base of \mot, 
+% storing reasoning trajectories, toolkit selection patterns, and verified temporal facts. 
+% It bridges different reasoning cycles by enabling the model to retrieve relevant exemplars 
+% and to continually refine its decision-making through accumulated experiences. 
+% Unlike static prompt libraries, this layer operates as a dynamic, self-evolving repository 
+% that supports both experience retrieval and continual adaptation across temporal reasoning tasks.
+
+% \myparagraph{Experience retrieval.}
+% All experience retrieval operations in \mot, including 
+% $\textsf{GetTypeExperience}$, $\textsf{GetDecompExperience}$, and 
+% $\textsf{GetToolkitExperience}$, are unified under a shared interface 
+% $\textsf{RetrieveExperience}(\mathcal{E}_{pool}, q_i, \Ind_i, \tau, W_{\text{exp}})$.  
+% Each query is performed within the current temporal type $\tau=\textsf{Type}(Q)$ to ensure contextual consistency and avoid irrelevant cross-type noise.  
+% During retrieval, both the question text and its indicator are encoded into dense embeddings, 
+% and the search is restricted to the subset of memory entries that share the same type label $\tau$.  
+% Each record stores dual embeddings—one for the question or sub-question text, and another for its indicator—allowing semantic–temporal similarity matching.  
+% A high-frequency buffer is also maintained for fast access, 
+% ranking candidates by a hybrid metric combining similarity and hit frequency.  
+% This design enables \mot\ to balance long-term generalization with short-term adaptability during ongoing reasoning.
+
+% \myparagraphunderline{Cross-type augmentation.}
+% While retrieval is type-restricted, the memory layer supports cross-type augmentation during updates.  
+% When a sub-question from one type exhibits high structural similarity with another type’s stored exemplars, 
+% the new record is annotated with multiple secondary type labels.  
+% This mechanism allows \mot\ to capture transferable reasoning patterns across related temporal operators 
+% (\eg\ between \textsc{BeforeLast} and \textsc{AfterFirst}).  
+% Over time, the memory forms an interconnected experience graph where similar reasoning behaviours reinforce one another, 
+% improving recall and diversity without compromising retrieval precision.
+
+% \myparagraphunderline{Experience update.}
+% After each reasoning cycle, verified sub-questions, selected toolkits, and reasoning paths are recorded back into $\mathcal{E}_{pool}$.  
+% Each entry includes textual content, indicator constraints, execution parameters, and their corresponding embeddings.  
+% New records are inserted into both the long-term embedding index and the fast-access buffer.  
+% Obsolete or rarely accessed entries are periodically pruned to control memory size, while high-confidence records are retained and reweighted.  
+% This structured update ensures that \mot’s memory remains both compact and semantically rich, 
+% continuously reflecting its evolving reasoning experience.
+
+% \myparagraphunderline{Continual adaptation.}
+% The experience memory dynamically reorganizes itself based on retrieval statistics and temporal freshness.  
+% Frequently retrieved exemplars receive higher priority scores, 
+% while outdated or low-utility ones decay over time.  
+% The embedding index is periodically rebalanced to maintain uniform coverage and retrieval efficiency.  
+% Through this self-optimizing process, \mot\ gradually adapts its reasoning strategy, 
+% favoring more effective and temporally recent trajectories.
+
+% \myparagraphunderline{Integration with reasoning.}
+% At runtime, the memory layer interfaces with all reasoning components described in Section~\ref{sec:recursion}, 
+% serving as the foundation for experience-guided decomposition, toolkit selection, and answer generation.  
+% After each reasoning session, the verified reasoning chain, toolkit decisions, 
+% and sufficiency outcomes are recorded back into memory, closing the reasoning–learning loop.  
+% This continual feedback transforms \mot\ from a static QA system into a self-improving temporal reasoning agent 
+% capable of learning from its own reasoning history.
+
+
+
+% Having established how experience is organized and retrieved, 
+% we next describe how these retrieved exemplars guide the actual temporal reasoning process.  
+% Specifically, Section~\ref{sec:retrieval} introduces the retrieval and pruning layer, 
+% which executes experience-informed toolkit calls, temporal filtering, and candidate path ranking 
+% to construct the final reasoning evidence chain.  

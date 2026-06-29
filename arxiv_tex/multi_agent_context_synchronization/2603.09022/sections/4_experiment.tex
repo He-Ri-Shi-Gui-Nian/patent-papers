@@ -1,0 +1,90 @@
+
+
+\subsection{Game Environments}
+Following prior interactive evaluation suites such as LMGame-Bench and BALROG~\citep{hu2025lmgamebenchgoodllmsplaying, paglieri2025balrogbenchmarkingagenticllm}, our games span core problem classes studied in game theory and multi-agent systems. We group them into three categories. \textbf{Negotiation} games, which test cooperation and compromise~\citep{negotiationandhonesty, abdelnabi2024llmdeliberation}; \textbf{Imperfect Information} games, which require reasoning under uncertainty and partial observability~\citep{DBLP:journals/corr/abs-2007-13544, guo2024suspicionagent}; and \textbf{Perfect Information} games, which emphasize planning and long-horizon decision-making with full state visibility~\citep{DBLP:journals/corr/abs-1712-01815}. See Appx.~\ref{app:game_env} for environment descriptions.
+
+\subsection{Baselines and Evaluation Protocol}
+\label{sec:optmization_settings}
+\label{evaluation_setup}
+
+We compare \NAME{} against three classes of methods.
+\textbf{Static prompting} uses unoptimized contexts, including the default \texttt{TextArena} prompt as a baseline, chain-of-thought (CoT), and tree-of-thought (ToT). The baseline prompt is shown in Appx.~\ref{appendix: basepromptexample}.
+\textbf{Prompt optimization} adapts the context through feedback, including \texttt{TextGrad}~\citep{yuksekgonul2024textgrad}, \texttt{MIPRO}~\citep{opsahl2024optimizing}, and \texttt{GEPA}~\citep{agrawal2025gepa}.
+\textbf{RL} updates model weights through self-play, including \texttt{UnstableBaselines}~\citep{Guertler_UnstableBaselines_2025} and \texttt{SPIRAL}~\citep{liu2025spiral}.
+Configurations for all methods are provided in Appx.~\ref{appendix: Training_settings}.
+
+All experiments use \textbf{GPT-4o-mini}~\citep{openai2024gpt4o_mini} and \textbf{Qwen-2.5-7B-Instruct}~\citep{yang2025qwen2_5} as base models.
+For prompt-based methods, we perform three independent optimization runs; each resulting context is evaluated against held-out opponents (Grok-4-Fast-Non-Reasoning~\citep{grok4_fast_nonreasoning_2025}, Gemini-2.5-Flash-Lite~\citep{comanici2025gemini}, and Qwen3-235B-A22B-Instruct-2507~\citep{yang2025qwen2_5}) over 50 games per opponent per run.
+For RL methods, we train a single policy, select the best checkpoint, and evaluate over three sets of 50 games against the same opponents.
+We report mean win rates and relative standard error (RSE; defined in Sec.~\ref{RSE}) across runs. A fixed sampling temperature of $\tau=1.0$ is used throughout.
+
+\subsection{Hyperparameter Selection}
+\label{sec:hyperparamselection}
+We use a single, fixed configuration across all experiments to avoid per-task tuning; ablation results are in Appx.~\ref{appendix:ablation}. 
+
+\textbf{Context optimization loop.}
+We maintain a population of $N=8$ candidate contexts and run $G=5$ optimization generations.
+In each generation, we collect $S=50$ self-play games per candidate (total $N \times G \times S = 2000$ games).
+We set the TrueSkill penalty coefficient to $\kappa = 1$.
+
+\textbf{Memory-augmented initialization.} We control what proportion of the candidate population receives insights from the shared memory bank $\mathcal{B}_{\text{mem}}$ at initialization. We denote this proportion by $\pi \in [0,1]$, where $\pi=0$ means no candidates receive memory and $\pi=1$ means all candidates are initialized with sampled insights. We use $\pi=0.75$.
+
+\textbf{Replay mechanism.} The replay mechanism uses three hyperparameters. Buffer capacity $B$ sets the maximum number of stored trajectories. Priority exponent $\alpha$ controls the strength of prioritizing rare trajectories. Replay gate $\beta$ sets the probability of initializing from replay rather than starting a new game. We use $B=100{,}000$, $\alpha=0.6$, and $\beta=0.4$.
+\section{Results and Analysis}
+
+\input{tables/token_cost}
+
+\paragraph{Observation 1. Persistent self-play memory enables sample-efficient and stable gains.}
+As shown in Tab.~\ref{tab:main-results_v2}, \NAME{} consistently outperforms other prompt optimization methods, achieving an average gain over \texttt{TextGrad} (14.9\%), \texttt{MIPRO} (12.8\%), and \texttt{GEPA} (17.5\%) with GPT-4o-mini. While the margin relative to RL-based methods such as \texttt{UnstableBaselines} and \texttt{SPIRAL} is smaller, \NAME{} remains competitive while using \textbf{19$\times$ fewer} environment interactions (\textbf{2{,}000} vs.\ \textbf{38{,}000} games).
+
+\input{tables/main_experiment}
+
+\textbf{Sample-efficient gains.}
+These gains stem from \NAME{}'s ability to accumulate reusable, game-specific insights in the persistent memory bank across self-play episodes (Fig.~\ref{fig:teaser_b}). Qualitative analysis of stored insights (Appx.~\ref{appendix:insightcaseanalysis}) reveals that high-quality entries encode transferable strategic principles rather than instance-specific action reminders. In \textsc{KuhnPoker}, the memory bank learns pressure-based betting heuristics that balance aggression with hand strength. In \textsc{SimpleNegotiation}, it discovers that opponents hold asymmetric resource valuations, a concept never stated in the game rules, and learns to probe preferences before committing to offers. In \textsc{TwoDollar}, it captures time-pressure tactics that exploit the finite round structure. These abstractions persist across optimization generations while less informative or overly specific feedback is gradually diluted through the memory merge operations (Sec.~\ref{sec:memory}). Unlike prompt-only optimization methods that reset context after each update, \NAME{} retains and compounds information across generations, allowing performance improvements to accumulate with substantially fewer interactions.
+
+Retaining high-value insights also improves computational efficiency. As shown in Tab.~\ref{tab:token-cost}, \NAME{} uses only 91K output tokens on average, about one-quarter of \texttt{MIPRO} (354K) and 20\% fewer than \texttt{GEPA} (113K), while achieving similar or better win rates (Tab.~\ref{tab:main-results_v2}). Methods such as \texttt{MIPRO} and \texttt{GEPA} rely on many reflective rollouts and prompt revisions, increasing token usage without commensurate performance gains, while \texttt{TextGrad} uses very few tokens ($\sim$1K) but lacks capacity to learn complex multi-turn behaviors. By retaining high-value insights and reusing them across generations, \NAME{} concentrates learning on fewer, more informative interactions, improving the trade-off between token cost, interaction budget, and win rate.
+\input{tables/ablation}
+
+\textbf{Stable gains.}
+Cross-episode information reuse also reduces run-to-run variance in multi-turn gameplay. The baseline runs in Tab.~\ref{tab:main-results_v2} exhibit high variance, likely due to the compounding effects of early decision errors. While other prompt optimization methods reduce RSE (defined in Sec.~\ref{RSE}) relative to the baseline, \NAME{} consistently achieves the lowest mean RSE across games. On GPT-4o-mini, \NAME{} attains an average RSE of 6.4\%, compared to \texttt{MIPRO}'s 12.4\% (Fig.~\ref{fig:teaser_a}). Notably, \texttt{UnstableBaselines} shows increased RSE, indicating that outcome-based RL with sparse end-game rewards remains unstable in multi-turn, multi-agent settings~\citep{wang2025ragen}. These results demonstrate that cross-episode information reuse is crucial for both performance and stability.
+
+
+
+
+\paragraph{Observation 2. Retention and structured exploration are both necessary.}
+Tab.~\ref{tab:ablations} isolates the contribution of each component. All variants use prompt optimization and differ only in whether they maintain a persistent \textbf{Memory} bank (retention) and whether they enrich trajectories via tournament play and replay (exploration). In the tournament-only setting, prompt updates are computed from the current trajectories and no insights are stored across generations.
+
+The ablation ladder reveals that memory is the dominant mechanism. Mean win rate increases from 23.8\% (prompt optimization alone) to 27.1\% with tournament-only (+3.3) and to 34.2\% with Memory-only (+10.4). Adding replay to tournament yields 41.6\% (+17.8), but the largest jump occurs when tournament exploration is paired with Memory, reaching 48.1\% (+24.3). Replay adds a further improvement to 50.2\% (+26.4). These results refine the picture from prior work showing that random exploration paired with learning can produce substantial gains in multi-turn settings~\citep{chen2025internalizing}. Random exploration alone is not enough to reliably populate the memory bank with transferable, high-signal insights. Structured exploration through tournament play provides the repeated evaluation needed to filter what gets retained, aligning with population-based game learning where robustness stems from repeated evaluation against diverse opponents rather than unstructured exploration~\citep{lanctot2017unified}.
+
+
+\input{tables/crosstask_generalize} 
+
+\paragraph{Observation 3. Learned contexts generalize across games.}
+Since the memory bank captures both general strategic principles and game-specific action sequences (Observation~1), retained insights may transfer across game families. To test this, we run \NAME{}'s full optimization pipeline on a single source game, producing an optimized prompt and memory bank. We then apply that context directly to a different target game on the same base model with no further optimization. Tab.~\ref{tab:cross_task} reports win rates for all source--target pairs evaluated zero-shot.
+
+\textbf{Protocol-level skill transfer across game families.}
+Core interaction components such as turn management, action formatting, and short-horizon planning generalize even when payoff structures differ.
+Transferring context from \textsc{SimpleTak} $\rightarrow$ \textsc{KuhnPoker} improves performance by $+$25.9\%, and \textsc{TwoDollar} $\rightarrow$ \textsc{SimpleTak} yields a $+$26.4\% gain.
+The retained context acts as a general decision scaffold that extends beyond game-specific heuristics.
+We provide a case study in Appx.~\ref{appendix:prompt_analysis}.
+
+\textbf{Transfer exhibits directional asymmetry.}
+Transfer effectiveness depends on the structural alignment between source and target games.
+Context from \textsc{TwoDollar} improves performance on \textsc{SimpleNegotiation} ($+$5.6\%), yet the reverse shows negligible effect ($-$0.2\%).
+Similarly, \textsc{Briscola} $\rightarrow$ \textsc{SimpleTak} shows negative transfer ($-$7.1\%).
+This asymmetry suggests that not all retained insights generalize equally, and that positive transfer requires sufficient structural overlap between games.
+
+% \textcolor{red}{An example of transfer prompt, helps opponent modleing}
+
+
+\paragraph{Observation 4. Learned context does not always transfer across models.}
+\input{figures/context_transfer_fig}
+
+Observation~3 establishes that retained contexts encode transferable strategic structures across games. We now ask whether these structures also transfer across model architectures. We run \NAME{}'s full optimization pipeline on GPT-4o-mini, then apply the resulting prompt and memory bank directly to Gemini-2.5-Flash-Lite and Grok-4-Fast-Non-Reasoning without further optimization, evaluating against the same opponent pool (Sec.~\ref{evaluation_setup}). Fig.~\ref{fig:learned_context} reports per-game win rates with and without the transferred context.
+
+\textbf{Weaker models benefit most from transferred context.}
+Gemini-2.5-Flash-Lite starts from a lower baseline ($\sim$32\% mean win rate) and improves uniformly across all three games, with the largest gain in \textsc{TwoDollar} ($+$35\%). Grok-4-Fast-Non-Reasoning starts from a higher baseline ($\sim$44\%) and shows mixed results, with a large gain in \textsc{TwoDollar} ($+$23.3\%) but drops in \textsc{Briscola} ($-$8.0\%) and \textsc{KuhnPoker} ($-$6.0\%), two games where it already performs well.
+
+\textbf{Transferred heuristics can conflict with native strategies.}
+The pattern is consistent. Both models gain the most in \textsc{TwoDollar}, their weakest game, indicating that transferred context fills capability gaps rather than overriding existing competence. When the target model already possesses effective strategies, the source model's heuristics can interfere, producing negative transfer in precisely those games where the target model is strongest.
+

@@ -1,0 +1,334 @@
+\onecolumn
+\raggedbottom
+\setcounter{secnumdepth}{2}
+\renewcommand\thesubsection{A.\arabic{subsection}}
+\renewcommand\thesubsubsection{A.\arabic{subsection}.\arabic{subsubsection}}
+
+\section*{APPENDIX}
+
+This appendix provides detailed specifications for the key components of the Interference-Aware $K$-step Reachable Communication (IA-KRC) framework, including its core algorithm, the neural network for interference prediction, and the hyperparameters used in the experiments.
+
+\subsection{Implementation Details of the IA-KRC Algorithm}
+
+\paragraph{Key Variables and Functions.} Before presenting the algorithm, we define the key functions and variables used:
+
+\textbf{Variables:}
+
+\begin{itemize}
+\item $d_{IA}(s_1, s_2)$: Interference-aware shortest transition distance (Definition 2)
+\item $\mathcal{S}_{IA}(s_1, K)$: Interference-aware $K$-step reachable region (Definition 3)
+\item $N_i^{(K)}$: Reachable neighbor count within $K$-step domain for agent $i$
+\item $\mathcal{L}$: Set of elected leaders
+\item $\mathcal{F}$: Set of followers (non-leader agents)
+\end{itemize}
+
+\textbf{Functions:}
+\begin{itemize}
+\item $\texttt{update\_from\_sight}()$: Updates geometry layer with visual observations
+\item $\texttt{update}()$ on $L_r$: Updates regulation layer using agent transitions
+\item $\texttt{confidence\_refresh}(\cdot; L_g, L_r)$: Confidence-driven asynchronous updater over layers
+\item $\texttt{interference\_prediction\_module}()$: Produces interference costs for $L_i$
+\item $\texttt{aggregate\_graph}()$: Aggregates geometry obstacles, regulation constraints, and interference weights; sets obstacle $\Rightarrow \infty$, free base $=1$, and non-obstacle edges $w(u,v) \leftarrow 1 + f_{\text{influence}}(M,v)$ when interference is enabled
+\item $\texttt{dijkstra\_reachable}()$: Shortest-path query on aggregated graph to get $\mathcal{S}_{IA}(s,K)$
+\end{itemize}
+
+The complete IA-KRC algorithm is presented in Algorithm~\ref{alg:ia-krc}.
+
+\begin{algorithm}[H]
+\caption{IA-KRC Algorithm}
+\label{alg:ia-krc}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} Agent states $\{s_i\}_{i=1}^N$, enemy observations $E_{obs}$, environment observations $env_{obs}$, parameters $K, M$
+\STATE \textbf{Output:} Collaborative groups $G = \{G_1, G_2, ..., G_{M}\}$
+
+\STATE \COMMENT{Phase 1: Multi-Layer Map Update}
+\STATE Initialize layers: $L_g$, $L_r$, $L_i$
+\STATE Extract $\texttt{agent\_pos}$, $\texttt{map\_matrix}$ from observations
+\STATE $L_g.$\texttt{update\_from\_sight}($\texttt{agent\_pos}$, $\texttt{map\_matrix}$, $\texttt{sight\_range}$) 
+
+\STATE $L_r.$\texttt{update}($\texttt{agent\_transitions}$) 
+
+\STATE \texttt{confidence\_refresh}($\texttt{experience\_stats}$; $L_g, L_r$)
+
+
+\STATE \COMMENT{Phase 2: Interference Prediction}
+\IF{interference enabled}
+    \STATE $\texttt{interference\_costs} \leftarrow$ \texttt{interference\_prediction\_module}($E_{obs}$, $\texttt{agent\_pos}$)
+    \STATE $L_i.$\texttt{update}($\texttt{interference\_costs}$)
+\ENDIF
+
+\STATE \COMMENT{Phase 3: Graph Aggregation and Reachability}
+\STATE $\mathcal{G}_{agg} \leftarrow$ \texttt{aggregate\_graph}($L_g$, $L_r$, $L_i$)
+\FOR{each agent $i$}
+    \STATE $\mathcal{S}_{IA}(s_i, K) \leftarrow$ \texttt{dijkstra\_reachable}($\mathcal{G}_{agg}$, $s_i$, $K$)
+    \STATE $N_i^{(K)} \leftarrow \left|\{\, j \ne i : s_j \in \mathcal{S}_{IA}(s_i, K) \,\}\right|$
+\ENDFOR
+
+\STATE \COMMENT{Phase 4: Leader Election and Follower Assignment}
+\STATE $\mathcal{L} \leftarrow$ top $M$ agents with highest $N_i^{(K)}$ scores
+\STATE Initialize groups: $G_l \leftarrow \{l\}$ for each $l \in \mathcal{L}$
+\STATE $\mathcal{F} \leftarrow \{1, ..., N\} \setminus \mathcal{L}$
+
+\FOR{each follower $f \in \mathcal{F}$}
+    \STATE $\mathcal{L}_{cand} \leftarrow \{l \in \mathcal{L} : s_f \in \mathcal{S}_{IA}(s_l, K)\}$
+    \IF{$\mathcal{L}_{cand} \neq \emptyset$}
+        \STATE $l^* \leftarrow \arg\min_{l \in \mathcal{L}_{cand}} |G_l|$
+        \STATE Add $f$ to group $G_{l^*}$
+    \ENDIF
+\ENDFOR
+
+\STATE \textbf{return} $G = \{G_1, G_2, ..., G_{M}\}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Multi-Layer Map Module}
+\textbf{Geometry Layer.} Maintains physical connectivity on a grid using agents' visual observations and line-of-sight within a circular perception radius. Newly observed obstacles and free cells update only local neighborhoods; a full grid rebuild is triggered only when novel obstacles are discovered. This layer exposes \texttt{update\_from\_sight} to incrementally refresh obstacle cells, visited cells, and adjacency.
+
+\begin{algorithm}[H]
+\caption{Geometry layer: LOS-based incremental update}
+\begin{algorithmic}[1]
+\STATE Input: agent position $p$, map matrix $M$, sight range $R$
+\FOR{each cell $q$ with $\|q-p\|\le R$ and LOS$(p,q)$}
+  \IF{$M[q] = -1$}
+    \STATE mark $q$ as obstacle; update local adjacency
+  \ELSE
+    \STATE mark $q$ as visited free cell; update local adjacency
+  \ENDIF
+\ENDFOR
+\STATE If new obstacles found: rebuild local grid connections; otherwise keep incremental updates
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Regulation Layer.} Stores environment rule-based connectivity inferred from actual agent transitions (e.g., doors, traffic rules). At each step and for each agent, it logs the tuple $(s_t, a_t, s_{t+1}, \texttt{success})$ derived from the chosen action and observed position change. If \texttt{success} is true, it updates a directed edge $s_t\!\to\!s_{t+1}$ in the regulation graph; failures are forwarded to the confidence-driven asynchronous mechanism for localized revalidation without directly modifying raw geometry.
+
+\begin{algorithm}[H]
+\caption{Regulation layer: transition logging with success/failure}
+\begin{algorithmic}[1]
+\STATE Input: time $t$, agent id $i$, current state $s_t$, action $a_t$, next state $s_{t+1}$, flag success
+\STATE Append $(i, t, s_t, a_t, s_{t+1}, success)$ to transition\_log
+\IF{success}
+  \IF{edge $(s_t, s_{t+1})$ not in $\_adj$}
+    \STATE add directed edge $s_t\!\to\!s_{t+1}$ with base weight $w(s_t,s_{t+1}) \leftarrow 1$
+  \ELSE
+    \STATE optionally update running statistics for $(s_t,s_{t+1})$
+  \ENDIF
+\STATE send record to confidence mechanism: update\_stats(edge=$(s_t,s_{t+1})$, succ$\leftarrow$1, total$\leftarrow$1)
+\ELSE
+\STATE send record to confidence mechanism: update\_stats(edge=$(s_t,s_{t+1})$, succ$\leftarrow$0, total$\leftarrow$1)
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Confidence-Driven Asynchronous Mechanism.} Tracks per-edge reliability statistics (success/total), maintains a FIFO of recently blocked candidates, and triggers localized refresh based on a confidence threshold $\tau_c$ and decay factor $\eta_{\text{upd}}$. When reliability for edge $(u,v)$ falls below the threshold (e.g., persistent failures), it marks $(u,v)$ as a blocked candidate and schedules a future revalidation with decayed frequency; otherwise the edge remains usable. This mechanism operates externally to the three layers (Geometry, Regulation, Interference) as an asynchronous updater, supplying obstacle candidates to aggregation without touching raw geometry.
+
+\begin{algorithm}[H]
+\caption{Confidence-driven asynchronous update: reliability-based blocking with FIFO}
+\begin{algorithmic}[1]
+\STATE Input: stats map $S[(u,v)] = (succ, total)$, threshold $\tau_c$, decay $\eta_{\text{upd}}$, FIFO queue $Q$
+\FOR{each edge $(u,v)$ in $S$}
+  \STATE $r \leftarrow \frac{succ}{\max(1,\,total)}$
+  \IF{$r < \tau_c$}
+    \STATE mark $(u,v)$ as blocked; push $(u,v)$ into FIFO $Q$ (evict oldest if capacity reached)
+    \STATE schedule revalidation time $t_{\text{next}} \propto \eta_{\text{upd}}$
+  \ELSE
+    \STATE keep $(u,v)$ active (unblocked)
+  \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Graph Aggregation and Query.} Aggregation combines: (i) geometry-layer obstacles, (ii) regulation-layer constraints and blocked candidates proposed by the confidence mechanism (treated as obstacles), and (iii) interference weights from Section~A.3. The base edge weight policy is: obstacle/non-transferable $\Rightarrow \infty$; otherwise base $= 1$. With interference enabled, the influence map $M$ (see Section~A.3) assigns costs to all non-obstacle transitions by starting from 1 and then computing $w(u,v) \leftarrow 1 + f\_{\text{influence}}(M, v)$ per the formula, yielding dynamic traversal costs. Consequently, the aggregated result satisfies: free space has base 1, obstacles are $\infty$, and influenced regions are data-dependent.
+
+\begin{algorithm}[H]
+\caption{Aggregate-and-Query under policy $\pi_D$ (geometry + regulation + interference)}
+\begin{algorithmic}[1]
+\STATE Build obstacle set $\mathcal{O} \leftarrow$ geometry\_obstacles $\cup$ regulation\_constraints $\cup$ confidence\_blocked\_candidates
+\FOR{each candidate edge $(u,v)$}
+  \IF{$(u,v) \in \mathcal{O}$} \STATE $w(u,v) \leftarrow \infty$ \ELSE \STATE $w(u,v) \leftarrow 1$ \ENDIF
+\ENDFOR
+\IF{interference enabled}
+  \STATE obtain influence map $M$ from Section~A.3; for non-obstacle $(u,v)$ set $w(u,v) \leftarrow 1 + f\_{\text{influence}}(M, v)$ (cf. A.3)
+\ENDIF
+\STATE Run Dijkstra with weights $w$ to obtain costs and $\mathcal{S}_{IA}(s, K)$
+\STATE Return reachable set and costs
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Interference Prediction Module}
+The Interference Prediction Module quantifies the traversal risk by modeling the influence of adversarial agents as a potential field. In this field, high-threat enemies generate high-cost regions. The module's core is the calculation of a potential field for each enemy, which incorporates directional influence via a predicted attack intent angle $\theta$. This influence is modulated by a threat level, which is heuristically determined from the enemy's current state and recent actions. As detailed in Algorithm~\ref{alg:interference-prediction}, a neural network predicts an attack intent vector for each enemy to derive the angle $\theta$. The resulting path cost map informs the IA-KRC framework's reachability calculations and agent coordination. Figure~\ref{fig:cost_map} shows an example of the dynamically computed transition cost map.
+
+\subsubsection{Key Variables and Functions for Algorithm 2\\}
+\textbf{Variables:}
+
+\begin{itemize}
+\item $E_{obs}$: Visual observations of enemies.
+\item $M_{influence}$: A grid representing the cumulative enemy influence across the map.
+\item $M_{cost}$: A grid representing the pathfinding cost for each location.
+\item $e$: An individual enemy entity.
+\item $I_{\text{base}}$: Dynamically computed base influence strength for an enemy.
+\item $\lambda_{\text{base}}$: Influence decay rate (hyperparameter).
+\item $\alpha$: Angle influence factor (hyperparameter).
+\item $\theta_e$: Predicted attack intent angle for enemy $e$.
+\item $d_{\text{eff}}(p_1, p_2, \theta_e)$: Effective distance considering the predicted attack angle.
+\item $d_{\text{actual}}(p_1, p_2)$: Euclidean distance between two points.
+\item $cost\_multiplier$: A factor to scale influence into path cost (hyperparameter).
+\end{itemize}
+
+\textbf{Functions:}
+\begin{itemize}
+\item $\texttt{extract\_enemies}(E_{obs})$: Parses observations to get a list of enemy entities and their states.
+\item $\texttt{calculate\_influence}(e)$: Computes the dynamic base influence strength $I_{\text{base}}$ of an enemy based on its attributes (e.g., health, recent actions).
+\item $\texttt{predict\_attack\_intent}(e)$: Predicts the attack intent angle $\theta_e$ for an enemy using a neural network.
+\item $\texttt{normalize\_map}(M)$: Normalizes map values to a standard range.
+\end{itemize}
+
+\begin{algorithm}[H]
+\caption{Interference Prediction and Cost Calculation}
+\label{alg:interference-prediction}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} Enemy observations $E_{obs}$, hyperparameters $\alpha, \lambda_{\text{base}}$
+\STATE \textbf{Output:} Path cost map $M_{cost}$
+\STATE \COMMENT{Phase 1: Initialize Maps}
+\STATE Initialize $M_{influence}$ with zeros.
+\STATE Initialize $M_{cost}$ with ones.
+\STATE \COMMENT{Phase 2: Calculate Enemy Influence}
+\STATE $Enemies \leftarrow \texttt{extract\_enemies}(E_{obs})$
+\FOR{each enemy $e$ in $Enemies$}
+    \STATE $I_{\text{base}} \leftarrow \texttt{calculate\_influence}(e)$ \COMMENT{Compute influence from state}
+    \STATE $\theta_e \leftarrow \texttt{predict\_attack\_intent}(e)$ \COMMENT{Predict directional intent}
+    \FOR{each cell $p$ on the map within influence range of $e$}
+        \STATE $d_{\text{actual}} \leftarrow d_{\text{actual}}(p, e.position)$
+\STATE $d_{\text{eff}} \leftarrow d_{\text{actual}} \times (1 + \alpha(1 - \cos(\theta_e)))$ \COMMENT{Calculate effective distance}
+        \STATE $I(p|e) \leftarrow I_{\text{base}} \times \exp(-\lambda_{\text{base}} \times d_{\text{eff}})$
+        \STATE $M_{influence}[p] \leftarrow M_{influence}[p] + I(p|e)$
+    \ENDFOR
+\ENDFOR
+\STATE \COMMENT{Phase 3: Compute Path Cost Map}
+\STATE $M_{cost} \leftarrow 1.0 + cost\_multiplier \times M_{influence}$ \COMMENT{Convert influence to traversal cost}
+\STATE For each obstacle position $p_{obs}$: $M_{cost}[p_{obs}] \leftarrow \infty$
+\STATE $M_{cost} \leftarrow \texttt{normalize\_map}(M_{cost})$
+\STATE \textbf{return} $M_{cost}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Neural Network and Parameter Details}
+This section provides further implementation details for the key 
+components of the Interference Prediction Module.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figure3.png}
+    \caption{Transition cost map computed from the start agent (yellow) after multi-layer map and interference map processing. Blue regions indicate low traversal cost due to high ally density and minimal enemy interference, while yellow regions represent high traversal cost caused by distant locations and strong adversarial agent interference.}
+    \label{fig:cost_map}
+\end{figure}
+
+\paragraph{Neural Network for Attack Intent Prediction.}
+The attack intent angle $\theta_e$ for each enemy is derived from a predicted attack vector, which is generated by a dedicated neural network. This network takes an enemy's state as input and outputs a 2D vector representing its most likely direction of attack. The network architecture is a feed-forward Multi-Layer Perceptron (MLP) with two hidden layers:
+\begin{itemize}[noitemsep]
+    \item \textbf{Input Layer:} A flattened vector representing the enemy's state, including its recent trajectory (last 10 positions) and current health.
+    \item \textbf{Hidden Layers:} The first hidden layer consists of 128 neurons with a ReLU activation function, followed by a second hidden layer of 64 neurons, also with ReLU activation.
+    \item \textbf{Output Layer:} A linear layer with 2 neurons, producing the (x, y) components of the predicted attack intent vector.
+\end{itemize}
+
+\paragraph{Training Process.}
+The attack intent prediction network is trained via supervised learning on data collected during simulation. For each enemy at each time step, we create a training sample consisting of its current state (the network input) and its actual movement vector over the next time step (the ground truth). The network is trained to minimize the angular difference between its predicted attack vector $\mathbf{v}_{\text{pred}}$ and the ground truth movement vector $\mathbf{v}_{\text{true}}$. The loss function is defined as the negative cosine similarity:
+\[ \mathcal{L}_{\text{intent}} = 1 - \frac{\mathbf{v}_{\text{pred}} \cdot \mathbf{v}_{\text{true}}}{\|\mathbf{v}_{\text{pred}}\| \|\mathbf{v}_{\text{true}}\|} \]
+Training is performed using the Adam optimizer with a learning rate consistent with the main policy training (see Table~\ref{tab:hyperparameters}).
+
+\paragraph{Dynamic Influence Calculation.}
+The base influence strength $I_{\text{base}}$ for each enemy is computed dynamically via the \texttt{calculate\_influence}(e) function in Algorithm 2:
+
+\[ I_{\text{base}} = I_{\text{config}} \times T_e \]
+
+where $I_{\text{config}}$ is the configured base influence strength (default 2.0), and $T_e$ is the threat level: $T_e = \frac{T_{\text{move}} + T_{\text{attack}} + T_{\text{health}} + T_{\text{mobility}}}{4}$, with $T_{\text{move}} = \min(1.0, |\text{trajectory}| / 50.0)$, $T_{\text{attack}} = \min(1.0, |\text{attacks}| / 10.0)$, $T_{\text{health}} = \text{normalized\_health}$, and $T_{\text{mobility}} = \min(1.0, \bar{d}_{\text{recent}} / 3.0)$.
+
+\paragraph{Effective Distance ($d_{\text{eff}}$).}
+The effective distance $d_{\text{eff}} = d_{\text{actual}} (1 + \alpha (1 - \cos(\theta_e)))$ creates a forward-facing cone of influence, where $\theta_e$ is the angle between the predicted attack intent vector and the vector from enemy position to location $p$. The hyperparameter $\alpha$ controls the directional effect strength.
+
+\subsection{IA-KRC Training Details in Multi-Agent Reinforcement Learning}
+
+The IA-KRC framework is integrated within a multi-agent reinforcement learning (MARL) system that employs value decomposition methods for cooperative policy learning. This section details the training architecture and implementation specifics of how IA-KRC's dynamic grouping mechanism is incorporated into the MARL training pipeline, extending traditional value-based methods to accommodate interference-aware coordination.
+
+\paragraph{Group-Specific Value Function.} The core of our framework is the monotonic decomposition of the group's joint action-value function. $Q_{\text{tot}}^g$ is represented as a monotonic combination of the individual utility functions $Q_i$ for all agents $i \in g$. This property is crucial for decentralized execution, as it guarantees that a greedy action selection by each agent based on its local $Q_i$ corresponds to the maximization of the joint $Q_{\text{tot}}^g$. The relationship is formalized as $Q_{\text{tot}}^g = f_g(\{Q_i\}_{i \in g}, s)$, where $f_g$ is a mixing network specific to group $g$ and conditioned on the global state $s$. This architecture implies that each group effectively learns its own cooperative policy, tailored to its members and the current state, while still contributing to the global team objective.
+
+\paragraph{Agent Architecture.} Each agent utilizes a recurrent neural network (RNN) with an attention mechanism. This network processes the agent's local observation history $\tau_i$ to maintain a hidden state $h_i^t$. At each timestep, the RNN's input includes the agent's current observation, its previous action, and any messages received from its group leader. The resulting hidden state $h_i^t$ is then fed into a feed-forward layer to compute the per-action Q-values $Q_i(\tau_i, \cdot)$.
+
+\paragraph{Mixing Network.} The framework employs a mixing network architecture, specified as \texttt{flex\_qmix} in the configuration, to combine individual $Q_i$ values into the joint $Q_{\text{tot}}^g$. Consistent with QMIX, the weights of this mixing network are generated by a hypernetwork that takes the global state $s$ as input, allowing the mixing function to adapt to different environmental conditions. To enhance training stability, the mixing weights are normalized using a softmax function.
+
+\paragraph{Training Process.} The system is trained end-to-end by minimizing the total TD loss, summed across all dynamically formed groups, as defined in the main paper. Experiences are collected using parallel runners and stored in a replay buffer. The learner (\texttt{msg\_q\_learner}) samples mini-batches to perform updates. The TD target for each group $g$ is computed as:
+\[ y_g^{\text{tot}} = r + \gamma \max_{\mathbf{a}'_g} Q_{\text{tot}}^g(\boldsymbol{\tau}'_g, \mathbf{a}'_g; \theta^-) \]
+where $\theta$ and $\theta^-$ are the parameters of the online and target networks, respectively. The target network is periodically updated with the online network's parameters every 200 episodes.
+\subsection{Hyperparameter Settings}
+\begin{table}[htbp]
+    \centering
+    \caption{Key Hyperparameter Settings}
+    \label{tab:hyperparameters}
+    \footnotesize
+    \setlength{\tabcolsep}{1pt}
+    \begin{tabular*}{\linewidth}{@{\extracolsep{\fill}} l r l r l r}
+        \toprule
+        \textbf{Parameter} & \textbf{Value} & \textbf{Parameter} & \textbf{Value} & \textbf{Parameter} & \textbf{Value} \\
+        \midrule
+        \multicolumn{6}{c}{\textbf{General RL Parameters}} \\
+        \midrule
+        Learning Rate & 5e-4 & Optimizer & Adam & Discount Factor ($\gamma$) & 0.99 \\
+        Batch Size & 32 & Replay Buffer Size & 5000 & Target Update Interval & 200 ep. \\
+        Epsilon Start & 1.0 & Epsilon Finish & 0.05 & Epsilon Anneal Time & 500k steps \\
+        Experience Buffer Size & 10000 & Opponent Learning Rate & 1e-3 & & \\
+        \midrule
+        \multicolumn{6}{c}{\textbf{IA-KRC Framework and Interference Prediction}} \\
+        \midrule
+        K-step Horizon ($K$) & 9 & Number of Leaders ($N_L$) & 3 & Cost Multiplier & 1.5 \\
+        Interference Decay ($\lambda_{\text{base}}$) & 0.3 & Angle Influence ($\alpha$) & 0.5 & Influence Range & 5.0 \\
+        Base Influence Strength & 2.0 & Intent Net Hidden Dim 1 & 128 & Intent Net Hidden Dim 2 & 64 \\
+        \midrule
+        \multicolumn{6}{c}{\textbf{Agent and Mixer Architecture}} \\
+        \midrule
+        RNN Hidden Dim & 64 & Attention Heads & 4 & Hypernet Embed Dim & 128 \\
+        Mixing Net Dim & 32 & & & & \\
+        \bottomrule
+    \end{tabular*}
+\end{table}
+% [Moved after Avalanche Effect Demonstration to swap A.5 and A.6]
+\vspace{0.4cm}
+\subsection{Avalanche Effect Demonstration}
+
+This section demonstrates the avalanche effect through a competitive evaluation between IA-KRC and Vision algorithms after 2.0M training steps. The red team represents Vision agents, while the green team represents IA-KRC agents. The following four stages illustrate how initial tactical advantages can cascade into decisive victory through the avalanche effect mechanism.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth,height=0.3\textheight,keepaspectratio]{f2.png}
+        \caption{Stage 1: Due to vision limitations, the red team (Vision) forms two isolated agents. These isolated agents cannot communicate or coordinate with other teammates, resulting in low collaboration efficiency and becoming surrounded by the green team (IA-KRC).}
+        \label{fig:avalanche_stage1}
+    \end{minipage}
+    \hfill
+    \begin{minipage}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth,height=0.3\textheight,keepaspectratio]{f3.png}
+        \caption{Stage 2: The isolated Vision agents are eliminated through concentrated fire from IA-KRC (IA-KRC loses 1 agent while Vision loses 3 agents), creating an 11v9 situation. The avalanche effect begins to manifest.}
+        \label{fig:avalanche_stage2}
+    \end{minipage}
+    
+    \vspace{1.5cm}
+    
+    \begin{minipage}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth,height=0.3\textheight,keepaspectratio]{f4.png}
+        \caption{Stage 3: Leveraging the numerical advantage, IA-KRC adopts an aggressive strategy. With superior firepower, they continuously expand the combat capability gap.}
+        \label{fig:avalanche_stage3}
+    \end{minipage}
+    \hfill
+    \begin{minipage}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth,height=0.3\textheight,keepaspectratio]{f5.png}
+        \caption{Stage 4: IA-KRC achieves complete victory, eliminating all Vision agents at the cost of only 4 agents, demonstrating the effectiveness of interference-aware coordination in multi-agent combat scenarios.}
+        \label{fig:avalanche_stage4}
+    \end{minipage}
+\end{figure}
+
+
+
+
+

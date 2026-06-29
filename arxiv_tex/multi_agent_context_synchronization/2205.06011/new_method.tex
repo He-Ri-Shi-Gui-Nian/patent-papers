@@ -1,0 +1,201 @@
+%!TEX root = main.tex
+A first approach to apply RL\footnote{A brief introduction to RL can be found in Appendix Sec. A.} to mmWave IAB networks is to consider a central network controller that acts as a single RL agent. However, this requires the agent to know the global state of the whole network and manage all the transmissions, resulting in a combinatorially large number of different states and possible actions, which increases exponentially with the size of the network.
+It becomes even worse when mobile UEs and obstacles are introduced.
+This would strongly limit the scalability and the flexibility of the resource allocation approach.
+These reasons motivated us to resort to the MARL technique that allows to split the overall complexity into several smaller problems managed by cooperative agents.
+
+
+We consider multiple RL agents and assign each to an IAB-node / IAB-donor Tx array panel, such that each agent controls the beamforming direction of the associated Tx panel in each time slot.
+Each Tx panel (RL agent) cooperates with the other Tx panels to learn the environment dynamics and understand the impact of the other Tx panels' policies.
+Their collective goal is to maximize the throughput (namely, the number of bits per frame) delivered to UEs. This requires a proper management of the backhaul and access link transmissions during a frame.
+Note that one time slot of the frame corresponds to one step in the RL interactions, and one episode in the RL interactions is equivalent to one frame. Each agent executes an action in each slot, according to the policy $\pi$ available at the beginning of the slot.
+How to achieve high UE throughput without significantly reducing fairness depends on how Tx antenna panels (agents) point their beams, how IAB-node buffers are refilled, and how data bits flow through the network, crossing IAB-nodes.
+These aspects will be managed by the MARL agents trained based on the observation, action and reward components designed below.
+
+\vspace{3pt}
+Considering $|\mathcal{R}|$ IAB-nodes (including the IAB-donor), each equipped with $N_p$ Tx antenna panels, there are a total number of $N=|\mathcal{R}|\cdot N_p$ agents in the scenario, indexed by $\mathcal{I}_p = \{ 1, \dots, N\}$. Each agent faces $N_s$ sectors indexed by $\mathcal{I}_s = \{1, \dots, N_s\}$. The observation space $\mathcal{O}$, action space $\mathcal{A}$, and reward function of the RL agents are defined as follows, considering IAB-nodes operating in FD and HD modes.
+
+\vspace{-7pt}
+\subsection{Observation Space}
+\vspace{-3pt}
+
+We design different observation vectors for RL agents in FD and HD IAB networks, respectively.
+They contain a duplex-mode-specific element and several other common elements.
+
+\textbf{FD Mode:}
+For each agent $i$, the observation includes the information of:
+
+\noindent\emph{a) UE presence} - $I^{pres}_{i, s}$, which takes value $1$ for sector $s$ of agent $i$ if there are UEs located under the coverage of sector $s$; $0$, otherwise. This information can be easily estimated by using signaling and context information (e.g., position, received power, etc.) sent by UEs. An example of this binary information is shown in Fig. \ref{fig:principle}(c).
+
+\noindent\emph{b) Sector attenuation} - $A^{block}_{i, s}$, which is the average additional attenuation over the path loss model experienced by the transmissions carried out in sector $s$ of agent $i$ in the previous frame. We can assume that this attenuation is caused by an interposing obstacle.
+Blockers moving at realistic speeds can lead to sector obstructions
+that last hundreds or even thousands of slots and suddenly disappear in few slots with the departure of the blockers \cite{maccartney2017rapid}. A similar behavior is repeated for sectors in the opposite transition (from no obstruction to obstruction). Therefore, the obstruction status in the previous slots can provide a reliable reference for the current slot. Indeed, the number of slots in which a transition happens is very small and the instants they occur are very hardly predictable in any case.
+	
+\noindent\emph{c) Child-node buffer level} - $L_n$, which indicates the amount of data bits cached in the buffer of the child IAB-node $n$, reachable through Tx panel $i$.
+Such information is essential for parent IAB-donor/IAB-node agents to plan their buffer-refilling strategies.
+
+The above information is organized in concatenated sub-vectors to form an observation vector for agent $i \in \mathcal{I}_p$:
+\begin{equation}
+	o^{(i)}_t = {[[I^{pres}_{i, s}]_{s \in \mathcal{I}_s}, [A^{block}_{i, s}]_{s \in \mathcal{I}_s}, [L_n]_{n \in \mathcal{R}_i}]},
+	\label{observation}
+\end{equation}
+where $\mathcal{R}_i$ is the set of child IAB-nodes reachable via agent $i$.
+
+\textbf{HD Mode:}
+All the above three sub-vectors also appear in the observation vector for the HD mode. However, differently from FD mode, operating in HD mode introduces restrictions between parent and child nodes: if a parent node transmits to a child node, the receiving child node cannot simultaneously transmit. This may hinder the data delivery in the tree topology where data bits require multiple backhaul hops to reach UEs. This poses a big challenge to the cooperation of RL agents, which have to coordinate several concurrent and dynamic factors (i.e., interference reduction, buffer refill and collision avoidance).
+
+Therefore, we add a fourth sub-vector, $[B^N_{n}]_{n \in \mathcal{R}_i}$, to the observation vector, which includes the amount of data bits transmitted downstream by every child IAB-node $n$ reachable through the agent $i$ ($n \in \mathcal{R}_i$). This information, together with $L_n$, allows the parent agent to balance between the buffer level and the transmission opportunity of each child node in order to both avoid empty buffers and provide a good downstream throughput. As a result, the observation vector of the agent $i\in\mathcal{I}_p$ working in HD mode is:
+\begin{equation}
+	o^{(i)}_t = {[[I^{pres}_{i, s}]_{s \in \mathcal{I}_s}, [A^{block}_{i, s}]_{s \in \mathcal{I}_s}, [L_n]_{n \in \mathcal{R}_i}, [B^N_n]_{n \in \mathcal{R}_i}]}
+	\label{observation}
+\end{equation}
+
+\vspace{-15pt}
+\subsection{Action Space}
+
+Each agent $i \in \mathcal{I}_p$, working in either HD or FD mode, can choose to (1) activate one of its $N_s$ sectors to transmit to a covered UE ($ACC$ action), to (2) transmit to one of the reachable child IAB-nodes in the set $\mathcal{R}_i$ ($BH$ action), or to (3) stay silent ($SIL$ action).
+
+The sector-based access transmissions in (1) allow to reduce the impact of the varying UE locations on the action policies, making them more stable and robust against mobility. In addition, this permits the same action space to remain widely applicable even if the number of UEs in the service area may not be constant. Indeed, once a sector is selected, only one UE, if any, will be randomly selected to be served.
+
+In each slot, every agent tries to establish a link according to the selected action. Concurrent links interfere with each other, hence their delivered data amount depends on experienced SINR values. Whether or not activated links can truly deliver that number of bits finally depends on whether IAB nodes have enough bits buffered and whether blockages are caused by obstacles.
+The target of maximizing the UE throughput can be achieved by properly tuning the rewards for actions, as indicated in the following reward functions.
+
+\vspace{-12pt}
+\subsection{Reward Function}
+
+We design two reward functions for the FD and HD cases, respectively. Similarly to the definition of the observation space, the reward function for the HD case shares some common elements with the one for the FD case and has an additional element to prevent IAB-node buffer starvation.
+
+\textbf{FD Mode:}
+Considering the three types of actions aforementioned, we discuss the definition of the reward function.
+
+If agent $i$ chooses $ACC$ action and succeeds in serving a UE, it gets a positive reward equal to the number of bits $B^P_i$ sent by the Tx panel $i$, multiplied by the factor $(h(i)+1)$ and normalized by $c_{min}$, the minimum capacity (corresponding to the minimum MCS) available in the whole network. The term $h(i)$ is the number of hops separating the IAB-node, where the agent $i$ is located, from the IAB-donor. Therefore, the factor $h(i)+1$ is applied to give higher rewards to transmissions serving UEs farther away from the IAB-donor. This facilitates the use of the backhaul resources rather than relying on the myopic traffic delivery to nearby UEs, especially those directly connected to the IAB-donor. Since backhaul links typically have higher MCS values than access links, favoring the use of IAB-nodes allows to increase the capacity of the network. In addition, IAB-nodes are essential to increasing the number of covered users.
+
+If agent $i$ executes $BH$ action and successfully transmits data via a backhaul link, similarly to the $ACC$ action, the reward is proportional to the amount of transferred data bits $B^P_i$ normalized by $c_{min}$ and multiplied by $(h(i)+1)$. In addition, this fraction is further multiplied by a weight $\rho_{BH}\in(0,1)$ that is used to counterbalance the fact that the link capacity, and thus the number of transferred bits, in backhaul is usually remarkably larger than that in access. Without $\rho_{BH}$, agents would largely prefer to activate backhaul links, accumulating data bits in IAB-nodes' buffers.
+
+If the agent $i$ chooses $ACC$ or $BH$ action and the transmission fails due to either an empty IAB-node buffer or a collision at a UE, the agent $i$ will get a penalty $-\zeta$ for its neglecting the buffer length or not cooperating well with the other partner agents.
+
+When agent $i$ plays $SIL$ action, there can be two types of outcomes. 1) If coincidentally, the buffer of the IAB-node, where agent $i$ is installed, is empty ($i \in \mathcal{I}_p^{EB}$), which is an external limitation not directly ascribable to the agent's policy, the agent $i$ gets a reward 0 to prevent the training process from being biased by the empty buffer. 2) If there are data bits in the buffer, the agent $i$ will get a penalty $-\zeta$ (empirically, $\zeta=1$) in order to incentivize policies that increase the throughput. Therefore, the reward of agent $i$ working in the FD mode is:
+	\begin{equation}
+		r^{(i)}_t = \left\{ \begin{array}{lll}
+			 \frac{(h(i)+1) \cdot B^P_i}{c_{min}}, & \text{if } B^P_i > 0, ACC \mbox{ act.},\\
+			\rho_{BH} \cdot \frac{(h(i)+1)\cdot B^P_i}{c_{min}}, & \text{if } B^P_i> 0, BH \mbox{ act.},\\
+			0, & \text{if } i \in \mathcal{I}^{EB}_p, SIL \mbox{ act.}\\
+			-\zeta, & \text{otherwise}.
+		\end{array}\right.
+		\label{reward_iab_donor}
+	\end{equation}
+
+
+\textbf{HD Mode:} The reward function for the HD IAB networks is the same as that for the FD IAB networks, except for the following two aspects.
+
+The reward for the agent $i$, thanks to its successful backhaul transmission to an IAB-node $n$, is additionally scaled by the IAB-node $n$'s buffer length $L_n$ after the transmission is completed. This additional scaling factor gives smaller rewards to those transmissions whose receiving nodes have accumulated a large number of bits in their buffers. This offers two benefits. First, child nodes will not experiment situations where they constantly receive from their parent nodes, which, given HD constraints, would prevent them from transmitting downstream to other nodes. Second, the variance of buffer lengths across different IAB-nodes can be reduced. This can reduce the UE throughput variance, thus contributing to a better UE throughput fairness.
+
+If the agent $i$ chooses the $SIL$ action, the reward is set to $0$ not only when its IAB-node's buffer is empty ($i \in \mathcal{I}_p^{EB}$), but also when its IAB-node is receiving from a parent node in the same slot ( $i \in \mathcal{I}_p^{RX}$). To simplify the notation, we define $\mathcal{I}_p^{ER} = \mathcal{I}_p^{EB} \cup \mathcal{I}_p^{RX}$. Therefore, the reward of agent $i$ working in HD mode is written as follows.
+\begin{equation}
+    r^{(i)}_t = \left\{ \begin{array}{lll}
+        \frac{(h(i)+1) \cdot B^P_i}{c_{min}}, & \text{if } B^P_i > 0, ACC \mbox{ act.},\\
+        \rho_{BH} \cdot \frac{(h(i)+1)\cdot B^P_i}{c_{min}\cdot L_n}, & \text{if } B^P_i> 0, BH \mbox{ act.},\\
+        0, & \text{if } i \in \mathcal{I}^{ER}_p, SIL \mbox{ act.},\\
+        -\zeta, & \text{otherwise}.
+    \end{array}\right.
+    \label{reward_iab_donor}
+\end{equation}
+
+
+\begin{table}[!t]
+
+\scriptsize
+    \caption{\small Summary of notations in Sections \ref{learning_approach} and \ref{implementation_issue}.}
+    \label{notation_2}
+    \centering
+    \begin{tabular}{@{\hspace{1pt}} l @{\hspace{1pt}} l}
+        \toprule
+        Notations & Definitions \\
+        \midrule
+        $\mathbf{o}_t,\mathbf{a}_t,\mathbf{r}_t$ & Vectors of $N$ agents' observations, actions and rewards\\
+        $o^{(i)}_t,a^{(i)}_t,r^{(i)}_t$ & The observation, action and reward of agent $i$ at step $t$\\
+        $\pi_{\theta^{(i)}},\theta^{(i)}$ & Agent $i$'s policy function and its parameter\\
+        $\pi_{\boldsymbol{\uptheta}},\boldsymbol{\uptheta}$ & The collection of $N$ agents' policies and their parameters\\
+        $\hat{a}^{(i)}_t$ & Agent $i$'s action sampled from policy $\pi_{\theta^{(i)}}$ at step $t$\\
+        $\mathbf{\hat{a}}_t$ & The vector of $N$ agents' actions sampled from $\pi_{\boldsymbol{\uptheta}}$ at step $t$\\
+        $\mathbf{\hat{a}}^{(\backslash i)}_t$ & The vector of $N$ agents' actions (except $i$'s) at step $t$\\
+        $\pi_{\bar{\theta}^{(i)}},\pi_{\boldsymbol{\bar{\uptheta}}}$ & Agent $i$'s target policy and the collection of $N$ agents'\\
+        $\bar{a}^{(i)}_t$ & Agent $i$'s action sampled from the target policy $\pi_{\bar{\theta}^{(i)}}$ at step $t$\\
+        $\mathbf{\bar{a}}_t$ & The vector of $N$ agents' actions sampled from target policies\\
+        $Q^{\psi,(i)}$ & The Q-value function corresponding to agent $i$\\
+        $f^{(i),e^{(i)}}$ & The dedicated parts in Q-value DNN model for agent $i$\\
+        $g,\omega^{(j)}$ & The shared parts in Q-value DNN model among agents\\
+        $x^{(\setminus i)}$ & The other agents' contribution to agent $i$'s Q-value\\
+        $Q^{\bar{\psi},(i)}$ & The target Q-value function corresponding to agent $i$\\
+        $\tau$ & Trade-off weight in the Q-value loss function\\
+        $\gamma$ & Discount factor for rewards\\
+        $T_{upd}$ & The number of data entries sent by each agent at each time\\
+        $Tup^{(i)}$ & The batch of tuples sent by agent $i$ to the central entity\\
+        $tup^{(i)}$ & A tuple in the batch $Tup^{(i)}$ sent by agent $i$\\
+        $h,h_{size}$ & The mini-batch sampled from $H$ and its size\\
+        $A$ & The number of bits used to record the attenuation for a sector\\
+        $L$ & The number of bits used to indicate the buffer level\\
+        $B$ & The number of bits used to record the amount of data delivered\\
+        $N^{ch}_i$ & The number of child IAB-nodes connected to agent $i$\\
+        $T^A_l,T^C_l$ & The transmission latency of the agents and central entity\\
+        $K$ & The number of consecutive DNN updates carried out each time\\
+        $\kappa$ & The moving average weight in updating $\bar{\psi}$ and $\bar{\theta}$\\
+        $T_{wup}$ & The number of steps in the warm-up period\\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure*}[ht]
+	\centering
+	\includegraphics[width=0.8\textwidth]{figures/revision/com_coop_combined_diff_final_used.pdf}
+	\caption{\small Basic principles of the MARL framework: (a) an overview of the MARL system architecture, (b) key components of information exchanges and model updates.}
+	\label{fig:com_coop_combined}
+    \vspace{-5mm}
+\end{figure*}
+
+
+Cooperation is fundamental to the effective learning of the agents formulated above. Simply applying independent SARL algorithms to train individual agents interprets the other agents' decisions as part of the environment, which would be, in turn, non-stationary as the other agents' policies constantly change as well during the learning process. Therefore, the MARL algorithm is utilized for training purposes.
+
+
+\section{Reinforcement Learning Approach}
+\label{learning_approach}
+
+To effectively train the RL agents whose components have been designed in Sec. \ref{method}, we propose a learning framework in Sec.~\ref{implementation_issue}, based on a Multi-Actor-Attention-Critic (MAAC) approach \cite{iqbal2019actor}.
+The RL agents are trained to pursue a collective goodness, by leveraging two remarkable advantages:
+(1) its critic part allows each agent to automatically consider observations and actions only from relevant agents (based on the idea of \textit{attention}), thus filtering out information not correlated to a performance improvement; (2) it trains decentralized policies with centrally-computed critics, which allows agents to possess individual policies and independently apply them, once training is completed.
+
+\textbf{Attention-Based Critics} Denoting observations, actions, rewards at step $t$ as respectively $\mathbf{o}_t=(o^{(1)}_{t},\dots,o^{(N)}_{t})$, $\mathbf{a}_t=(a^{(1)}_{t},\dots,a^{(N)}_{t})$, $\mathbf{r}_t=(r^{(1)}_{t},\dots,r^{(N)}_{t})$ and the policy parameters of all the $N$ agents as $\boldsymbol{\uptheta}=(\theta^{(1)},\dots,\theta^{(N)})$,
+the rationale is to train each agent $i$'s individual policy $\pi_{\theta^{(i)}}(a^{(i)}_t|o^{(i)}_t)$ by means of its action-value $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$. The value of $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ is centrally computed by using information from other relevant agents, according to an attention mechanism. Therefore, agent $i$'s $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ depends not only on its own observation $o^{(i)}_t$ and action $a^{(i)}_t$, but also on those of the other agents, combined as follows:
+\begin{align}
+	&Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t) = f^{(i)}(e^{(i)}(o^{(i)}_t, a^{(i)}_t), x^{(\setminus i)}), \label{q_function}\\
+	&x^{(\setminus i)} = \sum\nolimits_{j\neq i}\omega^{(j)} \cdot g(e^{(j)}(o^{(j)}_t,a^{(j)}_t)), \label{others}
+\end{align}
+where $f^{(i)}$ consists of a fully connected layer with leaky ReLU and a linear layer, while $e^{(i)}$ is an embedding function implemented as a fully connected layer with leaky ReLU. The contribution $x^{(\setminus i)}$ to agent $i$ from the other agents is a weighted sum of functions of other agents' embedding functions. In particular, $g$ is a fully connected layer with leaky ReLU. Weight $\omega^{(j)}$ is the \textit{attention weight} associated to the information provided by agent $j$, which is optimized during the training phase, together with the other weights of the neural network. The value of $\omega^{(j)}$ is determined by the similarity between $e^{(i)}$ and $e^{(j)}$, which is computed using a matching approach between ``query" based on $e^{(i)}$ and ``key" based on $e^{(j)}$.
+In Eqs. \eqref{q_function} and \eqref{others}, $f^{(i)}$ and $e^{(i)}$ are \emph{dedicated parts} to each agent, while $g$ and $\omega^{(j)}$ are \textit{shared parts} among all the agents. They can be visualized in Fig.~\ref{fig:com_coop_combined}(a). The centralized action-value function $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ of agent $i$, encircled with a black dot line, includes the black shared critic NN and an orange black dedicated critic NN.
+
+\textbf{Model Updates} As mentioned above, functions and parameters in Eqs. \eqref{q_function} and \eqref{others} are implemented as DNNs, whose weight vector $\psi$ is updated considering a replay buffer $H$ that stores history trajectories in the form of $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{o}_{t+1})$ entries, which summarize the interactions occurred in the previous steps. In particular, based on a set of entries randomly sampled from $H$, we update $\psi$ to minimize the following joint regression loss function:
+\begin{equation}
+	\mathcal{L}_Q(\psi) =  \sum^{N}_{i=1}\mathbb{E}_{(\mathbf{o}_t,\mathbf{a}_t,\mathbf{r}_t,\mathbf{o}_{t+1})\sim H}[(Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)-y^{(i)}_t)^2], \label{critic_loss}
+\end{equation}
+\begin{align}
+    y^{(i)}_t = & r^{(i)}_t + \gamma\mathbb{E}_{\mathbf{\bar{a}}_{t+1}\sim\pi_{\boldsymbol{\bar{\uptheta}}}(\mathbf{o}_{t+1})}[Q^{\bar{\psi},(i)}(\mathbf{o}_{t+1}, \mathbf{\bar{a}}_{t+1}) - \notag\\
+    & \tau\log(\pi_{\bar{\theta}^{(i)}}(\bar{a}_{t+1}^{(i)}|o_{t+1}^{(i)}))],\label{y_i}
+\end{align}
+where $Q^{\bar{\psi}}$ and $\pi_{\boldsymbol{\bar{\uptheta}}}$, respectively called target action-value functions and target policies, are moving averages of the past action-value and policy functions (used to stabilize the training), while $\bar{a}_{t+1}^{(i)}$ is the next action that agent $i$ would select by applying the target policy $\pi_{\bar{\theta}^{(i)}}$ to the next observation $o_{t+1}^{(i)}$. 
+The logarithmic term in Eq. \eqref{y_i} is the policy entropy. It encourages action-space exploration by promoting random selections, thus reducing the probability to converge to deterministic policies with poor local optima.
+Parameter $\tau$ is the trade-off weight used to balance the importance of reward maximization over random exploration.
+Finally, note that the evaluation of this loss function requires a joint optimization of $\psi$ across all the individual action-value functions $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ ($i\in\mathcal{I}_p$), therefore it is performed at the central entity.
+
+Once $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{a}_t)$ is updated using Eq. \eqref{critic_loss}, the individual policy $\pi_{\theta^{(i)}}(a^{(i)}_t | o^{(i)}_t)$ of each agent $i$ (shown as an orange actor NN in Fig.~\ref{fig:com_coop_combined}(a)) can be updated as well, according to a gradient ascent approach over DNN weights $\theta_i$:
+
+\begin{equation}
+    \nabla_{\theta^{(i)}}J(\pi_{\boldsymbol{\uptheta}}) = \mathbb{E}_{\mathbf{o}_t\sim H, \mathbf{\hat{a}}_t\sim \pi_{\boldsymbol{\uptheta}}} \left[\vphantom{Q^{\psi,(i)}}
+	\nabla_{\theta^{(i)}} \log( \pi_{\theta^{(i)}}(\hat{a}^{(i)}_t|o^{(i)}_t ))\cdot \right. \nonumber
+ \end{equation}
+ \begin{equation}
+    \left.\left( -\tau\log( \pi_{\theta^{(i)}}(\hat{a}^{(i)}_t|o^{(i)}_t) )+
+	Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t) - b(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t) \right) \right].
+	\label{policy_gradient}
+\end{equation}
+Each policy network with $\theta^{(i)}$ is composed of three linear layers and a final leaky ReLU.
+The baseline $b\left(\mathbf{o}_t,\mathbf{\hat{a}}^{(\backslash i)}_t\right)$ allows to reduce the variance of the gradient and is computed by averaging $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$ (i.e., $Q^{\psi,(i)}(\mathbf{o}_t,(\hat{a}^{(i)}_t,\mathbf{\hat{a}}^{(\backslash i)}_t))$) over all possible actions of agent $i$ (i.e., $\hat{a}^{(i)}_t$) according to the policy distribution $\pi_{\theta^{(i)}}$, keeping fixed the actions of the other agents (i.e., $\mathbf{\hat{a}}^{(\backslash i)}_t$). Note that the update of $\theta^{(i)}$, although based on a per-agent action-value $Q^{\psi,(i)}(\mathbf{o}_t,\mathbf{\hat{a}}_t)$, requires the knowledge of the other agents' observations sampled from $H$ and the other agents' action probabilities expressed by $\pi_{\boldsymbol{\uptheta}}$.

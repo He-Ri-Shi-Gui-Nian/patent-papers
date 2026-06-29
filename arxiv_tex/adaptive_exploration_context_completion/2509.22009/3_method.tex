@@ -1,0 +1,77 @@
+\section{Preliminaries}
+
+\paragraph{Graph Knowledge Database.}  
+Given a document collection $D$, the graph indexer $\phi$ segments $D$ into a set of text chunks $K$. For each chunk $k \in K$, an extractor $\mathcal{R} \in \phi$ identifies a set of entities $e = \{ e_{\text{name}}, e_{\text{prop}}, e_{\text{desc}} \}$. For any pair of entities $e_h, e_t \in k$, a relation is defined as $r = \{ e_h, e_t, r_{\text{prop}}, r_{\text{desc}} \}$. Aggregating all entities and relations yields the graph KB $G = \{E, R, K\}$, where $E$ denotes the entity set, $R$ the relation set, and $K$ the associated chunk-level textual context.
+
+\paragraph{Graph KB Retrieval.}
+Given a query $q$, a graph KB retriever $\psi$ selects a relevant context set $C = \{E_q, R_q, K_q\} \subset G$ that maximizes semantic relevance to $q$. The retriever aims to return structural graph data and chunk-based text data that provide sufficient evidence for answer generation.
+
+\paragraph{LLM Answer Generation.}
+The language model consumes the query $q$ together with the retrieved context $C$ to generate an output $y$. The generation is modeled as $P(y \mid q) = \sum_{C \subset G} P(y \mid q, C)\, P(C \mid q, G)$, where $P(C \mid q, G)$ represents the retrieval probability over the graph KB, and $P(y \mid q, C)$ denotes the generation probability conditioned on the integrated evidence.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/workflow.pdf}
+\caption{Overview of our \textsc{GraphSearch} framework.}
+\label{fig:workflow}
+\vspace{-10pt}
+\end{figure}
+
+\section{GraphSearch}
+ 
+The overview of \textsc{GraphSearch} is shown in Figure~\ref{fig:workflow}. We build upon existing GraphRAG methods to construct the graph KB from documents. On top of this, \textsc{GraphSearch} leverages the GraphRAG retriever to perform deep searching, thereby enabling better answer generation.
+
+\subsection{The Modular Deep Searching Pipeline}
+\subsubsection{Iterative Retrieval}
+
+\paragraph{Query Decomposition.}
+Given a complex query $Q$ as input, the goal of this module is to decompose $Q$ into a sequence of atomic sub-queries $\{q_1, q_2, \dots, q_m\} = \mathrm{P}_{\mathrm{QD}}(Q)$ prompted by template $\mathrm{P}_{\mathrm{QD}}$, each representing a smaller and tractable component of the original question. In practice, each $q_i$ focuses on resolving a single entity, relation, or contextual dependency, thereby enabling the retriever to access fine-grained evidence and reducing the reasoning complexity of the overall task. For each sub-query $q_i$, the graph KB retriever $\psi$ accesses database $G$ to return 
+\begin{equation}
+    C_{q_i} = \psi(q_i \mid G) = \{E_{q_i}, R_{q_i}, K_{q_i}\}
+\end{equation}
+where $C_{q_i}$ is the retrieved context of sub-query $q_i$. The detail of prompt $\mathrm{P}_{\mathrm{QD}}$ is in Figure~\ref{fig:prompts_1}.
+
+\paragraph{Context Refinement.}
+Once the initial context $C_{q_i}$ is retrieved for a sub-query $q_i$, this module aims to refine the evidence by filtering redundant information and highlighting the most relevant entities, relations, and textual chunks. Given that raw retrieval, the refined context is obtained as $C_{q_i}' = \mathrm{P}_{\mathrm{CR}}(q_i, C_{q_i})$. This operation ensures that each refined context $C_{q_i}'$ contains only the most informative evidence for answering, thereby improving grounding quality in subsequent reasoning.
+
+\paragraph{Query Grounding.}
+The sub-queries $\{q_1, q_2, \dots, q_m\}$ are designed to be semantically independent yet logically ordered, such that the answer to one sub-query can serve as contextual grounding for subsequent ones. In practice, many decomposed queries may contain placeholders or unresolved references that depend on the answers of prior sub-queries. To resolve this, each $q_i$ is first paired with its retrieved context $C_{q_i}$ and produce an intermediate answer $\hat{a}_{q_i} = \mathrm{LLM}(q_i, C_{q_i})$, then progressively accumulated to support later queries. Formally, the grounded query is expressed as
+\begin{equation}
+    \tilde{q}_i = \mathrm{P}_{\mathrm{QG}}(q_i, \{q_{<i}, C_{q_{<i}}, \hat{a}_{q_{<i}}\}),
+\end{equation}
+This procedure guarantees that each $\tilde{q}_i$ is contextually instantiated rather than under-specified, enabling the graph KB retriever to fetch a more relevant context $C_{\tilde{q}_i}$ for subsequent reasoning.
+
+
+\subsubsection{Reflection Routing}
+
+\paragraph{Logic Drafting.}
+The role of this module is to organize these pieces into a coherent reasoning chain that outlines how partial answers connect to the original query $Q$. Specifically, the drafting prompt $\mathrm{P}_{\mathrm{LD}}$ integrates the sequence of \{$q_i, C_{\tilde{q}_i}, \hat{a}_{q_i}$\} to produce a structured draft $\mathcal{L}$, where
+\begin{equation}
+    \mathcal{L} = \mathrm{P}_{\mathrm{LD}}(\{\tilde{q}_i, C_{\tilde{q}_i}, \hat{a}_{q_i}\}_{i=1}^m).
+\end{equation}
+During this drafting process, the module not only consolidates available evidence but also exposes potential gaps in the reasoning chain. For instance, if a sub-query relies on entities or relations that were not retrieved in earlier steps, or if the accumulated sub-queries with intermediate answers $\{\tilde{q}_i, \hat{a}_{q_i}\}$ form an inconsistent chain, such deficiencies are explicitly reflected in $\mathcal{L}$ and exposed.
+
+\paragraph{Evidence Verification.}
+This module evaluates whether the accumulated evidence in $\mathcal{L}$ is sufficient and logically consistent to support a final answer. The verification prompt $\mathrm{P}_{\mathrm{EV}}$ inspects both the retrieved contexts and the intermediate answers, checking for factual grounding, coherence, and potential contradictions. Formally, this process can be described as
+\begin{equation}
+    \mathcal{V} = \mathrm{P}_{\mathrm{EV}}(\{\tilde{q}_i, C_{\tilde{q}_i}, \hat{a}_{q_i}\}_{i=1}^m, \mathcal{L}),
+\end{equation}
+where $\mathcal{V} \in \{\mathrm{Accept}, \mathrm{Reject}\}$ denotes the verification decision, the former implying that the reasoning chain is logically reliable, and the latter indicating missing or inconsistent evidence.
+
+\paragraph{Query Expansion.}
+This module generates additional sub-queries that explicitly target the missing evidence. Formally, using the expansion prompt and outputs a set of expanded sub-queries
+\begin{equation}
+    \{{q_j^{+}}\}_{j=1}^n = \mathrm{P}_{\mathrm{QE}}(\{\tilde{q}_i, C_{\tilde{q}_i}, \hat{a}_{q_i}\}_{i=1}^m, \mathcal{L}).
+\end{equation}
+Each expanded sub-query $q_j^{+}$ is submitted to the retriever $\psi$, yielding supplementary evidence $C_{q_i^{+}} = \psi(q_i^{+} \mid G) = \{E_{q_i^{+}}, R_{q_i^{+}}, K_{q_i^{+}}\}$. The additional contexts $C_{q_i^{+}}$ are appended, thereby enriching the evidence pool and ensuring that knowledge gaps revealed in $\mathcal{L}$ can be actively filled, leading to a more reliable reasoning process.
+
+
+\subsection{Dual-Channel Retrieval}
+
+\paragraph{Semantic Queries.}  
+The semantic channel emphasizes retrieving descriptive evidence from chunk-level text. Given a complex query such as \textit{``How many times did plague occur in the place where the creator of \textit{The Worship of Venus} died?''}, the retriever first reformulates it into a sequence of semantically coherent sub-queries $\{q_1^{(s)}, q_2^{(s)}, \dots, q_m^{(s)}\}$. Each $q_i^{(s)}$ is resolved against the text corpus as $C_{q_i^{(s)}} = \{K_{q_i^{(s)}}\}$, focusing on a single factual aspect, such as identifying the creator of the artwork, locating the place where this creator died, and finally retrieving records about the frequency of plague occurrences in that place. This design allows the semantic channel to capture nuanced descriptive information scattered across the corpus, ensuring that the retrieved textual evidence provides sufficient coverage for each step of reasoning.
+
+\paragraph{Relational Queries.}  
+The relational channel formulates the same problem directly in terms of structured triples. Given a complex query $Q$, it is decomposed into a sequence of relational sub-queries $\{q_1^{(r)}, q_2^{(r)}, \dots, q_n^{(r)}\}$, each mapped into subject--predicate--object relations. For each $q_j^{(r)}$, the retriever returns a subgraph context $C_{q_j^{(r)}} = \{E_{q_j^{(r)}}, R_{q_j^{(r)}}\}$, focusing only on entities and relations. For example, the painting \textit{The Worship of Venus} $\rightarrow$ its creator $\rightarrow$ place of death $\rightarrow$ plague occurrences. Unresolved references (e.g., $\mathrm{Entity\#1}, \mathrm{Entity\#2}$) are progressively instantiated once upstream triples are resolved. This explicit traversal enforces logical dependencies and supports multi-hop reasoning, enabling the retriever to surface subgraphs that directly encode the answer path with reduced reliance on textual co-occurrence.
+
+

@@ -1,0 +1,89 @@
+\section{\label{sec:additional-exp-setting}Additional Experimental Settings}
+
+We provide additional experimental details to ensure full reproducibility of our work.
+
+\noindent\textbf{Dataset pre-processing.} As described in \secref{sec:evaluation}, we filter HLE to text-only, non-math, multiple-choice questions. For each <LLM, dataset> setting, we remove questions on which all six agents give the same answer before debate, since debate is unnecessary in such cases. Note that we do keep questions where all agents are wrong but disagree on the answer.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+ & IMO & HLE \\
+\midrule
+GPT-OSS-120B & 297 & 267 \\
+DeepSeek-v3.1             & 299 & 276 \\
+\bottomrule
+\end{tabular}
+\caption{\label{tab:dataset-size}Valid sample size per experimental setting after all pre-processing steps.}
+\end{table}
+
+The questions removed from each <LLM, dataset> setting differ, so Table~\ref{tab:evaluation} is not suitable for cross-setting comparisons of the same MAD method. However, the same set of questions is used for all MAD methods under each <LLM, dataset>. Table~\ref{tab:dataset-size} records the valid sample size per evaluation setting.
+
+\noindent\textbf{LLM settings.} We keep default sampling parameters for all settings: temperature 1.0, top-p 0.95, top-k 40. We set the maximum output tokens to 16,384 per LLM response. We set the reasoning effort to medium for both LLMs, as higher efforts often produce long reasoning chains that exhaust the maximum token cap before outputting a valid answer.
+
+\noindent\textbf{GroupDebate.} We consider two possible settings: two groups of three (3-3), and three groups of two (2-2-2). The original paper suggests that (3-3) yields higher accuracy while (2-2-2) uses fewer tokens (Table 2 in~\citep{Liu2025Groupdebate}). Therefore, we tested (3-3) first, and planned to switch to (2-2-2) if (3-3) yields better accuracy than \sysname. The GroupDebate results in Table~\ref{tab:evaluation} are all using (3-3). We did not further evaluate (2-2-2), as (3-3) already trails \sysname in accuracy among all <LLM, dataset> settings.
+
+\noindent\textbf{S$^2$-MAD.} S$^2$-MAD proposes two approaches to identify agents with similar or identical viewpoints, which guides communication pruning decisions: (1) answer equivalence for tasks with a closed-form answer (e.g., math), and (2) response embedding similarity when answers are not directly comparable for equivalence (e.g., coding). We use (1) for both IMO-Answerbench (math) and HLE (multiple-choice) benchmarks.
+
+\noindent\textbf{SID-ET.} SID-ET applies a threshold over a single agent's pre-debate min. LL, to determine if the question is solvable by a single agent, or requires all-to-all MAD. We sweep threshold values that lead to different skip rates (i.e., X\% questions are skipped from MAD due to sufficient single-agent min. LL, for X=\big\{10, 20, ..., 90\big\}). A higher skip rate reduces communication costs but may also reduce accuracy by aggressively skipping debates.
+
+\begin{algorithm}
+\caption{\label{alg:sid}Skip rate tuning for SID-ET.}
+\begin{algorithmic}[1]
+\Statex \textbf{Input:} (1) $Tok_{ref}$: Total token used by \sysname, (2) $Acc_{ref}$: Accuracy of \sysname.
+\Statex \textbf{Output:} Selected skip rate $\hat{r}$
+
+\State \textbf{Initialize} skip rate $r = 90\%$
+
+\While{$r \geq 10\%$}
+    \State $Tok_{SID}, Acc_{SID} = SID-ET(r)$
+    \If{$Acc_{SID} \geq Acc_{ref}$}
+        \State \Return $\hat{r} = r$
+    \ElsIf{$Tok_{SID} > Tok_{ref}$}
+        \State \Return $\hat{r} = r$
+    \EndIf
+    \State $r \mathrel{-}= 10\%$
+\EndWhile
+
+\State \Return $\hat{r} = 10\%$
+\end{algorithmic}
+\end{algorithm}
+
+We tune SID-ET's skip rate per <LLM, dataset> setting. We aim to find an optimal skip rate that Pareto-dominates \sysname in terms of tokens and accuracy. If not found, we report results using the SID-ET setting that just exceeds the token cost of \sysname. This tuning procedure is documented in Algorithm~\ref{alg:sid}. Overall, no settings of SID-ET Pareto-dominates \sysname in terms of tokens and accuracy. The final selected skip rates are in 60/70 for IMO-AnswerBench/HLE using GPT-OSS-120B, and 50/60 using DeepSeek-V3.1.
+
+Note that the original SID paper~\citep{Chen2025Sid} has a second technique, which compresses message size in all-to-all MAD based on token-level attention scores. This compression technique is triggered when early-stopping fails, and it only reduces token cost but not the number of communications. Our experiments use larger LLMs than \cite{Chen2025Sid} (i.e., hundreds vs. tens billions of parameters), making this attention-driven compression computationally expensive to evaluate. However, \sysname still saves in the number of cross-agent communications.
+
+\noindent\textbf{\sysname.} We detail the configuration scheme for key hyperparameters in \sysname.
+\begin{packeditemize}
+\item Acceptance threshold ($\tau$): In our implementation, we accept an answer if the agent achieves 100\% SVR for at least $C$ challengers. We set $C=2$ for GPT-OSS-120B and $C=3$ for DeepSeek-V3.1. This is because agents in DeepSeek-V3.1 typically have more disagreements before debate: as shown by Table~\ref{tab:dataset-size}, for each dataset, using DeepSeek-V3.1 yields more non-unanimous pre-debate questions. Therefore, we set a higher acceptance threshold for DeepSeek-V3.1 agents to ensure disagreements are sufficiently evaluated.
+\item Communications per round ($S$): We set $S=2$ for GPT-OSS-120B, and $S=3$ for DeepSeek-V3.1, based on their respective acceptance thresholds.
+\item Communication budget per problem ($B_{max}$): We set $B_{\max} = S \cdot (k + m)$, where $k$ is the number of distinct pre-debate answer clusters and $m$ is the size of the largest cluster. The first term provides budget for one probed representative per cluster; the second adds budget to cover all members of the largest cluster. This simple rule works well in our experiments; a more principled budget allocation that further tightens costs is an interesting direction for future work.
+\end{packeditemize}
+
+\noindent\textbf{Additional implementation details.} Additional implementation decisions such as prompts used for initial response generation and MAD facilitation are in provided code implementations.
+
+\section{\label{sec:ablation}Ablation Studies}
+
+\begin{figure}
+\centering
+\includegraphics[width=\columnwidth]{figures/ablation}
+\caption{\label{fig:ablation}\textbf{Ablation shows that SVR improves posterior scoring.} Token--accuracy tradeoffs when replacing SVR with alternative post-debate posterior signals, evaluated across acceptance rates from 10\% to 90\%.}
+\end{figure}
+
+We isolate the contribution of SVR by replacing it in Algorithm~\ref{alg:sysname} while keeping the same communication-control procedure. Specifically, we modify the posterior score computation on line~9. For agent $\mathcal{A}_r$, let $D$ denote the number of debates involving $\mathcal{A}_r$ as receiver, and let $\mathcal{P}$ denote the corresponding set of peer agents. We compute:
+\[
+\text{Posterior}(\mathcal{A}_r) =
+\frac{1}{D}
+\sum_{\mathcal{A}_s \in \mathcal{P}}
+\text{Signal}\!\left(\text{Debate}(\mathcal{A}_s, \mathcal{A}_r)\right).
+\]
+
+Here, $\text{Signal}$ is one of min. LL, PPL, or self-reported confidence, extracted from $\mathcal{A}_r$'s post-debate responses. Thus, instead of using SVR to measure whether $\mathcal{A}_r$ retains its answer after debate, these ablations use post-debate confidence-like signals averaged across all debates.
+
+Figure~\ref{fig:ablation} shows the token--accuracy tradeoff on IMO-AnswerBench and HLE using GPT-OSS-120B. We compare the default \sysname, which uses SVR as the posterior score, against variants that replace SVR with alternative post-debate signals. For each variant, we sweep the acceptance threshold to cover acceptance rates from 10\% to 90\%.
+
+Overall, SVR demonstrates more optimal token--accuracy tradeoffs than alternative posterior score choices. SVR achieves higher accuracy than alternatives that fail to match it under all tested acceptance rates, with +3.37 and +1.13 points on IMO and on HLE compared to the strongest competitor. At matched token cost, SVR improves accuracy by +8.75 and +2.25 points compared to the best alternative signal on the two datasets, respectively. This shows that SVR is an effective posterior signal independent of the communication control-flow in Algorithm~\ref{alg:sysname}.
+
+\section{Use of AI Assistants}
+
+We used AI assistants for writing polish and code development support. All research ideas, methodological decisions, experimental design, analysis, and conclusions are the authors' own work.

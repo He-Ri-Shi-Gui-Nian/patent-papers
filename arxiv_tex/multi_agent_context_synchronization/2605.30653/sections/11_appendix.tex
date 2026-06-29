@@ -1,0 +1,606 @@
+\appendix
+
+\section{Additional Related Work}
+\label{app:related_work}
+
+\label{con:related_work_for_graph}
+\paragraph{Graph-based multi-agent design and calibration under dependence.}
+%  why Graph
+A related line of work represents multi-agent systems as graphs and optimizes their communication structure. 
+GPTSwarm~\citep{zhuge2024languageagentsoptimizablegraphs} treats language agents as optimizable graphs, G-Designer~\citep{zhang2025gdesignerarchitectingmultiagentcommunication} learns communication topologies with graph neural networks, and AgentPrune~\citep{zhang2024cutcrapeconomicalcommunication} removes unnecessary agents or communication links for efficiency. 
+These methods focus mainly on task accuracy, routing, or computational cost. 
+They do not ask how a given topology changes the panel's joint failure distribution, nor do they produce calibrated confidence for the panel answer. 
+Our work turns graph structure into a calibration signal: given a topology and the resulting panel outputs, we estimate whether the panel's agreement reflects independent evidence or correlated failure.
+
+
+
+\section{Failure-Mode Analysis and Counterfactual Motivation}
+\label{app:failure_analysis}
+\subsection{Why Calibration Needs Counterfactual Graph Shifts}
+\label{con:analysis_progress}
+In this section, we first explain why confidence calibration requires both the iid graph \(G_x^0\) and the post-communication graph \(G_x^T\). We then provide empirical evidence that the shift between \(G_x^0\) and \(G_x^T\) matters for confidence calibration.
+
+\subsubsection{Why Calibration Needs the IID and Post-Communication Graphs}
+\label{con:why_two_graphs}
+% \subsection{Correlated Uncertainty Graphs}
+% \label{sec:correlation}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_w_decomposition.pdf}
+  \caption{\textbf{Sources of agent error correlation.} OLS
+  coefficients on predictors of pair correlation $\W_{ij}$.
+  Communication structure dominates the backbone, which dominates
+  the prompting role.}
+  \label{fig:w-decomp}
+\end{figure}
+
+\input{tables/tab_W_decomposition}
+Section~\ref{sec:setup} defines $W(x)$ as the local dependency structure of a panel. 
+We now ask what creates this dependency. 
+If agents provided independent evidence, the off-diagonal entries of $W(x)$ would be small and weakly structured. 
+Instead, we find two systematic sources of correlation: population-side similarity among agents and communication-induced coupling from the topology. 
+This distinction is central to calibration. 
+A topology-agnostic score can observe the final vote distribution, but it cannot tell whether the distribution was produced by independent evidence or correlated failure.
+
+\paragraph{Where does failure correlation come from?}
+
+For each topology and benchmark cell, we aggregate the off-diagonal entries of $W(x)$ and fit an ordinary least squares model over agent pairs:
+\begin{align*}
+  \W_{ij}^{(c)} = \beta_0 \;&+\; \beta_F \mathbf{1}[\text{\small{same family}}]
+              \;+\; \beta_R \mathbf{1}[\text{\small{same role}}] \\
+            &+\; \sum_{t \in \mathcal{T}\setminus\{\text{iid}\}}
+                \beta_t \mathbf{1}[\text{\small{topology}}_{c}=t]
+              \;+\; \epsilon.
+\end{align*}
+Figure~\ref{fig:w-decomp} visualizes the main coefficients, while the full regression results are reported in Table~\ref{tab:w-decomp}.
+Table~\ref{tab:w-decomp} decomposes pairwise agent failure correlation into population-side and topology-induced sources. 
+The coefficients do not measure final panel accuracy; instead, they measure how much each factor increases the tendency of two agents to succeed or fail together. 
+Shared backbone families increase pairwise correlation, suggesting common model-side blind spots, while communication topologies such as chain and debate further amplify correlated failures. 
+These results support our motivation for modeling both population-side dependence and topology-induced coupling in multi-agent confidence calibration.
+
+
+
+The decomposition gives two observations. 
+
+\begin{itemize}
+\item \textbf{First, heterogeneous model families matter more than heterogeneous prompts.} 
+Agents with the same backbone tend to fail together even when they use different prompting roles. 
+In contrast, shared prompting role contributes little once backbone family is controlled. 
+This suggests that prompt diversity can make a panel appear diverse without fully decorrelating its errors.
+\item \textbf{Second, communication topology is a major source of additional dependence.}
+Chain has the largest topology coefficient, followed by debate and tree. 
+This order follows the amount of peer exposure in each topology: later agents in a chain see many previous outputs, debate agents see many peers in one round, and tree agents receive information through local branches. 
+Hub-spoke is close to the iid baseline because spokes do not see one another. 
+Thus, part of the dependence is inherited from the heterogeneous agent population, while another part is induced by communication.
+\end{itemize}
+
+% \subsection{Two sources, two graphs}
+\paragraph{Motivating the Counterfactual Graph Pair}
+This split directly motivates the graph pair used by \methodname{}. 
+A counterfactual iid graph $G_x^0$ captures the dependence that would exist without communication. 
+It represents population-side structure, including shared model families, shared biases, and shared prompting conventions. 
+A post-communication graph $G_x^T$ captures the same matched agents after topology $T$ has reshaped their outputs. 
+It contains both population-side dependence and communication-induced dependence.
+%%%
+Because $G_x^0$ and $G_x^T$ are built over the same agent identities, their contrast gives a query-specific view of how communication changes the panel. 
+This is the information that scalar disagreement scores discard. 
+Section~\ref{sec:method} turns this counterfactual graph pair into the input representation for \methodname{}.
+
+\subsection{Communication-Induced Correctness Shifts}
+\label{sec:shifts}
+
+Section~\ref{con:why_two_graphs} shows that communication can increase failure correlation among agents. 
+We now examine the same effect at the agent level.
+Communication can change an agent's correctness in both directions. 
+It can help an initially wrong agent become correct, but it can also make an initially correct agent become wrong. 
+Mean accuracy only reflects the net balance of these two effects. 
+Calibration depends on how these shifted votes are distributed in the final panel.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig_regression_heatmap.pdf}
+  \caption{\textbf{Per-agent regression rate.} Fraction of
+  iid-correct agents that become wrong under each topology on the
+  same (question, rollout). Substantial on hard benchmarks even
+  in topologies whose mean accuracy is unchanged.}
+  \label{fig:regression-heatmap}
+\end{figure}
+
+\paragraph{Regression and improvement.}
+For agent $i$, query $x$, rollout $r$, and topology $\tau$, we call the agent \emph{communication-regressed} when
+$
+c_i^{(\mathrm{iid})}(x,r)=1
+\quad\text{and}\quad
+c_i^{(\tau)}(x,r)=0 .
+$
+That is, the agent answers correctly when run independently, but answers incorrectly after communication. 
+We call the symmetric case \emph{communication-improved}, when
+$
+c_i^{(\mathrm{iid})}(x,r)=0
+\quad\text{and}\quad
+c_i^{(\tau)}(x,r)=1 .
+$
+For each topology $\tau$ and benchmark $b$, we report both the regression rate $\mathrm{reg}_{\tau,b}$ and the improvement rate $\mathrm{impr}_{\tau,b}$. 
+The iid run provides a matched counterfactual for the same agent on the same query.
+
+\paragraph{Communication can help accuracy while hurting calibration.}
+Figure~\ref{fig:regression-heatmap} shows that regression is not rare. 
+On hard benchmarks, a substantial fraction of independently correct agents become wrong after communication. 
+For example, chain on TruthfulQA regresses nearly one third of agents that were correct in the iid setting. 
+Tree shows a similar pattern on TruthfulQA and MMLU-Pro.
+
+At the same time, regression does not necessarily imply lower mean accuracy. 
+Communication can also improve agents that were initially wrong. 
+A topology can therefore be helpful for average accuracy while still injecting many wrong votes into the panel. 
+This distinction is central to calibration. 
+A corrected vote and a regressed vote both appear as confident votes in the final answer distribution. 
+Plurality vote cannot tell whether a larger answer cluster was formed by independent correction or by harmful influence.
+
+The key implication is that communication changes the reliability of votes, not only their average correctness. 
+Two topologies can have similar mean accuracy but very different calibration behavior, because their correctness shifts land in different answer clusters. 
+The next section shows how these shifts lead to two opposite calibration failures: diversity-induced under-confidence and communication-induced over-confidence.
+
+\paragraph{Communication Can Both Correct and Corrupt Agents}\
+\label{con:com_correct_ir_correct}
+\input{tables/tab_regression}
+Table~\ref{tab:regression} analyzes how communication changes individual agent correctness relative to the iid setting. 
+The regression rate measures the fraction of iid-correct agents that become incorrect after communication, while the improvement rate measures the reverse transition from incorrect to correct. 
+Communication can improve many agents, especially on GSM8K, but it can also corrupt initially correct agents, with particularly high regression rates on TruthfulQA. 
+This shows that communication reshapes agent-level failure patterns rather than simply improving accuracy, motivating calibration methods that account for topology-induced dependence.
+
+\subsection{Calibration Error Varies Across Communication Topologies}
+\label{con:calibation_error_varios_topo}
+
+\input{tables/tab_ece_by_topology}
+
+Table~\ref{tab:ece-by-topology} reports the majority-vote ECE for each communication topology, averaged across benchmarks. Unlike plurality accuracy, which remains relatively stable across topologies, calibration error varies more substantially. In particular, chain has the highest mean ECE and the largest variance, suggesting that communication structure can make vote-based confidence unreliable even when final-answer accuracy changes little. This motivates our focus on calibrating panel confidence rather than only improving the predicted answer.
+
+
+\subsection{Vote Share Is Not a Reliable Confidence Estimate}
+\label{con:vote_share}
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_reliability_per_cell.pdf}
+  \caption{\textbf{Reliability diagrams per (topology, benchmark)
+  cell.} Plurality vote share ($x$) vs.\ empirical accuracy
+  ($y$). Bubble area is the bin's panel count. Points above the
+  identity line are under-confident (Mode A); below, over-confident
+  (Mode B).}
+  \label{fig:reliability-per-cell}
+\end{figure*}
+Figure~\ref{fig:reliability-per-cell} shows that plurality vote share has different calibration behavior across benchmarks and communication topologies. 
+Each point compares a vote-share bin with the empirical accuracy of panel predictions in that bin; points on the diagonal indicate perfect calibration. 
+The patterns are highly cell-dependent: on TriviaQA and GSM8K, many points lie above the diagonal, meaning that vote share underestimates correctness, while on TruthfulQA many points lie below the diagonal, meaning that vote share overestimates correctness. 
+Moreover, the same benchmark can behave differently under different topologies, such as iid, debate, chain, hub-spoke, and tree. 
+This shows that vote share alone cannot determine panel confidence; calibration must account for both task domain and the communication structure that produced the vote.
+
+\subsection{Agent Error Correlations Vary Across Topologies and Benchmarks}
+\label{con:Agent_error_correlations}
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_correlation_heatmap_per_cell.pdf}
+  \caption{\textbf{Per-(topology, benchmark) agent error
+  correlation $\W$.} Each panel is an $N \times N$ Pearson
+  correlation of the binary error indicator $c_i$ across panel
+  agents, with per-query mean residualisation to control for task
+  difficulty. Agents are sorted by (backbone, role) so visual
+  patterns are comparable across topologies.}
+  \label{fig:correlation-per-cell}
+\end{figure*}
+Figure~\ref{fig:correlation-per-cell} shows that agent correctness correlations vary across model families, communication topologies, and benchmarks. 
+Darker entries indicate that two agents tend to succeed or fail together. 
+Within-family blocks, such as agents sharing the same Gemma, Llama, Phi, or Qwen backbone, are often darker, suggesting shared model-side blind spots. 
+Comparing rows shows that topology also changes the dependence pattern: chain and debate often make the matrices darker than iid, indicating stronger communication-induced coupling. 
+Comparing columns shows that this effect is benchmark-dependent: correlations are much stronger on TriviaQA and TruthfulQA than on MMLU-Pro, GSM8K, or BBH. 
+These patterns show that multi-agent reliability depends jointly on heterogeneous LLM composition, communication structure, and task domain, motivating topology-aware calibration.
+
+
+\section{Method Details}
+\label{app:method_details}
+
+\subsection{Node Feature Construction}
+\label{con:details_of_node_feature}
+Each node represents one agent. 
+For both $G_x^T$ and $G_x^0$, we use the same 23-dimensional node feature schema:
+\begin{equation*}
+v_i(x)
+=
+[
+s_i,\,
+p_i,\,
+r_i,\,
+\mu_i,\,
+\sigma_i^2,\,
+m_i,\,
+n^{-1},\,
+a_i
+]
+\end{equation*}
+The confidence score $s_i$ is computed from the agent's mean answer log probability. 
+We clip the mean log probability to $[-10,0]$ and linearly map it to a normalized score. 
+The plurality indicator $p_i$ is one when the agent's normalized answer matches the panel plurality answer. 
+The vote rank $r_i$ is normalized by the number of distinct answer clusters in the panel. 
+The correlation summaries $(\mu_i,\sigma_i^2,m_i)$ are the row mean, row variance, and row maximum of $|W_{ij}(x)|$ over other agents. 
+For the observed tower, these summaries are computed from the post communication correlation matrix. 
+For the iid counterfactual tower, they are computed from the iid correlation matrix. 
+Finally, the answer embedding $a_i$ is obtained by encoding the agent's answer with Sentence-BERT~\citep{reimers2019sentencebertsentenceembeddingsusing} and reducing the embedding to 16 dimensions by PCA. 
+Thus, each node records both the agent's individual contribution to the vote and its local dependence pattern with the rest of the panel.
+
+\subsection{Instance-Conditional Correlation Estimation}
+\label{con:corrlation_extimtion}
+We estimate the correlation from the training split only. 
+For each query, we retrieve the $k=20$ nearest training queries in Sentence-BERT embedding space and compute the empirical Pearson correlation of agent correctness over this local neighborhood. 
+Pairs with nearly zero variance are assigned correlation zero. 
+Validation and test labels are never used to construct these matrices.
+
+In implementation, we keep an edge if either the agents are directly connected by communication or the absolute local correlation exceeds $0.05$. 
+For the iid counterfactual graph, only the correlation criterion is used. 
+This keeps the graph focused on meaningful dependence while preserving direct communication links. 
+If no edge remains after thresholding, we use a fully connected graph without self loops to avoid degenerate isolated graphs.
+
+
+\section{Implementation Details}
+\label{app:experimental_setup}
+\subsection{Benchmarks}
+We evaluate on five English-language benchmarks chosen to span
+distinct skill profiles: short-form factual recall (TriviaQA),
+truthfulness in the face of common misconceptions (TruthfulQA), broad expert-level knowledge (MMLU-Pro), grade-school numerical reasoning (GSM8K), and a diverse battery of hard reasoning tasks (BBH).
+
+\paragraph{TriviaQA~\citep{joshi2017triviaqalargescaledistantly}.}
+A large-scale closed-book QA dataset of factoid trivia questions sourced from quiz league competitions. Gold answers are short strings, and an official multi-answer alias set is provided to accommodate surface-form variation at grading time.
+
+\paragraph{TruthfulQA~\citep{lin2022truthfulqameasuringmodelsmimic}.}
+$817$ questions designed to probe whether models reproduce common
+human misconceptions or imitative falsehoods. We use the
+open-ended generation setting, in which each question ships with
+reference sets of correct and incorrect answers used to grade free
+responses.
+
+\paragraph{MMLU-Pro~\citep{wang2024mmluprorobustchallengingmultitask}.}
+An enhanced version of MMLU with up to ten answer options per
+question and stronger distractors than the original, covering
+$14$ subject categories. Questions are presented in standard
+A--J multiple-choice format and graded by the selected letter.
+
+\paragraph{GSM8K~\citep{cobbe2021trainingverifierssolvemath}.}
+Grade-school math word problems requiring multi-step arithmetic reasoning, each with a single numerical gold answer. Grading compares numerical equality of the model's parsed answer against the canonical gold value.
+
+\paragraph{BBH~\citep{suzgun2022challengingbigbenchtaskschainofthought}.}
+BIG-Bench Hard, a collection of $23$ subtasks drawn from BIG-Bench
+on which prior LLMs underperformed humans. Subtasks vary in answer
+format (multiple choice, yes/no, free-form), and grading dispatches
+to a subtask-specific judge.
+
+\subsection{Agent designs}
+\paragraph{Backbones.}
+We use four open-weight LLM backbones drawn from four distinct
+model families: \textsc{Qwen3-8B}~\citep{qwen2025qwen25}, \textsc{Llama-3.1-8B}~\citep{meta2024llama3}, \textsc{Gemma-3-12B}~\citep{gemma_2025}, and \textsc{Phi-4}~\citep{phi_2024}. Using four independently pretrained families is intended to expose realistic disagreement: agents sometimes fail in correlated ways because they share training data or recipe, and sometimes disagree because they come from different pipelines.
+
+\paragraph{Prompting roles.}
+Each backbone is paired with one of five atomic single-pass
+reasoning roles, each adapted verbatim from its source paper and summarized in Appendix~\ref{app:prompt}:
+\textsc{direct} (zero-shot, no reasoning shown),
+\textsc{cot}~\citep{wei2023chainofthoughtpromptingelicitsreasoning},
+\textsc{plan\_solve}~\citep{wang2023planandsolvepromptingimprovingzeroshot},
+\textsc{step\_back}~\citep{zheng2024stepbackevokingreasoning}, and
+\textsc{analogical}~\citep{yasunaga2024largelanguagemodelsanalogical}. Restricting each agent to a single LLM call and a single role keeps the role axis and the topology axis orthogonal, so any multi-round or multi-agent behavior comes from the topology rather than from a role internally hiding a sub-population.
+
+\paragraph{Canonical population.}
+An \emph{agent} is a (backbone, prompting role) pair. The full
+$4 \times 5$ cross product yields $20$ deterministically ordered atomic agents that constitute our canonical population, and the \emph{same} population is reused across every topology so that any cross-topology difference can be attributed to communication structure rather than to a different mix of agents.
+
+\subsection{Communication Topology Design}
+\label{app:topology-design}
+
+We compare five communication topologies that span the spectrum
+from no communication to fully connected, and from peer-to-peer to
+hierarchical aggregation. All topologies share the same agent
+population, the same per-agent sampling temperature,
+the same maximum decode length, and the same
+plurality-vote aggregator at the end. Each topology is run with $3$ rollouts per query for reproducibility.
+
+\paragraph{\textsc{iid} (no communication).}
+The $N$ agents answer the query independently and in parallel.
+This is the standard self-consistency setting and serves as the counterfactual baseline against which the four communicating topologies are compared. The iid rollout is also the source of the counterfactual graph $G^{0}_{x}$ used by \methodname{}.
+
+\paragraph{\textsc{debate} (two-round full mesh).}
+Round~1 is identical to iid. In round~2, every agent receives a formatted block listing all other agents' round-1 answers and is invited to revise. The final panel is the set of round-2 answers, so every agent has been exposed to every peer exactly once before committing.
+
+\paragraph{\textsc{chain} (sequential pipeline).}
+The $N$ agents are arranged in a per-rollout shuffled order
+$a_{1} \to a_{2} \to \cdots \to a_{N}$. Agent $a_{i}$ sees the
+formatted answers of $a_{1}, \ldots, a_{i-1}$ before producing its own. The final panel is the set of all $N$ answers; the last agent has the largest peer context, the first agent has none.
+
+\paragraph{\textsc{hub-spoke} (centralized aggregation).}
+The $N{-}1$ spoke agents answer the query independently and in
+parallel. The hub then sees a formatted block of all spoke answers labelled as ``worker'' contributions and produces its own answer. The final panel includes the hub and all spokes, with the hub's answer typically dominating the plurality vote.
+
+\paragraph{\textsc{tree} (hierarchical aggregation).}
+A complete binary tree of depth $L$ aggregates leaf answers upward. At the bottom layer, $2^{L}$ leaf agents answer independently. Each internal node sees the answers of its two children and produces its own answer; the root produces the panel's most informed answer. All nodes' answers are retained for the panel. With our canonical $N{=}15$ subset, the tree has depth $L{=}3$ and shape $8{+}4{+}2{+}1$.
+
+\subsection{Baselines}
+We compare \methodname{} against four families of baselines. The first family applies classical post-hoc calibration to the raw plurality vote share. The second asks an LLM judge to score the panel directly. The third trains a learned calibration head on validation data. The fourth reports ranking-only uncertainty scores that do not target
+calibrated probabilities.
+
+\subsubsection{Post-hoc plurality calibrators}
+\label{app:baselines-posthoc}
+
+Methods in this family use the plurality vote share as their raw
+confidence signal~\citep{kuncheva2004combining}. This is the fraction
+of agents that support the panel's most-voted answer. The four methods
+differ only in how this scalar is reshaped into a final probability.
+\emph{Plurality share} uses the raw value with no learnable parameters
+and serves as the simplest calibration reference.
+\emph{$+$ Platt scaling}~\citep{platt1999probabilistic} fits a
+parametric logistic mapping on the validation split.
+\emph{$+$ Isotonic regression}~\citep{zadrozny2002transforming}
+instead fits a non-parametric monotone mapping. It can correct
+non-sigmoidal miscalibration but introduces more variance.
+\emph{$+$ Scaling-binning}~\citep{kumar2019verified} chains a
+parametric scaler with empirical bin-mean replacement and provides
+finite-sample ECE guarantees.
+
+\subsubsection{LLM-elicited confidence estimators}
+\label{app:baselines-llm}
+
+These baselines test whether panel correctness can be inferred from the final agent responses alone. We prompt an LLM judge to return a probability that the plurality answer is correct. The judge sees the question, the agent answers, and the plurality answer, but no graph or per-token statistics. Full prompts appear in Appendix~\ref{app:prompt}. \emph{LLM-Cal (no topology)} queries the judge directly. \emph{LLM-Cal ($+$topology)} additionally injects a one-line description of the panel's communication topology into the prompt. This isolates whether the judge can exploit topology
+information when given it explicitly. \emph{Collaborative
+Calibration}~\citep{yang2024confidence} prompts the judge to silently simulate a multi-expert deliberation before emitting a single consensus probability.
+
+\subsubsection{Trained calibrators}
+\label{app:baselines-trained}
+
+These baselines train a calibration head on validation panels and target plurality-answer correctness. To make the comparison fair, all three trained baselines receive the same per-benchmark post-hoc protocol as our method. \emph{Scalar~$+$~GBT}~\citep{ke2017lightgbm}
+is a strong feature-based baseline. It trains a gradient-boosted decision tree on hand-crafted scalar panel statistics, with no relational encoding. \emph{GraphCal}~\citep{li2025graph} adapts a
+graph-based calibrator to the panel setting. It encodes the observed agent graph with a GCN~\citep{kipf2017semisupervisedclassificationgraphconvolutional}, but it omits the counterfactual iid view, the hyperedge stream, and the failure-correlation edges used by \methodname{}.
+\emph{DiscoUQ-LLM}~\citep{jiang2026discouq} is a disagreement-feature baseline. It trains a head on a small set of panel-level disagreement summaries.
+\input{tables/tab_heuristic_uq}
+\subsubsection{Ranking-only UQ scores}
+\label{app:baselines-ranking}
+
+This family does not produce calibrated probabilities. It only
+yields scalar uncertainty estimates that can rank panels by
+reliability, so we report only AUROC and AUARC for these methods. \emph{Answer entropy}~\citep{kuhn2023semanticuncertaintylinguisticinvariances} is the Shannon entropy of the panel's distribution over distinct agent answers. \emph{Average log probability}~%
+\citep{kadavath2022languagemodelsmostlyknow} averages each agent's mean per-token log-probability across the panel. It uses only signals that the decoder already provides. \emph{DiverseAgentEntropy}~%
+\citep{feng2025rethinkingllmuncertaintymultiagent} extends answer entropy by first diversifying the agents that produce the answer distribution. \emph{MATU}~\citep{chen2026responsecountsquantifyinguncertainty} arranges the panel's per-agent answer distribution into a low-rank tensor and uses the \textsc{PARAFAC2} reconstruction residual as the uncertainty score.
+
+\subsection{Training Details}
+\paragraph{Data splits.}
+For each of the five benchmarks we sample $500$ problems with a fixed seed and deterministically split them $60{:}20{:}20$ into train, validation, and test partitions. The same split is reused across every topology, every method, and every seed, so a question is never seen in training under one topology and held out under another. Because each problem is rolled out through every topology with three independent rollouts, the resulting panel pool
+contains roughly $37{,}500$ panels in total. The training split fits the encoder and the calibration head, the validation split fits the post-hoc calibrators and selects model checkpoints, and the test split is used only for final reporting. For the leave-one-topology-out experiments the same per-benchmark splits are kept fixed and only the topology used during training is varied.
+
+\paragraph{Optimization.}
+We train the encoder for $15$ epochs with AdamW, an initial
+learning rate of $2\!\times\!10^{-3}$, weight decay of
+$3\!\times\!10^{-4}$, and a cosine learning-rate schedule. Each batch contains $128$ panels and gradients are clipped to a global norm of $1.0$. The training loss combines binary cross-entropy on plurality-answer correctness with a Brier auxiliary term weighted by $0.4$, and the target is label-smoothed with $\alpha=0.05$ to prevent the model from collapsing to extreme probabilities on high-agreement panels. Model selection on the validation split uses the composite score $\text{AUROC}-0.5\cdot\text{ECE}$, with an early-stopping patience of $5$ epochs. We train an ensemble of $10$
+random seeds and average the predicted probabilities, then apply a per-benchmark Beta calibration and scaling-binning post-hoc and blend the two outputs with equal weight.
+
+\paragraph{Computational cost.}
+The bulk of the wall-clock cost in our pipeline lies in generating the multi-agent panels with vLLM-served open-weight LLMs, which we cache and reuse across all methods. Training \methodname{} on top of the cached panels is comparatively cheap: a single $15$-epoch training run completes in roughly $5$--$10$ minutes on a single
+NVIDIA A100, and the full $10$-seed ensemble plus per-benchmark post-hoc fits in well under two hours on the same hardware.
+
+
+\section{Additional Calibration and Uncertainty Results}
+\label{app:additional_results}
+
+\subsection{Ranking-Only UQ Comparison}
+\label{con:Ranking-Only UQ Comparison}
+
+Table~\ref{tab:heuristic-uq} compares \methodname{} with heuristic uncertainty baselines across benchmarks. 
+Plurality vote and answer entropy rely only on the final answer distribution, while log-probability and other uncertainty scores do not explicitly model agent dependencies. 
+\methodname{} achieves the best mean AUROC and AUARC, showing that topology-aware dependency features provide a stronger signal for estimating whether the panel answer is correct.
+
+\subsection{Brier Score Comparison}
+\label{con:brier_score}
+\input{tables/tab_brier}
+Table~\ref{tab:brier} compares probability calibration using Brier score, where lower values indicate better calibrated confidence. 
+The baselines cover three categories: post-hoc plurality calibrators, LLM-elicited confidence estimators, and trained calibrators. 
+\methodname{} achieves the lowest Brier score on every benchmark and the best mean score overall, reducing the average Brier score from the strongest baseline, DiscoUQ-LLM, from 14.37 to 11.19. 
+This suggests that explicitly modeling agent dependencies and communication topology provides a stronger calibration signal than calibrating vote share, eliciting verbalized confidence, or using hand-crafted disagreement features alone.
+\input{tables/tab_cage_select}
+\section{Selection, Generalization, and Robustness}
+\label{app:robustness}
+
+\subsection{\select{}: Confidence-Routed Topology Selection}
+\label{con:performance_cage_select}
+
+
+Table~\ref{tab:cage-select} evaluates whether the calibrated
+confidence produced by \methodname{} can be used to select, for each query, the communication topology whose panel answer is most likely to be correct. We refer to this routing procedure as \select{}.
+
+\paragraph{Why per-query routing.}
+The main results show that no single communication topology is best on every query. Some questions are answered most reliably under iid, where independent agents avoid the herding that arises when they communicate. Others benefit from debate or hub-spoke, where peer exchange resolves ambiguity that a lone agent would miss. A \emph{fixed}-topology system is therefore always sub-optimal in
+expectation: it commits, at design time, to a single communication structure regardless of which structure is appropriate for the specific input. \select{} replaces that design-time commitment with a run-time choice driven by panel-level confidence.
+
+\paragraph{Routing procedure.}
+For each query $x$, \select{} runs the panel under all candidate topologies, producing a plurality answer $\hat{y}(x,T)$ and a calibrated correctness probability $\hat{p}(x,T)$ from \methodname{} for each $T$. It then returns the answer of $T^{\star}(x) = \arg\max_{T} \hat{p}(x,T)$. Because $\hat{p}$ is trained as a panel-level correctness probability with the same target across topologies, the values are directly comparable and the routing reduces to a single $\arg\max$ over a small candidate pool. We compare \select{} against each fixed topology, an oracle that always picks the topology carrying the correct answer, and heuristic routers that select by plurality share or mean per-token log-probability. \select{} consistently beats every fixed topology
+and every heuristic rule and closes a substantial fraction of the oracle gap. The heuristics fail in characteristic ways: plurality share is fooled by communication-induced herding that inflates agreement without improving accuracy, and mean log-probability rewards confident generation regardless of whether the panel agrees. A calibrated panel-level confidence is needed to navigate both
+failure modes, and the same head that flags unreliable panels can therefore double as an inference-time selector that turns topology choice into a per-query decision.
+
+
+
+% Instead of using a fixed topology for all queries, \select{} runs candidate panels under multiple topologies and selects the answer with the highest \methodname{} confidence. 
+%  We found it   outperform fixed-topology baselines and heuristic selection rules such as highest plurality share or highest mean log-probability. 
+% The improvement shows that calibrated confidence is useful not only for reliability estimation, but also for choosing which topology-induced answer to trust on each query.
+
+\subsection{Panel-Size Robustness}
+\label{con:generalization_to_com_top}
+\input{tables/tab_loto}
+Table~\ref{tab:loto} evaluates leave-one-topology-out generalization, where each row trains the calibrator on four communication topologies and tests it on the held-out topology. 
+\methodname{} consistently outperforms GraphCal and DiscoUQ-LLM in both AUROC and AUARC across all held-out topologies, showing that its graph-based dependency modeling generalizes beyond the topologies observed during training. 
+This suggests that \methodname{} learns reusable structural signals of agent dependence rather than merely fitting topology-specific patterns.
+
+\subsection{Main Structural Findings Are Robust to Panel Size}
+\label{con:pannel_size}
+
+
+\textbf{\begin{table}[!t]
+\centering
+\setlength{\tabcolsep}{6pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{l c c c}
+\toprule
+\textbf{Quantity} & $\bm{N{=}10}$ & $\bm{N{=}20}$ & $\bm{\Delta}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{Accuracy anchors (\%)}}\\
+Single-agent baseline           & 54.13  & 54.72  & +0.59 \\
+iid plurality                   & 60.25  & 64.34  & +4.09 \\
+Best topology per cell          & 63.00  & 66.40  & +3.41 \\
+Any-agent-correct oracle        & 84.68  & 88.08  & +3.39 \\
+Ensembling gain (iid $-$ single) & +6.12  & +9.62  & +3.50 \\
+Communication gain (best $-$ iid)& +2.75  & +2.06  & -0.69 \\
+Aggregation gap (oracle $-$ best)& +21.69 & +21.67 & -0.01 \\
+\midrule
+\multicolumn{4}{l}{\textit{OLS $\beta$ on $\W_{ij}$ (pp)}}\\
+Same backbone family             & +10.17 & +10.36 & +0.19 \\
+Same prompting role              & +1.02  & +0.89  & -0.14 \\
+\texttt{is\_chain}               & +18.38 & +17.87 & -0.51 \\
+\texttt{is\_debate}              & +12.19 & +11.76 & -0.43 \\
+\texttt{is\_tree}                & +6.20  & +6.76  & +0.55 \\
+\texttt{is\_hub\_spoke}          & +1.46  & +1.15  & -0.31 \\
+\midrule
+\multicolumn{4}{l}{\textit{Peak regression rate (\%)}}\\
+chain / TruthfulQA               & 32.45  & 31.73  & -0.72 \\
+tree / TruthfulQA                & 31.18  & 30.52  & -0.66 \\
+\bottomrule
+\end{tabular}%
+}
+\caption{\textbf{$N$-scaling robustness.} Headline quantities
+under matched-$N{=}10$ vs.\ natural-$N{=}20$. Structural findings
+move by less than $\pm 1$\,pp.}
+\label{tab:n-scaling-side-by-side}
+\end{table}
+}
+
+Table~\ref{tab:n-scaling-side-by-side} evaluates whether our structural findings are robust to the number of agents in the panel by comparing matched \(N=10\) panels with the natural \(N=20\) setting. 
+Increasing the panel size improves standard accuracy anchors, such as iid plurality accuracy and the any-agent-correct oracle, but the key structural quantities remain stable. 
+In particular, the OLS coefficients on pairwise agent dependence, including same backbone family and topology-induced effects such as chain and debate, change by less than about one percentage point. 
+The peak regression rates on TruthfulQA are also nearly unchanged. 
+These results suggest that the observed population-side dependence and topology-induced coupling are not artifacts of a particular panel size.
+
+
+
+
+
+\section{Prompt Design}
+\label{app:prompt}
+\paragraph{Agent role prompts}
+Each agent in a panel is parameterized by one of five atomic reasoning
+roles whose prompts are taken from
+the originating papers; a single shared format guard is appended so
+that downstream parsing of the "Answer:~$\langle X\rangle$" terminator
+is uniform across roles and benchmarks. A role is restricted to one
+LLM call and may not internally simulate multiple personas, which
+keeps the role axis orthogonal to the topology axis. Agent prompting roles used to generate panels are shown in Figure~\ref{fig:appendix:role-prompts}.
+% Figure ref{fig:appendix:role-prompts}
+\begin{figure*}[h]
+\centering
+\small
+
+\begin{promptbox}{Agent prompting roles}
+\textbf{Shared format guard} \textit{(appended to every role below):}\\[2pt]
+\texttt{Output the final answer at the end as exactly one line:
+"Answer: <your short answer>"}
+
+\vspace{6pt}\hrule\vspace{4pt}
+
+\textbf{Role 1: \textsc{direct}} (zero-shot baseline)\\[2pt]
+\texttt{Answer the question directly. Do not show reasoning.}
+
+\vspace{6pt}
+
+\textbf{Role 2: \textsc{cot}}~\citep{wei2023chainofthoughtpromptingelicitsreasoning}\\[2pt]
+\texttt{Let's think step by step. Reason through the problem,
+then commit to a final answer.}
+
+\vspace{6pt}
+
+\textbf{Role 3: \textsc{plan\_solve}}~\citep{wang2023planandsolvepromptingimprovingzeroshot}\\[2pt]
+\texttt{First, understand the problem and devise a brief plan in
+2--4 steps. Then carry out the plan to solve the problem.}
+
+\vspace{6pt}
+
+\textbf{Role 4: \textsc{step\_back}}~\citep{zheng2024stepbackevokingreasoning}\\[2pt]
+\texttt{Take a step back. State the high-level concept, principle,
+or category that this problem falls under. Then use that principle
+to solve the specific problem.}
+
+\vspace{6pt}
+
+\textbf{Role 5: \textsc{analogical}}~\citep{yasunaga2024largelanguagemodelsanalogical}\\[2pt]
+\texttt{Recall 2--3 analogous problems you have seen before.
+Briefly describe each in one sentence. Then use what you learned
+from those analogies to solve this problem.}
+\end{promptbox}
+
+\caption{\textbf{Agent prompting roles used to generate panels.}
+Five atomic reasoning roles parameterize each agent, adapted
+verbatim from the cited source papers. A role must not internally simulate multiple
+personas or multiple LLM calls; this keeps role and topology
+orthogonal.}
+\label{fig:appendix:role-prompts}
+\end{figure*}
+
+\paragraph{LLM-elicited baseline prompts}
+For completeness we report the prompt used by the LLM-Cal baseline
+(Section~\ref{sec:baselines}), the zero-shot LLM-elicited calibrator that
+asks a frozen LLM to map (question, panel answers, plurality) to a
+correctness probability. The optional \texttt{+topo} variant
+additionally injects a one-line description of the panel's
+communication topology; the exact label mapping is shown in the same
+box.  The prompt used for LLM-Cal is shown in Figure~\ref{fig:appendix:llmcal-prompt}.
+% Figure ref{fig:appendix:llmcal-prompt}
+\begin{figure*}[t]
+\centering
+\small
+
+\begin{promptbox2}{LLM-Cal (zero-shot LLM-elicited calibrator)}
+\textbf{System prompt:}\\[2pt]
+\texttt{You are a calibration assistant. Given a question and N
+candidate answers from N language model agents, plus the plurality
+(most-voted) answer, estimate the probability that the plurality
+answer is correct. Respond with a single decimal number between 0
+and 1, no other text.}
+
+\vspace{6pt}\hrule\vspace{4pt}
+
+\textbf{User prompt template:}\\[2pt]
+\texttt{Question: \{query\}\\
+\\
+Panel topology: \{topology\_description\}\;\textit{\#\ only in the
++topo variant}\\
+\\
+Plurality answer: \{plurality\}\\
+\\
+All agent answers:\\
+\hphantom{xx}1. \{answer\_1\}\\
+\hphantom{xx}2. \{answer\_2\}\\
+\hphantom{xx}\ldots\\
+\hphantom{xx}N. \{answer\_N\}\\
+\\
+Probability the plurality answer is correct (0--1):}
+
+\vspace{6pt}\hrule\vspace{4pt}
+
+\textbf{Topology descriptions} (used by the \texttt{+topo} variant):\\[2pt]
+\texttt{iid \(\rightarrow\) "iid (independent)"\\
+debate \(\rightarrow\) "debate (full-mesh cross-critique)"\\
+chain \(\rightarrow\) "chain (sequential)"\\
+hub\_spoke \(\rightarrow\) "hub-spoke (centralized aggregator)"\\
+tree \(\rightarrow\) "tree (hierarchical aggregation by depth)"}
+\end{promptbox2}
+
+\caption{\textbf{LLM-Cal: zero-shot LLM-elicited calibration baseline.}
+The model is asked to map (question, panel answers, plurality) to a
+single probability that the plurality answer is correct. The
+optional \texttt{+topo} variant additionally injects a one-line
+description of the panel's communication topology into the user
+prompt. CAGE-Cal itself does not issue any LLM prompts at inference
+time.}
+\label{fig:appendix:llmcal-prompt}
+\end{figure*}
+
+\section{Use of AI Assistants}
+AI assistants were used only for language polishing.

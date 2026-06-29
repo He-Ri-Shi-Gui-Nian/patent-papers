@@ -1,0 +1,113 @@
+\section{Methodology}
+\label{sec:method}
+To overcome the limitations of existing lightweight GraphRAG methods, we propose \textbf{\EHGRAG}, an efficient hpyergraph-based retrieval framework. The whole process of \EHGRAG is shown in Figure \ref{fig:framework}. In short, \EHGRAG models the corpus as a hybrid hypergraph $\mathcal{H} = (\mathcal{V}, \mathcal{E})$, where $\mathcal{V}$ denotes the set of nodes (i.e. entities in the corpus), $\mathcal{E} = \mathcal{E}_{str} \cup \mathcal{E}_{sem}$ is the set of hyperedges. Here $\mathcal{E}_{str}$ represents the hyperedges generated from the structure of the documents and $\mathcal{E}_{sem}$ represents the hyperedges capturing implicit semantic relations. For each question, \EHGRAG first finds the similar entities as anchors in the hypergraph and then activates the relevant entities to construct a subgraph. Finally, it scores the passages with different dimensions and uses PPR to refine the scores and get the final top-$k$ results. Next, we will give the details of each component of \EHGRAG and analyze why it works. Due to the page limit, we put the theoretical analysis of \EHGRAG in Appendix \ref{sec:theory}.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figure/Framework_F.pdf} 
+    \caption{The overall framework of \textbf{\EHGRAG}. The process is divided into two phases: (1) \textbf{Offline Construction}: We extract entities using lightweight models to build structural hyperedges, while simultaneously clustering entity embeddings (e.g., BIRCH) to form semantic hyperedges. (2) \textbf{Online Retrieval}: User queries activate anchor nodes, initiating a structure-semantic hybrid diffusion process that propagates scores through the hypergraph to rank and retrieve relevant documents for generation.}
+    \label{fig:framework}
+\end{figure*}
+
+\subsection{Hybrid Hypergraph Construction}
+\label{sec:construction}
+Unlike general graphs where edges connect pairs of nodes, a hyperedge $e \in \mathcal{E}$ in a hypergraph can connect an arbitrary number of nodes, making it ideal for modeling complex group relationships in RAG. We construct two categories of hyperedges: \textit{Structural Hyperedges} for local context preservation and \textit{Semantic Hyperedges} for global concept linking.
+
+\paragraph{Structural Hyperedges: Explicit Context Modeling.}
+To capture the precise context, we treat each sentence as a structural unit. Let $\mathcal{S} = \{s_1, s_2, \dots, s_N\}$ be the set of sentences in the corpus. Following previous lightweight framework \cite{zhuang2025linearrag,zhao20252graphrag}, we employ the lightweight Named Entity Recognition (NER) module (e.g. spaCy package) to extract the entity set $\mathcal{V}$. Evidently, entities appearing in the same sentence exhibit contextual relevance. So we construct a \textbf{structural hyperedge} $e_{s_j}^{str} = \{v_i \in \mathcal{V} \mid v_i \in s_j\}$ for each sentence $s_j$, which contains all entities explicitly appearing within it. Then we can get the incidence matrix $\mathbf{H}^{str} \in \mathbb{R}^{|\mathcal{V}| \times |\mathcal{S}|}$ of the structural hyperedges, which is defined as $\mathbf{H}^{str}_{i, j} = 1$ if $v_i \in e_{s_j}^{str}$ and $0$ otherwise. This construction ensures that entities within the same context window form a fully connected clique in the primal projection, preserving the integrity of local information.
+
+\paragraph{Semantic Hyperedges: Latent Topic Discovery.}
+Since only same entities will be combined cross the documents, graphs with only structural connections will fail to link synonymous entities appearing in disjoint contexts (e.g., GPU and Graphics Card). To bridge this semantic gap, we introduce \textbf{semantic hyperedges} via density adaptive projecting in the latent space. Let $\mathbf{x}_i \in \mathbb{R}^d$ be the text embedding of entity $v_i$, entities belonging to the same latent topic cluster around a centroid in the embedding space. Instead of rigid partitioning, we employ a clustering algorithm (e.g., BIRCH) to dynamically identify $K$ latent topic centroids $\mathcal{C} = \{\mathbf{c}_1, \dots, \mathbf{c}_K\}$ without pre-specifying $K$.
+
+For each centroid $\mathbf{c}_k$, we define a semantic hyperedge $e_{sem}^k$ that bonds the top-$D$ semantically closest entities. To incorporate the semantic uncertainty, we assign a continuous weight to the incidence entry based on the kernel distance:
+\begin{equation}
+    \mathbf{H}^{sem}_{i, k} = 
+    \begin{cases} 
+        \scriptstyle \exp\left(-\frac{\|\mathbf{x}_i - \mathbf{c}_k\|^2}{\tau}\right) & v_i \in \mathcal{N}_D(\mathbf{c}_k), \\
+        \scriptstyle 0 & \text{otherwise},
+    \end{cases}
+\end{equation}
+where $\mathcal{N}_D(\mathbf{c}_k)$ denotes the set of $D$ nearest neighbors to $\mathbf{c}_k$, and $\tau$ is a temperature parameter. This topology allows information to teleport between structurally distant but semantically related entities.
+
+\subsection{Structure-Semantic Mixed Retrieval}
+\label{sec:retrieval}
+Based on the constructed hybrid hypergraph, \EHGRAG includes a novel two-stage retrieval mechanism: \textit{Diffusion-based Activation} followed by \textit{Topic-aware Passage Scoreing}. To sum up, it first activates the nodes in the hypergraph to generate a subset of entities that are relevant with the question. Then \EHGRAG scores the passages based on the connection between passages and the subset of entities with different views and uses personalized pagerank (\textbf{PPR}) to refine the scores to generates the final top-$k$ passages for retrieval. We will start from the initialization stage to present the details of the retrieval mechanism.
+
+\subsubsection{Anchors Initialization}
+To initiate the retrieval, we first map the user query $q$ to the graph. Following existing methods~\cite{zhuang2025linearrag,edge2024local,zhao20252graphrag}, we extract a set of query entities $E_q$ using the same NER module during hypergraph construction. For each query entity $e \in E_q$, we compute its embedding similarity with all node entities in $\mathcal{V}$ and select the most similar nodes as the anchor to start the retrieval.
+We define the initial activation state $\mathbf{a}^{(0)}$ for each anchor as $\mathbf{a}^{(0)}(v) = \cos(\mathbf{x}_e, \mathbf{x}_v)$, which ensures that the retrieval starts from multiple robust entry points, tolerating extraction errors or minor morphological variations.
+
+\subsubsection{Diffusion-based Entities Activation}
+Starting from the seed activation $\mathbf{a}^{(0)}$, we propagate scores to identify contextually linked entities. Based on our implementation, this process is designed as a **Two-Phase Diffusion**: a one-off Semantic Expansion followed by an Iterative Structural Propagation.
+
+\paragraph{Semantic Diffusion for Topic Projection.}
+Before the iterative search, we first expand the seed set to include latent synonymous entities. This corresponds to a weighted projection through the semantic incidence matrix $\mathbf{H}^{sem}$.
+For the seed activation vector $\mathbf{a}^{(0)}$, we calculate the semantic expansion vector $\mathbf{a}_{sem}$ as:
+\begin{equation}
+    \mathbf{a}_{sem} = \gamma \cdot \mathbf{H}^{sem} (\mathbf{H}^{sem})^\top \mathbf{a}^{(0)},
+\end{equation}
+where $\gamma$ is a decay factor that is used to avoid the semantic shift during multi-hop diffusion. The operator $\mathbf{H}^{sem} (\mathbf{H}^{sem})^\top$ represents hopping from entities to their cluster centroids and then travel to the similar entities.
+Then we can get the initial search frontier with potential topic as $\mathbf{a}^{(1)} = \mathbf{a}^{(0)} + \mathbf{a}_{sem}$ while the initial global weight vector is $\mathbf{w} = \mathbf{a}^{(1)}$.
+
+\paragraph{Iterative Structural Diffusion.}
+We then perform a $T$-step structural diffusion to capture local context. Unlike standard random walks, edge weights in our graph are dynamically modulated by the query. Let $\mathbf{a}^{(t)}$ be the active frontier at iteration $t$. The propagation to the next hop consists of three steps:
+
+\textbf{Step 1: Entity-to-Sentence Projection.} First, activation flows from entities to the sentences containing them:
+\begin{equation}
+    \mathbf{s}^{(t)} = (\mathbf{H}^{str})^\top \mathbf{a}^{(t)},
+\end{equation}
+where $\mathbf{s}^{(t)} \in \mathbb{R}^{|\mathcal{S}|}$ represents the activation potential of each sentence.
+
+\textbf{Step 2: Query-Gated Filtering.} Not all sentences containing active entities are relevant. We strictly gate the passage flow by calculating the similarity between the sentence embeddings $\mathbf{E}_S$ and the query embedding $\mathbf{x}_q$. We construct a dynamic diagonal gating matrix $\mathbf{G}_q$:
+\begin{equation}
+    \mathbf{G}_q[j,j] = 
+    \begin{cases} 
+        \mathbf{e}_{s_j}^\top \mathbf{x}_q & \text{if } s_j \in \mathbb{F}(\mathbf{E}_S \mathbf{x}_q, L), \\
+        0 & \text{otherwise},
+    \end{cases}
+\end{equation}
+where $\mathbb{F}(\mathbf{x},L)$ is the function that selects the top-$L$ elements from $\mathbf{x}$. This step ensures that activation only flows through sentences that are semantically relevant to the user's question.
+
+\textbf{Step 3: Accumulative Update.} The activation flows back to entities through the gated sentences. The new activation frontier $\Delta \mathbf{a}^{(t+1)}$ is calculated as:
+\begin{equation}
+    \Delta \mathbf{a}^{(t+1)} = \mathbf{H}^{str} \mathbf{G}_q \mathbf{s}^{(t)}.
+\end{equation}
+The global weight vector $\mathbf{w}$ and the frontier for the next iteration are updated as:
+\begin{equation}
+    \mathbf{a}^{(t+1)} = \delta(\Delta \mathbf{a}^{(t+1)}, \epsilon),
+\end{equation}
+\begin{equation}
+    \mathbf{w} \leftarrow \mathbf{w} + \mathbf{a}^{(t+1)},
+\end{equation}
+where $\delta(\mathbf{x}, \epsilon)$ is a function that only reserves the elements that are larger than $\epsilon$ in $\mathbf{x}$ and $\epsilon$ is a pruning threshold. This process repeats until convergence or maximum iterations are reached, resulting in a final weight vector $\mathbf{w}^*$ that encodes both explicit semantic similarity and implicit multi-hop contextual relevance. Then non-zero elements in $\mathbf{w}^*$ is the set of activated nodes used for scoring the related passages.
+
+\subsubsection{Topic-aware Passages Scoring}
+After $T$ iterations of diffusion, we obtain a set of activated entities and topics. To retrieve the final documents, we propose a topic-aware hybrid scoring function that evaluates document relevance from three dimensions. For the question $q$, the score of $d$-th passage $p_d$ is defined as follows:
+
+\begin{equation}
+\begin{split}
+    S(d) &= \underbrace{S_{d}(q, d)}_{\text{Global Context}} + \lambda_1 \underbrace{\sum_{v \in p_d} \log(1 + \mathbf{w}(v))}_{\text{Explicit Evidence}} \\
+    &\quad + \lambda_2 \cdot\underbrace{ \log(1 + \sum_{v \in \mathcal{C}_d}S_{topic}(v))}_{\text{Semantic Reward}}.
+\end{split}
+\end{equation}
+
+\begin{itemize}
+    \item \textbf{Global Context $S_{d}(q, d)$:} Following existing work~\cite{zhuang2025linearrag,zhao20252graphrag}, this term is derived from a standard dense retriever (i.e. dot product of the question embeddings and the passage embeddings), ensuring that the documents broadly match the intent of the query.
+    \item \textbf{Explicit Evidence:} It aggregates the scores of activated entities contained in the $d$-th passage. The logarithmic term prevents documents with simple keyword repetition from dominating the ranking.
+    % \item \textbf{Semantic Reward:} This term rewards the documents containing entities from highly activated topic nodes. This allows us to retrieve documents that discuss the correct concept (e.g., medical treatments) even if they miss the exact seed keywords.
+    \item \textbf{Semantic Reward:} This term captures the latent thematic relevance of the document. Here, $\mathcal{C}_d$ denotes the set of unique semantic clusters (topics) appearing in document $d$, $S_{topic}(v)$ represents the global importance of cluster $v$, calculated by aggregating the semantic activation scores $\mathbf{a}_{sem}$ of all retrieved entities belonging to this cluster. This allows the system to retrieve documents that discuss the correct concept even if they lack some exact keyword matches with the query.
+\end{itemize}
+
+\paragraph{Scores Refinement via PPR.}
+To enforce global consistency, we use personalized pagerank (PPR) to refine the scores on the graph $\mathcal{G}^*=(\mathcal{V}^*, \mathcal{E}^*)$ where nodes $\mathcal{V}^* = \mathcal{V}_{ent} \cup \mathcal{V}_{psg}$ include both entities and passages. The edge set $\mathcal{E}^*$ integrates structural containment (linking entity $v_i$ to passage $p_j$ if $v_i \in p_j$) and semantic similarity (linking entities in the same cluster). The process is defined as follows:
+\begin{equation}
+    \mathbf{r}^{(t+1)} = (1-\alpha) \mathbf{M} \mathbf{r}^{(t)} + \alpha \mathbf{r}_{init},
+\end{equation}
+where $\mathbf{M}$ is the normalized adjacency matrix with both entity-passage bipartite connections and entity-entity semantic links. The restart vector $\mathbf{r}_{init}$ is initialized with $S_{init}$ scores mapped to passage nodes and the stationary distribution $\mathbf{r}^{*}$ captures the final relevance of each document that can be used to determine the final top-$k$ passages for retrieval.
+
+\subsection{Complexity Analysis}
+\label{sec:complexity}
+\paragraph{Construction Complexity.} Let $L$ be the total number of tokens in the corpus, $|\mathcal{V}|$ be the number of unique entities, and $d$ be the embedding dimension. The construction phase consists of NER and Clustering. First, lightweight NER models (e.g., SpaCy) process text linearly with corpus length, so its time complexity is $\mathcal{O}(L)$. Next, the BIRCH algorithm constructs the CF-Tree in a single scan of the entity embeddings, whose complexity is $\mathcal{O}(|\mathcal{V}| \log (|\mathcal{V}|/B))$, where $B$ is the branching factor. Finally, the total construction time complexity is $\mathcal{O}(L + |\mathcal{V}|d)$. Since $|\mathcal{V}| \ll L$, the whole construction takes linear time with corpus length.
+
+\paragraph{Retrieval Complexity.}
+The retrieval overhead is dominated by sparse matrix operations on $\mathcal{G}^*$, scaling linearly with the number of edges $\text{nnz}(\mathbf{A}^*)$. Physically, these edges correspond to entity mentions within the corpus. Since the number of mentions is strictly bounded by the total token count $L$, the complexity is $\mathcal{O}(L)$. This linear scalability ensures \EHGRAG remains efficient even for long-context processing.

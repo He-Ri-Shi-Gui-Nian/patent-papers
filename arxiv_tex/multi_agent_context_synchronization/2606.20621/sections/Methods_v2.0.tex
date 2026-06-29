@@ -1,0 +1,219 @@
+\section{Permutation-Equivariant Adaptive Routing Multi-Agent Debate}
+\label{sec:method}
+ 
+%Adaptive Routing Multi-Agent Debate (AR-MAD) is an inference-time protocol that casts multi-agent debate as a state-aware information-routing problem. Given a task instance $x$ and $n$ agents, 
+PEAR proceeds in four phases: Initialization, Adaptive Routing, Critique \& Revision, and Influence Update.
+%\textbf{Initialization}, in which the base communication graph is fixed and agents respond independently; \textbf{Adaptive Routing}, in which the router selects a sparse communication topology by scoring candidates with three components, \emph{Targeted Diversity}, \emph{Influence Balancing}, and \emph{Low-Confidence Filtering}; \textbf{Critique \& Revision}, in which each source agent produces a targeted critique and the corresponding target revises its answer; and \textbf{Influence Update}, in which the router refreshes per-agent influence statistics from the adoption pattern just observed. 
+The latter three are repeated for $R$ rounds. Figure~\ref{fig:pipeline} provides a schematic overview. %of the protocol. %and Algorithm~\ref{alg:armad} summarizes the full procedure.
+
+
+\subsection{Initialization}
+\label{sec:method:initial}
+ 
+\paragraph{Base role graph.}
+PEAR instantiates the base role graph $G_0$ from Section~\ref{sec:preliminaries} as a sparse $k$-regular template in which every role has in-degree $k$. The $k$-regular template is preferred over a clique for three reasons: (i) it caps the per-round critique budget at $nk$ rather than $n(n{-}1)$ edges; (ii) it keeps the per-agent input bounded, mitigating the noise introduced by aggregating critiques from every other agent; and (iii) it admits a tractable space of candidate topologies $\{G(\pi):\pi\in S_n\}$ obtained by relabeling roles, so the router can search among meaningfully different communication graphs while preserving each agent's input budget at $k$.
+
+\paragraph{Initial responses.}
+Before any communication occurs, each agent $i\in[n]$ independently produces an initial response $\xi_i^{(0)}\sim\pi_{\theta_i}(\cdot\mid x)$, using the structured tuple defined in Section~\ref{sec:preliminaries}. Agents are instructed to reserve the low end of the confidence scale for guesses or for cases in which competing alternatives cannot be ruled out, and to reserve the highest score for fully verified solutions. The router-side influence statistic is initialized to $\rho_i^{(0)}=0$ for every agent.
+
+
+
+
+\subsection{Adaptive Routing}
+\label{sec:method:routing}
+
+\paragraph{Candidate pool.}
+At the start of round $r$, the router constructs a finite candidate pool
+%\begin{equation*}
+\(    \mathcal{C}_r=\{\pi_r^{(1)},\ldots,\pi_r^{(M)}\}\subseteq S_n\), \(M=|\mathcal{C}_r|\),
+%\end{equation*}
+by enumerating assignments that yield distinct edge sets $E(\pi_r^{(m)})$. The size $M$ is upper-bounded by a configurable budget $M_{\max}$. The candidate pool merely delimits the search space over which the state-aware score is computed; it is not the routing decision itself. 
+For a candidate topology $G(\pi)$ with edge set $E=E(\pi)$, the router computes a composite score $S(E\mid s_r)$ from three state-aware components, each normalized so that the relative magnitudes of the weights $\alpha_T,\alpha_I,\alpha_L$ remain interpretable.
+ 
+\paragraph{Targeted diversity.}
+This component rewards edges whose source is confident, whose target is uncertain, and whose two endpoints currently hold different answers. Concretely, for an edge $(s\!\to\!t)\in E$,
+\begin{align}
+    T(s,t)=
+    & \mathbf{1}\big[y_s^{(r-1)}\!\neq\! y_t^{(r-1)}\big]
+    \mathbf{1}\big[c_s^{(r-1)}\!\geq\!\tau_{\mathrm{src}}\big]\nonumber\\
+    &
+    \mathbf{1}\big[c_t^{(r-1)}\!\leq\!\tau_{\mathrm{tgt}}\big],
+%\end{}
+\label{eq:targeted-diversity}
+\end{align}
+where $\tau_{\mathrm{src}}$ and $\tau_{\mathrm{tgt}}$ are confidence cutoffs for the source and target, respectively. The normalized rate over a candidate edge set is
+\begin{equation}
+    %\widetilde{T}(E)=\frac{1}{|E|}\sum_{(s,t)\in E}T(s,t)\in[0,1].
+    \widetilde T(E)
+=
+\frac{1}{m}
+\sum_{(s,t)\in E} T(s,t)
+\in[0,1].
+    \label{eq:targeted-diversity-rate}
+\end{equation}
+Equation~\eqref{eq:targeted-diversity} is asymmetric by design: it favors directed dissent from high-confidence agents toward low-confidence agents, in line with the empirical observation that reliable, opinion-divergent sources are the most likely to convert uncertain targets from wrong to right.
+
+ 
+\paragraph{Influence balancing.}
+Let $\rho_s^{(r-1)}\in[0,1]$ denote the accumulated influence of agent $s$ entering round $r$, and let $d^{\mathrm{out}}_s(E)=|\{t:(s,t)\in E\}|$ be its out-degree under the candidate edge set. The influence-balancing component penalizes routing structures that allocate additional out-degree to already dominant agents:
+\begin{equation}
+    %\widetilde{I}(E)=\frac{1}{|E|}\sum_{s\in[n]}\rho_s^{(r-1)}\,d^{\mathrm{out}}_s(E)\in[0,1].
+        \widetilde{I}(E)=\frac{1}{m}\sum_{s\in[n]}\rho_s^{(r-1)}\,d^{\mathrm{out}}_s(E)\in[0,1].
+    \label{eq:influence-balancing}
+\end{equation}
+Here $\rho_s^{(r-1)}\in[0,1]$ by induction from the EMA update in
+Eq.~(8), and $\sum_s d_s^{\rm out}(E)=m$, so
+$\sum_s \rho_s^{(r-1)}d_s^{\rm out}(E)\le m$.
+This term provides a structural defense against error cascades: an agent that has previously persuaded many targets is prevented from being amplified further, regardless of whether its current answer is correct.
+
+\algrenewcommand\algorithmicindent{1em}
+
+\begin{algorithm}[t]
+\caption{PEAR}%: Adaptive Routing Multi-Agent Debate}
+\label{alg:armad}
+\begin{algorithmic}[1]
+\small
+%\Require Input $x$; agents $\{\pi_{\theta_i}\}_{i=1}^{n}$; base graph $G_0$; rounds $R$; weights $(\alpha_T,\alpha_I,\alpha_L)$; thresholds $(\tau_{\mathrm{src}},\tau_{\mathrm{tgt}},\tau_{\mathrm{low}})$; smoothing $\beta$
+\Require Input $x$; agents $\{\pi_{\theta_i}\}_{i=1}^n$; base graph
+$G_0$; rounds $R$; weights $(\alpha_T,\alpha_I,\alpha_L)$; thresholds
+$(\tau_{\rm src},\tau_{\rm tgt},\tau_{\rm low})$; smoothing $\beta$;
+temperature $\tau$
+\State For all $i\in[n]$: $\xi_i^{(0)}\!\sim\!\pi_{\theta_i}(\cdot\mid x)$ and $\rho_i^{(0)}\!\leftarrow\!0$ 
+% \hfill\Comment{Initialization}
+\For{$r=1,\ldots,R$}
+\State $\pi_r \sim Q_r(\cdot\mid s_r)$; $E^{(r)}\leftarrow E(\pi_r)$
+\State \Comment{softmax routing; reduces to argmax as $\tau\to0$}
+    %\State $\pi_r\leftarrow\operatorname*{arg\,max}_{\pi\in\mathcal{C}_r}S(E(\pi)\!\mid\!s_r)$;\;\,$E^{(r)}\!\leftarrow\!E(\pi_r)$
+    %\State \Comment{Adaptive Routing}
+    % \For{$(s,t)\!\in\! E^{(r)}$} 
+    % \State For $(s,t)\!\in\! E^{(r)}$: $m_{s\to t}^{(r)}\!\sim\!\pi_{\theta_s}(\cdot\mid x,\xi_t^{(r-1)},\xi_s^{(r-1)})$
+    \State For $(s,t)\!\in\! E^{(r)}$: $m_{s\to t}^{(r)} \sim \pi_{\theta_s}\big(\cdot \mid x,\xi_s^{(r-1)},\xi_t^{(r-1)}\big)$
+    \State \hfill\Comment{Critique}
+    % \EndFor
+    \State $\xi_t^{(r)}\!\sim\!\pi_{\theta_t}(\cdot\mid x,\xi_t^{(r-1)},\mathcal{I}_t^{(r)})$ for $t\in[n]$ 
+    \hfill\Comment{Revision}
+    \State $\rho_s^{(r)}\!\leftarrow\!\beta\rho_s^{(r-1)}\!+\!(1\!-\!\beta)a_s^{(r)}$ for $s\in[n]$ \hfill\Comment{Influence}
+\EndFor
+\State \Return $\hat{y}=\mathrm{Agg}\big(\{y_i^{(R)}\}_{i\in[n]}\big)$
+\end{algorithmic}
+\end{algorithm}
+ 
+\paragraph{Low-confidence filtering.}
+This component suppresses critique edges whose source is unreliable. For each source $s$, define a confidence penalty
+\begin{equation}
+    L(s)
+=
+\max\left\{0,\tau_{\rm low}+1-c_s^{(r-1)}\right\},
+    \label{eq:lcf}
+\end{equation}
+which equals zero whenever the source confidence exceeds the threshold $\tau_{\mathrm{low}}$ and grows linearly as confidence drops below it. We take $\tau_{\rm low}$ to be an integer threshold on the ordinal confidence
+scale. Since $c_s^{(r-1)}\in\{1,\ldots,5\}$, the penalty is zero exactly when
+$c_s^{(r-1)}\ge \tau_{\rm low}+1$, equivalently when
+$c_s^{(r-1)}>\tau_{\rm low}$.
+The normalized penalty rate is
+\begin{equation}
+    %\widetilde{L}(E)=\frac{1}{|E|\cdot\tau_{\mathrm{low}}}\sum_{(s,t)\in E}L(s)\in[0,1].
+        \widetilde L(E)
+=
+\frac{1}{m\tau_{\rm low}}
+\sum_{(s,t)\in E} L(s)
+\in[0,1].
+    \label{eq:lcf-rate}
+\end{equation}
+The denominator $\tau_{\rm low}$ is chosen because the maximum possible
+penalty is attained at minimum confidence $c_s=1$, where
+$L(s)=\tau_{\rm low}$.
+Unlike a confidence-maximizing rule, Equation~\eqref{eq:lcf} only penalizes \emph{low}-confidence sources and never rewards the highest-confidence one, consistent with the observation that confidence is informative as a filter but unreliable as a sole selector.
+ 
+\paragraph{Composite score and topology selection.}
+The state-conditioned routing score for candidate $\pi$ is the linear combination
+\begin{align}
+S\big(E(\pi)\,\big|\,s_r\big)
+&=
+\alpha_T\,\widetilde{T}\big(E(\pi)\big) \\
+&\quad
+-\alpha_I\,\widetilde{I}\big(E(\pi)\big)
+-\alpha_L\,\widetilde{L}\big(E(\pi)\big),\nonumber
+% \label{eq:composite-score}
+\end{align}
+with non-negative weights $(\alpha_T,\alpha_I,\alpha_L)$ that are held fixed across rounds. Given the composite scores $\{S(E(\pi)\mid s_r):\pi\in\mathcal{C}_r\}$, the router selects the round-$r$ assignment via the state-conditional distribution
+\begin{align}
+    Q_r(\pi\mid s_r)
+    &=
+    \frac{\exp\!\big(S(E(\pi)\mid s_r)/\tau\big)}
+         {\sum_{\pi'\in\mathcal{C}_r}\exp\!\big(S(E(\pi')\mid s_r)/\tau\big)},\notag\\
+    \pi_r &\sim Q_r(\cdot\mid s_r),
+\label{eq:softmax-selection}
+\end{align}
+with temperature $\tau$. Equation~\eqref{eq:softmax-selection} concentrates mass on the highest-scoring candidate while preserving a controllable degree of exploration over near-optimal candidates, and reduces to argmax selection as $\tau\!\to\!0$. The resulting round-$r$ topology is $G^{(r)}=G(\pi_r)$.
+
+\subsection{Critique \& Revision}
+\label{sec:method:critique}
+ 
+\paragraph{Critique generation.}
+For each directed edge $(s\!\to\!t)\in E^{(r)}$, the source agent reads the target's previous answer $y_t^{(r-1)}$, reasoning $r_t^{(r-1)}$, and confidence $c_t^{(r-1)}$, and emits a targeted critique conditioned on its own current state:
+\begin{equation*}
+    m_{s\to t}^{(r)}\sim\pi_{\theta_s}\big(\cdot\mid x,\,\xi_t^{(r-1)},\,\xi_s^{(r-1)}\big).
+\end{equation*}
+The critique format is unconstrained beyond requiring a verdict and a justification.
+ 
+\paragraph{Answer update.}
+Each target $t$ then revises its output given the incoming critique set $\mathcal{I}_t^{(r)}=\{m_{s\to t}^{(r)}:(s\!\to\!t)\in E^{(r)}\}$:
+\begin{align*}
+    \xi_t^{(r)}=&\big(y_t^{(r)},\,c_t^{(r)},\,r_t^{(r)}\big)\\
+    \sim&\pi_{\theta_t}\big(\cdot\mid x,\,\xi_t^{(r-1)},\,\mathcal{I}_t^{(r)}\big).
+\end{align*}
+In the same response, the target emits an \texttt{ACCEPT}/\texttt{REJECT} decision for each incoming critique; these decisions are recorded by the router and consumed in the next phase.
+ 
+\subsection{Influence Update}
+\label{sec:method:influence}
+ 
+After all agents have updated, the router computes the round-$r$ adoption rate of each source $s$,
+\begin{equation*}
+    a_s^{(r)}
+    =
+    \frac{\big|\{t:(s,t)\in E^{(r)},\;m_{s\to t}^{(r)}\text{ accepted}\}\big|}
+         {\max\big(1,\,d^{\mathrm{out}}_s(E^{(r)})\big)},
+\end{equation*}
+and refreshes the influence statistic with an exponential moving average:
+\begin{equation}
+    \rho_s^{(r)}=\beta\,\rho_s^{(r-1)}+(1-\beta)\,a_s^{(r)},
+    \label{eq:influence-update}
+\end{equation}
+with smoothing coefficient $\beta\in[0,1)$. The updated influence enters the routing score at round $r{+}1$ through Equation~\eqref{eq:influence-balancing}, closing the loop between past persuasion and future structural privilege.
+ 
+% \begin{algorithm}[t]
+% \caption{AR-MAD: Adaptive Routing Multi-Agent Debate}
+% \label{alg:armad}
+% \begin{algorithmic}[1]
+% \Require Input $x$; agents $\{\pi_{\theta_i}\}_{i=1}^{n}$; base $k$-regular role graph $G_0$; rounds $R$; weights $(\alpha_T,\alpha_I,\alpha_L)$; thresholds $(\tau_{\mathrm{src}},\tau_{\mathrm{tgt}},\tau_{\mathrm{low}})$; softmax temperature $\tau$; smoothing $\beta$; candidate budget $M$; aggregation rule $\mathrm{Agg}$
+% \State \textbf{Initialization:}
+% \For{$i=1,\ldots,n$}
+%     \State $\xi_i^{(0)}\sim\pi_{\theta_i}(\cdot\mid x)$;\quad $\rho_i^{(0)}\leftarrow 0$
+% \EndFor
+% \State Initialize transcript $h\leftarrow\{(i,\xi_i^{(0)})\}_{i\in[n]}$
+% \For{$r=1,\ldots,R$}
+%     \State \textbf{Adaptive Routing:}
+%     \State Build candidate pool $\mathcal{C}_r=\{\pi^{(1)},\ldots,\pi^{(M)}\}\subseteq S_n$ with distinct edge sets $E(\pi^{(m)})$
+%     \For{$m=1,\ldots,M$}
+%         \State Compute $\widetilde{T},\widetilde{I},\widetilde{L}$ for $E(\pi^{(m)})$ \Comment{Eqs.~\eqref{eq:targeted-diversity-rate}--\eqref{eq:lcf-rate}}
+%         \State $S^{(m)}\leftarrow\alpha_T\widetilde{T}-\alpha_I\widetilde{I}-\alpha_L\widetilde{L}$ \Comment{Eq.~\eqref{eq:composite-score}}
+%     \EndFor
+%     \State Select $\pi_r\sim\mathrm{Softmax}_{\tau}\big(\{S^{(m)}\}_{m=1}^{M}\big)$;\quad $G^{(r)}\leftarrow G(\pi_r)$ \Comment{Eq.~\eqref{eq:softmax-selection}}
+%     \State \textbf{Critique \& Revision:}
+%     \For{each edge $(s,t)\in E^{(r)}$}
+%         \State $m_{s\to t}^{(r)}\sim\pi_{\theta_s}(\cdot\mid x,\xi_t^{(r-1)},\xi_s^{(r-1)})$
+%     \EndFor
+%     \For{$t=1,\ldots,n$}
+%         \State $\mathcal{I}_t^{(r)}\leftarrow\{m_{s\to t}^{(r)}:(s,t)\in E^{(r)}\}$
+%         \State $\xi_t^{(r)}\sim\pi_{\theta_t}(\cdot\mid x,\xi_t^{(r-1)},\mathcal{I}_t^{(r)})$;\quad record accept/reject decisions
+%         \State $h\leftarrow h\Vert(t,\xi_t^{(r)})$
+%     \EndFor
+%     \State \textbf{Influence Update:}
+%     \For{$s=1,\ldots,n$}
+%         \State $\rho_s^{(r)}\leftarrow\beta\rho_s^{(r-1)}+(1-\beta)a_s^{(r)}$ \Comment{Eq.~\eqref{eq:influence-update}}
+%     \EndFor
+% \EndFor
+% \State \Return $\hat{y}=\mathrm{Agg}\big(\{y_i^{(R)}\}_{i\in[n]}\big)$
+% \end{algorithmic}
+% \end{algorithm}

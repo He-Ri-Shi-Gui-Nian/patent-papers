@@ -1,0 +1,36 @@
+\section{Preliminaries}
+\label{sec:background}
+\subsection{Multi-Agent LLMs}
+We consider a cooperative multi-agent LLM system consisting of $K$ distinct LLM agents ${\pi_{\theta_1}, \pi_{\theta_2}, \dots, \pi_{\theta_K}}$, each parameterized by its own LLM weights $\theta_k$. The agents jointly engage in solving complex tasks sampled from a distribution $x\in p(X)$. Each full interaction process (trajectory) produces a single outcome reward $R \in \mathbb{R}$ to indicate success or failure. During task completion, the agents’ joint interaction unfolds as a trajectory $\bm{\tau} = \{(\bm{s}_1, \bm{a}_1, k_1), (\bm{s}_2, \bm{a}_2, k_2), \dots, (\bm{s}_T, \bm{a}_T, k_T)\}$, where $\bm{s}_t$ denotes the conversational or contextual state (e.g., dialogue history, task prompt, or shared memory) at execution step $t$, $\bm{a}_t$ is the text output produced, and $k_t \in {1,\dots,K}$ denotes which LLM agent was active at step $t$. The active agent can change dynamically across the trajectory, for instance, in a hierarchical multi-agent framework, a high-level planner LLM may decide which sub-agent executes at each step. Hence, the index $k_t$ explicitly denotes the identity of the agent executing at each step. The execution LLM agent $k_t$ generates its output based on its policy $a_t \sim \pi_{\theta_{k_t}}(\cdot \mid s_t)$. Depending on the system design, the agents may share parameters (i.e., $\theta_1 = \dots = \theta_K$) , differing in role-specific prompts, enabling efficient adaptation under a unified LLM, or they may maintain distinct parameters ($\theta_i \neq \theta_j$) to specialize in heterogeneous sub-tasks, allowing diverse reasoning capabilities across agents.
+
+\subsection{Group Relative Policy Optimization}
+Group-based RL methods like Group Relative Policy Optimization (GRPO)~\citep{shao2024deepseekmath} optimize policies by comparing multiple rollouts generated from the same task instruction and normalizing their rewards within each group, thereby avoiding explicit value-function estimation. 
+Formally, given a task instruction $x$, the multi-agent LLM system samples a set of $N$ trajectories
+\begin{equation}
+    \{\tau^i = (s_1^i, a_1^i, k_1^i, \dots, s_{T_i}^i, a_{T_i}^i, k_{T_i}^i)\}_{i=1}^N,
+\end{equation}
+where $k_t^i \in \{1,\dots,K\}$ denotes the active agent at step $t$ of trajectory $i$.  
+Each trajectory $\tau^i$ receives a scalar terminal reward $R^i = R(\tau^i) \in \mathbb{R}$ that measures the overall quality of the generated outcome. 
+The normalized advantage for each trajectory is computed using the group’s mean and standard deviation:
+\begin{equation}
+    A^i_{\text{global}} = \frac{R^i - \mu}{\sigma}, 
+    \quad 
+    \mu = \frac{1}{N}\sum\nolimits_{i=1}^N R^i, 
+    \quad 
+    \sigma^2 = \frac{1}{N}\sum\nolimits_{i=1}^N (R^i - \mu)^2.
+\end{equation}
+This advantage is then propagated to all agent outputs that contributed to the trajectory. Formally, we define the set of outputs of agent $k$ as $\mathcal{Y}_k = \{a_t^i \mid k_t^i = k\}$, i.e., the collection of all time steps $(i,t)$ across the group at which agent $k$ produces an action. Notably, agents are often invoked at different frequencies, which results in varying sample sizes $|\mathcal{Y}_k|$.
+The RL objective for agent $k$ is then given by
+\begin{equation}
+    \mathcal{J}_k(\theta_k)
+    = \mathbb{E}_{x\sim p(x)}\left[
+      \frac{1}{|\mathcal{Y}_k|}
+      \sum_{\bm{a}_t^i\in \mathcal{Y}_k}
+      \min\Bigl(
+        \rho_{\theta_k}(\bm{a}_t^{i}) A^i_{\text{global}},
+        \,
+        \text{clip}\bigl(\rho_{\theta_k}(\bm{a}_t^{i}), 1 \pm \epsilon\bigr) A^i_{\text{global}}
+      \Bigr)
+    \right],
+\end{equation}
+where $\rho_{\theta_k}(\bm{a}_t^{i}) = \frac{\pi_{\theta_k}(\bm{a}_t^{i} \mid \bm{s}_t^{i})}{\pi_{{\theta_k}^{\text{old}}}(\bm{a}_t^i \mid \bm{s}_t^i)}$ is the importance sampling ratio. Here, we omit the KL-divergence regularization for notational brevity.

@@ -1,0 +1,129 @@
+\section{Methodology}
+\label{main_method}
+In this section, we introduce the overall framework of our CortexDebate. As shown in Figure~\ref{cortex} and Algorithm~\ref{alg:1}, CortexDebate operates in three phases, including \textit{initial answer generation}, \textit{multi-round debate}, and \textit{final answer generation}. Unlike existing MAD methods that establish fully-connected and fixed graphs among LLM agents, our CortexDebate establishes a sparse and dynamic graph, where each LLM agent selectively debates with those that can contribute to its improvement. Besides, CortexDebate evaluates the performance of LLM agents and their usefulness to their debating components, enabling credible graph optimization.
+
+\subsection{Phase 1: Initial Answer Generation}
+\label{phase_1}
+When given a problem $Q$, CortexDebate allows each LLM agent $A_{i}$ to independently generate an initial output $O_{i}^{0}$ and a self-confidence score $H_{i}^{0}$ (see Appendix~\ref{appendix_prompt_cortexdebate} for the specific prompt). To mitigate overconfidence, CortexDebate adopts a recalibration strategy, which has been proven to be effective in prior works~\cite{chen2023reconcile}. Our strategy can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+  \label{recalibrate}
+  H_{i}^{0} = \left\{\begin{matrix}0.8,
+  &H_{i}^{0}\ge 0.8 \\0.6,
+  &0.6\le H_{i}^{0}< 0.8 \\H_{i}^{0},
+  &0.3\le H_{i}^{0}< 0.6 \\0.3,
+  &H_{i}^{0}< 0.3
+\end{matrix}\right..
+\end{equation}
+
+\subsection{Phase 2: Multi-round Debate}
+\label{phase_2}
+CortexDebate then comes into a debate phase, where the set of agents $\left \{A_{i} \right \}$ engage in $D$ rounds of debate. In the $d$-th debating round, CortexDebate comprises four steps, including \textit{edge weight optimization}, \textit{sparse graph establishment}, \textit{answer regeneration}, and \textit{debate termination}.
+
+\textbf{Step 1: Edge Weight Optimization.} As the description of Equation~\eqref{MTF}, MDM calculates the edge weights based on four aspects, including \textit{credibility}, \textit{reliability}, \textit{intimacy}, and \textit{self-orientation}. Following the definition for each aspect in the context of MAD in Section~\ref{mckinsey_trust_formula}, the specific calculation of each aspect will be given next.
+
+For $E_{i\to j}$, since the scaling law for LLM agents~\cite{hoffmann2022training} can evaluate abilities of one LLM agent, we use it to calculate credibility $C_{d}$, which can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{3}
+  \mathcal{L}\left ( N,M \right ) = \frac{406.4}{N^{0.34} } +  \frac{410.7}{M^{0.28} }+  1.69, 
+\end{equation}
+\noindent where $N$, $M$, and $\mathcal{L}$ denote the parameter number, the token number of pre-training data, and the pre-training loss of one model, respectively. A smaller loss value indicates better model abilities, and thus $C_{d}$ is expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{4}
+  C_{d} = \frac{1}{\mathcal{L}\left ( N,M \right )}. 
+\end{equation}
+
+For reliability $R_{d}$ which represents the average confidence score of $A_{i}$ in its own answers in the preceding $d-1$ rounds, its calculation can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{5}
+  R_{d} = \frac{R_{d-1} \times (d-1)+  H_{i}^{d-1}}{d}.
+\end{equation}
+
+For intimacy $I_{d}$, which represents the average degree of difference in viewpoints between $A_{i}$ and $A_{j}$ in the preceding $d-1$ rounds, MDM first uses cosine similarity to calculate the textual similarity between $O_{i}^{d-1}$ and $O_{j}^{d-1}$. Subsequently, CortexDebate calculates the average viewpoint similarity between $A_{i}$ and $A_{j}$ in the preceding $d-1$ rounds, $\textit{i.e.}$, $\overline{{Sim}}_{d}$, as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{6}
+  \overline{{Sim}}_{d} \! \! = \!\! \frac{\overline{{Sim}}_{d-1} \!\! \times \!\! (d\!-\!1) \!\! + \!\! cos(O_{i}^{d-1} \! , \! O_{j}^{d-1})}{d},
+\end{equation}
+where $cos(a,b)$ calculates cosine similarity between $a$ and $b$. Since $I_{d}$ represents the average degree of difference, it is calculated as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{7}
+  I_{d} = 1-\overline{{Sim}}_{d}.
+\end{equation}
+
+For self-orientation $S_{d}$, based on the fact that less group participation indicates that one is more selfish, the MDM module uses the number of times that $A_{i}$ has debated with other LLM agents in the preceding $d-1$ rounds, denoted as $P_{d}$, to indirectly reflect self-orientation. The calculation can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{8}
+  S_{d}=(d-1) \times (n-1) - P_{d},
+\end{equation}
+\noindent where $(d-1) \times (n-1)$ denotes the maximum number of times that one LLM agent can debate with others in the preceding $d-1$ rounds.
+
+Therefore, following Equation~\eqref{MTF}, the weight of edge $E_{i\to j}$ can be calculated as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{9}
+  W_{i\to j}^{d}= \frac{C_{d}\times R_{d}\times I_{d}}{S_{d}}.
+\end{equation}
+
+\textbf{Step 2: Sparse Graph Establishment.} For $A_{j}$, it can debate with the other $n-1$ LLM agents. In other words, there are $n-1$ directed edges pointing to it, with $A_{j}$ as the tail node. CortexDebate determines the set of debating opponents for $A_{j}$ according to the weights of these edges $\left \{ W_{i\to j}^{d}  \right \}_{i=1, \ i \ne j}^{n}$.
+
+Firstly, the average weight of these edges, $\textit{i.e.}$, $\overline{{W }}_{j}^{d}$, is calculated as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{10}
+  \overline{{W }}_{j}^{d} = \frac{1}{n-1} {\textstyle \sum_{i(i\ne j)}^{} W_{i\to j}^{d}}.
+\end{equation}
+
+Secondly, the edges with weights below $\overline{{W_{j}^{d} }}$ are removed, resulting in a sparse debating graph. The process can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{11}
+  W_{i\to j}^{d} = \left\{\begin{matrix}1,
+  & W_{i\to j}\ge  \overline{{W }}_{j}^{d} \\0,
+  & W_{i\to j}<   \overline{{W }}_{j}^{d}
+\end{matrix}\right..
+\end{equation}
+Therefore, the debating opponents for $A_{j}$, denoted as $Deb_{j}$, can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{12}
+  Deb_{j}^{d} = \left \{ A_{i}\mid W_{i\to j}^{d}= 1, i\ne j \right \}.
+\end{equation}
+
+\textbf{Step 3: Answer Regeneration.} For LLM agent $A_{j}$, it receives the answers of the LLM agents in $Deb_{j}^{d}$, which are generated in the $(d-1)$-th debating round. Afterwards, $A_{j}$ needs to read and scrutinize these answers, and generate its new answer $O_{j}^{d}$ and self-confidence score $H_{j}^{d}$. The input prompt can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+\label{13}
+  Prompt_{j}^{d} = \left [ Ins,Q,\left \{ O_{k}^{d-1} \right \}  \right ],
+\end{equation}
+\noindent where $Ins$ denotes the instruction that stimulates $A_{j}$ to regenerate its answer and $\left \{ O_{k}^{d-1} \right \}$ denotes the set of answers that $A_{j}$ receives. The specific prompt is shown in Appendix~\ref{appendix_prompt_cortexdebate}.
+
+\textbf{Step 4: Debate Termination.} After all the LLM agents have generated their answers, CortexDebate checks whether all the LLM agents reach a consensus (\textit{i.e.}, all the LLM agents agree on the same answer) or the debate reaches the maximum rounds. If so, the whole debating process concludes immediately.
+
+\subsection{Phase 3: Final Answer Generation}
+
+Once the entire debating process concludes, CortexDebate generates the final answer to the question by majority voting among all the answers generated in the last debating round, which can be expressed as:
+\begin{equation}
+\setlength{\abovedisplayskip}{1mm}
+\setlength{\belowdisplayskip}{1mm}
+  \label{14}
+  O_{final} =   \mathop{\arg\max }\limits_{o} \sum_{i}^{} \mathbbm{1} \left ( O_{i} = o \right ),
+\end{equation}
+\noindent where $o$ denotes a distinct answer generated by any of the LLM agents. If all the generated answers are different after debates, we treat the final result as incorrect. By excluding fallback strategies, we can clearly attribute the observed performance solely to the debate mechanism itself.

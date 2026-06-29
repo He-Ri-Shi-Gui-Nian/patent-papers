@@ -1,0 +1,50 @@
+\section{Preliminaries}
+\label{preliminaries}
+
+\paragraph{Multi-Agent Debate.}
+We formulate the debate process as an iterative consensus-seeking mechanism among a set of $N$ language model agents, denoted by $\Pi = \{\pi_1, \dots, \pi_N\}$. Let $\mathcal{Q}$ represent the input space and $\mathcal{O}$ the output space. Each agent $\pi_i$ generates an independent response $o_{i,0} \sim \pi_i(q)$ for a given input $q \in \mathcal{Q}$.
+
+In the \textit{Majority Voting} setting~\cite{zhao2025surveylargelanguagemodels}, these independent outputs are immediately aggregated via a voting function $\mathcal{V}: \mathcal{O}^N \rightarrow \mathcal{O}$ to produce the final prediction:
+\begin{equation}
+    o_0 = \mathcal{V}(o_{1,0}, \dots, o_{N,0}).
+\end{equation}
+Multi-Agent Debate (MAD) extends this static ensemble approach by introducing a $T$ round communication framework. Under the simultaneous-talk protocol~\cite{chan2023chateval,choi2025debate}, agents update their beliefs in parallel over discrete rounds $t \in \{1, \dots, T\}$. At step $t$, agent $\pi_i$ conditions its update on the set of peer responses generated in the previous round, formally defined as:
+\begin{equation}
+    \mathcal{O}_i^{(t-1)} = \{ o_{j,t-1} \mid j \in \mathcal{N}(i) \}.
+\end{equation}
+where $\mathcal{N}(i) \subseteq \{1, \dots, N\}$ denotes the neighborhood observable to agent $\pi_i$, including itself. The agent then refines its answer using a debate protocol $\mathcal{D}$, which integrates the original query $q$ and the peer context $\mathcal{O}_i^{(t-1)}$ to produce the updated response:
+\begin{equation}
+    o_{i,t} = \mathcal{D}\left(q; \mathcal{O}_i^{(t-1)}\right).
+\end{equation}
+This iterative refinement can be viewed as a functional composition over $T$ rounds. The state of agent $\pi_i$ at the final round is expressed as:
+\begin{equation}
+    o_{i,T} = (\mathcal{D} \circ \dots \circ \mathcal{D})(q; \mathcal{O}_i) = \mathcal{D}^{(T)}(q; \mathcal{O}_i).
+\end{equation}
+Finally, the system-level output is derived by aggregating the refined responses from the terminal state:
+\begin{equation}
+    o_T = \mathcal{V}(o_{1,T}, \dots, o_{N,T}).
+\end{equation}
+Following previous works~\cite{choi2025debate,yi2025debate}, we focus on homogeneous agent settings, where all $\pi_i$ share identical architectures.
+
+
+\paragraph{Reinforcement Learning.}
+To eschew the computational overhead of a separate critic network, we adopt the Group Relative Policy Optimization (GRPO) framework~\citep{shao2024deepseekmath,guo2025deepseek}. For a specific query $q$, the behavior policy $\pi_{\theta_\text{old}}$ samples a group of $G$ responses $\{o_i\}_{i=1}^G$. The advantage for the $i$-th response is estimated by normalizing the reward $r_i$ against the group statistics:
+\begin{equation}
+\label{eq:advantage}
+\hat{A}_{i,t} = \frac{r_i - \text{mean}(\{r_i\}_{i=1}^G)}{\text{std}(\{r_i\}_{i=1}^G)}.
+\end{equation}
+Building on this, we employ Decoupled Clip and Dynamic sAmpling Policy Optimization (DAPO)~\citep{yu2025dapo} to stabilize updates for long chain-of-thought reasoning. DAPO mitigates entropy collapse and reward noise through asymmetric clipping and dynamic sampling constraints. The policy is optimized via the following token-level gradient objective:
+{\small
+\begin{equation}
+\begin{aligned}
+\mathcal{J}_{\text{DAPO}}(\theta) =\quad& \mathbb{E}_{(q,o^*)\sim \mathcal{Q}, \{o_i\}_{i=1}^G\sim \pi_{\theta_\text{old}}(\cdot\mid q)}
+\Bigg[\frac{1}{\sum_{i=1}^{G}|o_i|}\sum_{i=1}^{G}\sum_{t=1}^{|o_i|} \\
+&\hspace{-4em} \min \Big( r_{i,t}(\theta) \hat{A}_{i,t},  
+\ \text{clip} \Big( r_{i,t}(\theta), 1 - {\varepsilon_{\text{low}}}, 1 + {\varepsilon_{\text{high}}} \Big) \hat{A}_{i,t} \Big) \Bigg]
+\\
+\text{s.t.}\quad& 0< \Big|\{o_i\mid\texttt{is\_equivalent}(o^*,o_i)\}\Big|< G,
+\label{eq:dapoloss}
+\end{aligned}
+\end{equation}
+}
+where $r_{i,t}(\theta)=\frac{\pi_{\theta}(o_{i,t} \mid q, o_{i,<t})}{\pi_{\theta_{\text{old}}}(o_{i,t} \mid q,o_{i,<t})}$ is the importance ratio, and $o^*$ denotes the ground-truth answer.

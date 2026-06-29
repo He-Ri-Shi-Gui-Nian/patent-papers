@@ -1,0 +1,174 @@
+\newpage
+
+\appendix
+\section{Theoretical Analysis}
+\label{app:theory}
+\subsection{Formal Setup}
+Let $q \in \mathcal{Q}$ denote an input query, $\mathcal{E}$ the experience library, $\mathcal{N}$ the agent pool, $\Gamma$ an agent topology specifying the agent sequence, orders, and dependencies, and $\tau$ an execution trajectory. The orchestrator induces a policy to obtain an interaction topology:
+\[
+\Gamma \sim \pi_{\theta}(\cdot \mid q, \mathcal{E}, \mathcal{N}).
+\]
+
+\subsection{Policy Iteration}
+\hero admits a rigorous interpretation as gradient-free policy iteration over the structured space $\Gamma$. Each iteration $t$ comprises two steps:
+
+\paragraph{\textbf{Policy Evaluation.}}
+A group of rollouts/topologies is sampled from the current policy $\pi_{\mathcal{O}}$ and executed to obtain trajectories and rewards. This constitutes an empirical Monte Carlo estimate of the value function under the current policy. 
+
+\paragraph{\textbf{Policy Improvement.}}
+Group-relative semantic advantages are obtained by reflecting on and comparing high-reward trajectories with failed trajectories. These insights are distilled and incorporated into the experience library $\mathcal{E}$:
+\[
+\mathcal{E}^(t+1) \gets \text{Distill}\left(\{(\Gamma_{i}, \tau_i) : R_i > \bar{R}\}\right)
+\] where $\bar{R}$ is the semantic baseline. 
+
+This updated experience library  modifies the conditioning context, which in turn reshapes the induced distribution: 
+\[
+\pi_{\pi_\mathcal{O}}\bigl(\Gamma \mid q, \mathcal{E}^{(t+1)}, \mathcal{N}\bigr)
+\] without updating $\pi_\mathcal{O}$.
+
+\subsection{EM Interpretation}
+\hero exhibits an iterative structure analogous to Expectation-Maximization. 
+
+The agent topology $\Gamma$ as a latent variable, the query $q$ as observed input, and the reward $R(\tau)$ as a proxy for an implicit likelihood. The iterative procedure then resembles:
+
+\medskip
+\noindent\textbf{1. E-step (Implicit)}: Sampling 
+\[
+\Gamma_{i} \sim {\pi_\mathcal{O}}(\cdot \mid q, \mathcal{E}^{(t)}, \mathcal{N})
+\] 
+and selecting high-reward topologies induces an approximate posterior over effective reasoning programs:
+\[
+\mathcal{P}^{(t)}(\Gamma) \approx 
+\frac{\pi_{\mathcal{O}}(\cdot \mid q, \mathcal{E}^{(t)}, \mathcal{N}) \cdot \mathbf{}[R(\tau_i) > \bar{R}]}%
+{\sum_{\Gamma'} \pi_{\theta_o}(\Gamma' \mid q, \mathcal{E}^{(t)}, \mathcal{N})) \cdot \mathbf{1}[R(\tau_{\Gamma'}) > \bar{R}]}
+\]
+This represents a reward-filtered empirical distribution instead of a properly normalized probabilistic posterior.
+
+\noindent\textbf{M-step(Implicit)}:instead of maximizing
+\[
+\mathbb{E}_{\mathcal{P}^{(t)}(S)} \Bigl[ \log p\bigl(y \mid q, \Gamma; \pi_{\mathcal{o}} \bigr) \Bigr]
+\]
+over parameters $\pi_{\mathcal{O}}$, \hero performs a non-parametric update:
+\[
+\mathcal{E}^{(t+1)} \leftarrow 
+\arg\max_{\mathcal{E}} \, 
+\mathbb{E}_{\mathcal{P}^{(t)}(\Gamma)} \bigl[\log \pi_{\theta_\mathcal{O}}(\Gamma \mid q, \mathcal{E}, \mathcal{N})\bigr]
+\]
+which implicitly increases the probability mass on high-performing structures by enriching the conditioning context (experience library).
+$R(\tau)$ here serves as a heuristic surrogate rather than a proper probabilistic objective.
+
+
+\subsection{Energy-Based Reweighting and Implicit KL Regularisation}
+
+The frozen base model $\pi_{\mathcal{O}}$ provides implicit regularisation. As policy updates are mediated through the contextual augmentation $\mathcal{E}$ instead of modifying parameters, the resulting policy can be viewed as an energy-based reweighting of the base distribution:
+
+\[
+\pi_{\text{new}}(\Gamma \mid q) \propto \pi_{\text{base}}(\Gamma \mid q) \cdot \exp\bigl(f_{\mathcal{E}}(\Gamma, q)\bigr),
+\]
+
+where $f_{\mathcal{E}}(\Gamma, q)$ denotes the log-ratio bias introduced by the experience library. This formulation is structurally equivalent to the optimal solution of the KL-constrained policy optimisation problem:
+
+\[
+\max_{\pi} \, \mathbb{E}_{\pi}[f_{\mathcal{E}}(\Gamma, q)] - \beta \cdot D_{\mathrm{KL}}\bigl(\pi \,\|\, \pi_{\text{base}}\bigr),
+\]
+
+whose closed-form solution is precisely
+
+\[
+\pi^*(\Gamma \mid q) \propto \pi_{\text{base}}(S \mid q) \cdot \exp\Bigl(\frac{f_{\mathcal{E}}(\Gamma, q)}{\beta}\Bigr).
+\]
+
+The frozen base model therefore serves as an implicit KL anchor, preventing policy collapse and ensuring that the updated distribution stays within the support of the original model. This stability property is absent in unconstrained policy gradient methods, where aggressive updates can destabilise the base distribution.
+\newpage
+\section{Prompts used for \hero}
+\label{app:promptt}
+\input{app_prompts}
+
+\section{Datasets}
+\label{app:dataset}
+We use the following datasets in our experiments: 
+1. 2WikiMultihopQA \citep{ho-etal-2020-constructing}: a multi-hop QA dataset that constructs questions using both Wikipedia text and structured Wikidata, explicitly providing annotated reasoning paths (evidence chains) to ensure and evaluate true multi-step reasoning across multiple documents.
+
+2. HotPotQA \citep{yang2018hotpotqa}: a multi-hop QA dataset built from Wikipedia that requires models to reason over multiple documents while providing sentence-level supporting facts to enable explainable answer prediction
+
+3. Bamboogle \citep{press-etal-2023-measuring}: a small, manually constructed QA dataset of 125 challenging real-world multi-hop questions designed such that answers cannot be directly retrieved from search engines, requiring compositional reasoning across multiple pieces of evidence.
+
+4. MusiQue \citep{trivedi2021musique}: a multi-hop QA dataset constructed by composing connected single-hop questions into 2–4 hop reasoning chains, explicitly designed to enforce genuine multi-step reasoning and reduce shortcut-based answering.
+
+5. HoVer \citep{jiang2020hover}: a multi-hop fact verification dataset built from Wikipedia where models must retrieve evidence across 2–4 documents and determine whether a claim is supported or not, emphasizing complex many-hop reasoning and evidence extraction. 
+
+6. Ambig\_QA \citep{min-etal-2020-ambigqa}: an open-domain QA dataset derived from NQ-open that focuses on ambiguous questions, requiring models to generate all plausible answers along with corresponding disambiguated question rewrites to explicitly resolve ambiguity.
+
+\vspace{10pt}
+\begin{table}[h]
+\centering
+\caption{Statistics of datasets.}
+\label{tab:dataset_stats}
+\begin{tabularx}{\columnwidth}{lccccX}
+\toprule
+\textbf{Dataset} & \textbf{Train} & \textbf{Val} & \textbf{Test} & \textbf{Total} & \textbf{Reasoning} \\
+\midrule
+2WikiQA & 154K & 16K & 22K & 192K & 2-hop (cross-doc) \\
+HotpotQA        & 90K  & 7.4K & 7.4K & 105K & 2-hop (bridge/comp) \\
+MuSiQue         & 19K  & 2.4K & 2.4K & 24K  & 2--4 hop (compositional) \\
+Bamboogle       & --   & --   & 125  & 125  & Multi-hop (adversarial) \\
+HoVer           & 13K  & 1.8K & 2.7K & 18K  & 2--4 hop (verification) \\
+AmbigQA         & 10K  & 2K   & 2K   & 14K  & Ambiguity resolution \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+
+\section{Construction of Training Sets}
+\label{app:training_set}
+
+
+\subsection{Question Types}
+In this work, we categorize questions into seven types based on the reasoning complexity they require. 
+\begin{itemize}
+    \item \textit{Bridge multi-hop} questions involve a sequential dependency through an intermediate entity, for example, ``Which university did the author of \textit{The Old Man and the Sea} attend?''.
+    \item  \textit{Intersection multi-hop} questions require answers that satisfy multiple independent constraints, such as ``Which scientists won a Nobel Prize and later served as a university president?''.
+    \item \textit{Comparison multi-hop} questions compare attributes across entities after retrieval, exemplified by ``Who was born earlier, Marie Curie or Albert Einstein?''.
+    \item \textit{Temporal multi-hop} questions necessitate reasoning over time ordering or temporal containment, for instance, ``Who was president of the U.S. when the Berlin Wall fell?''.
+    \item \textit{Causal multi-hop} questions involve explaining cause–effect chains across events, as in ``Why did the 2008 financial crisis lead to increased banking regulation?''. 
+    \item \textit{Ambiguous} questions are those with multiple plausible interpretations, such as ``When did the Manhattan Project begin and end?''. This taxonomy allows us to analyze reasoning strategies across diverse question structures.
+
+\end{itemize}
+
+\subsection{Distribution}
+\input{fig_pie}
+
+\section{Baselines and Implementation Details}
+\label{app:baselin_model}
+We standardize decoding and prompting across baselines to ensure fair comparison. For LLMs Qwen-3-4B, 8B, and 14B \citep{yang2025qwen3}, Qwen2.5-Instruct-7B \citep{hui2024qwen2}, LLaMA3.1-8B \citep{grattafiori2024llama}, and GPT-4o-mini \citep{hurst2024gpt}, we follow official guidance. We set $temperature = 0.6, top-p = 0.95, top-k = 20, and min-p = 0$. 
+
+
+\section{Additional Experiment Results}
+
+\subsection{Comparison \hero with Direct inference and CoT}
+\label{app:additional_res_direct}
+\input{mian_direct}
+
+\subsection{Ablation Studies Using \llama as the Backbone for \hero}
+\label{app: ablte_llama}
+\input{fig_ablation_llama}
+
+
+
+
+
+\section{Pseudocode}
+\label{app:pseducode}
+
+The pseudocode for the proposed \hero{} is presented below.
+\input{pseducode}
+
+
+
+
+\input{app_case_study}
+
+
+
+
+

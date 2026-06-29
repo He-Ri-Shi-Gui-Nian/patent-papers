@@ -1,0 +1,85 @@
+\vspace{-5pt}
+\section{Preliminary and Problem Statement}
+\vspace{-2pt}
+\label{sec:probelm_formulate}
+We study the problem of dual-level evolution in multi-agent RAG for knowledge-intensive tasks. Let $\mathcal{Q}$ denote a distribution over queries, $\mathcal{Y}$ the answer space, and $\mathcal{D}$ a corpus (\eg Wikipedia) providing supporting information. We formalize a whole system as a tuple:
+\[\mathcal{R}=\langle \mathcal{O},\mathcal{N}, \mathcal{L},  \mathcal{T}, \mathcal{E}, \mathcal{A}, \mathcal{S}, \Psi, \tau,  \mathcal{Q}, \mathcal{Y}, \mathcal{D} \rangle \] where $\mathcal{O}$ is a central orchestrator, $\mathcal{N}$ is a set of specialized agents, $\mathcal{E}$ is an experience library, $\mathcal{S}$ is the state space, and $\mathcal{A}$ is the action space. Each agent $\mathcal{N}_i$ is abstracted as a tuple $(\pi_i, \rho_i, \mathcal{T}_i)$, where $\pi_i \in \mathcal{L}$ is the underlying LLM, $\rho_i$ is a role-specific prompt, and $\mathcal{T}i$ denotes the tools available to the agent. The overall action space $\mathcal{A}$ includes both reasoning operations and tool invocations. The system evolves according to the transition dynamics $\Psi(s_{t+1} \mid s_t, a_t)$, and agent executions produce trajectories $\tau = (s_0, a_0, s_1, a_1, \dots, s_T)$.
+
+Given a query $q$, the orchestrator produces a multi-agent interaction topology conditioning on the experience library: $\Gamma\sim\pi_{\mathcal{O}}(\cdot|q, \mathcal{E}, \mathcal{N})$, where $\Gamma$ specifies the subset of agents, their execution order (sequential or parallel), and dependency. Agents execute according to $\Gamma$, producing a trajectory $\tau$, and the final answer $y \in \mathcal{Y}$ is synthesized from the information aggregated along the trajectory, typically based on the terminal state $s_T$.
+
+Our goal is to jointly optimize the orchestration policy $\pi_{\mathcal{O}}$ and role-specific prompts ${\rho_i}$ while keeping the underlying LLM parameters ${\pi_i}$ frozen.
+
+\vspace{-7pt}
+\section{\hero: \texorpdfstring{\underline{H}ierarchical \underline{E}volution of Multi-agent \underline{RA}G}{Hierarchical Evolution of Multi-agent RAG}}
+\label{sec:hero}
+\vspace{-8pt}
+\input{fig_hera}
+\hero jointly evolves global orchestration and agent prompts through experience and reflection. As shown in Figure \ref{fig:hera}, it comprises three layers, each corresponding to a different level of optimization: the \textit{global orchestrator} optimizes high-level coordination strategies, the \textit{experience library} accumulates and refines trajectory-level knowledge to guide learning, and the \textit{execution agents} optimize role-specific performance through prompt evolution, per their operational roles and behavioral principles. 
+
+\subsection{Orchestrator: Structure-Level Policy Optimization}
+\label{sec:orchestrator_opt}
+
+
+The orchestrator's optimization is inspired by Group Relative Policy Optimization (GRPO) \citep{shao2024deepseekmath, cai2025training}, which updates a policy by comparing sampled actions within a group. Unlike the training-free GRPO \citep{cai2025training}, we extend the idea beyond token-level generation, lifting optimization \textit{from token generation to cooperation topology}. Operating over a structured action space of agent topologies $\Gamma$, the orchestrator performs group-based optimization at the level of global strategy. Given a query $q$, it samples a group of candidate agent sequences. Each sequence is executed by invoking the corresponding agents, producing a trajectory $\tau_{i}$, which is subsequently evaluated to obtain a reward. Instead of relying on scalar advantages, we adopt a hierarchical comparison: trajectories are first ranked by downstream task performance (\eg, F1 score), and then by efficiency, measured as the total number of input and output tokens consumed across all agents. The orchestrator is then prompted to articulate the reasons for relative success and failure across the group, producing a set of natural language insights $\mathcal{I} = \pi_{\mathcal{O}}(\{\tau_i\}_{i=1}^G)$. To improve diagnostic precision, we focus on groups explicitly containing both successful and failed.
+trajectories. 
+ which serve as group-relative semantic advantages. These semantic advantages encode structured knowledge about effective reasoning strategies, agent interactions, and failure modes, effectively replacing numerical gradients with interpretable and compositional signals. As such, the orchestrator governs high-level structure and coordination (macro) instead of the fine-grained textual outputs (micro). These insights, curated through selective consolidation, form the core of the experience library (\S \ref{sec:exlib}).  
+
+\vspace{-13pt}
+\subsection{Experience Library}
+\vspace{-6pt}
+\label{sec:exlib}
+Storing distilled experience as retrievable in-context demonstrations has been shown to effectively shape future behavior \citep{zhao2024expel, ouyang2025reasoningbank, xu2025mem}. Building on this principle, \hero employs an Experience Library $\mathcal{E}$, which accumulates semantic advantages derived from reflective comparisons of successful and failed trajectories, serving as both an episodic memory and an optimization medium for the orchestrator.
+
+$\mathcal{E}$ is charatcerized with a \textit{Profile–Insight–Utility} structure $(c, z, u)$, where $c$ denotes the \textit{query characteristics or types}, $z$ is the natural language \textit{insight}, and $u$ represents the \textit{utility}, measuring the empirical success rate of $z$ - that is, how often the insight is successfully applied in subsequent agent orchestration. $\mathcal{E}$ is updated online through consolidation operations: \textcolor{blue}{ADD} inserts insights that are distinct from any existing entries; \textcolor{orange}{MERGE} combines semantically similar or complementary entries, 
+\textcolor{green}{PRUNE} removes conflicting or low-utility insights to maintain generalizable insights while preventing uncontrolled growth, and 
+\textcolor{purple}{KEEP} leaves $\mathcal{E}$ unchanged. 
+
+\textbf{Experience as a Prior.} Given a query $q$, the orchestrator first analyzes its characteristics and retrieves a set of relevant insights from $\mathcal{E}$. Retrieval balances two objectives: maximizing empirical \textit{utility} $u$, which favors insights that have historically led to successful coordination, and maintaining \textit{diversity}, achieved by selecting insights that are semantically distinct from those already chosen and that have lower prior usage frequency. The retrieved insights inform the orchestrator’s selection and sequencing of agents, guiding multi-step execution toward high-performing strategies. By combining high-utility and diverse insights, the orchestrator biases execution to maximize task accuracy while minimizing token consumption. In this manner, $\mathcal{E}$ serves as a structured, experience-driven prior, enabling contextual policy improvement and without modifying the underlying LLM. 
+
+
+
+\vspace{-6pt}
+\subsection{Theoretical Interpretation}
+\vspace{-6pt}
+The \hero orchestrator admits a natural \textbf{Expectation-Maximization (EM)} interpretation over discrete reasoning programs. In the \textbf{E-step}, trajectories are sampled under the current policy, approximating the posterior over high-reward reasoning topologies. In the \textbf{M-step}, semantic insights are extracted and consolidated into the experience library, updating a latent representation of the policy. Further, using a frozen LLM introduces implicit regularization, analogous to KL-constrained policy optimization. As updates occur via contextual augmentation instead of parameter changes, the induced policy remains close to the original model distribution. This formulation highlights that \hero performs energy-based reweighting of candidates, ensuring stable and consistent improvement. We provide detailed theoretical analysis in Appendix \ref{app:theory}.
+
+\vspace{-6pt}
+\subsection{Role-aware Prompt Evolution (\rope)}
+\vspace{-6pt}
+\label{sec: rapo}
+Globally strategy cannot prevent \textbf{corrective} (agents ignore actionable error signals and repeat mistakes) or \textbf{enhancement failures} (agents persist with suboptimal strategies despite successful execution) \citep{zhang2025agent} in multi-agent systems, motivating our\textit{ Role-aware Prompt Evolution} (\rope).
+
+\vspace{-6pt}
+\subsubsection{Prompt Evolution}
+\label{sec:agent_projected}
+\vspace{-4pt}
+A key challenge in multi-agent systems is attributing global trajectory outcomes to individual agents, especially when inter-agent dependencies obscure direct credit assignment. \rope addresses this by targeting agents identified as \textit{underperforming} by the orchestrator, who evaluates complete trajectories. Formally, an agent is considered underperforming if the orchestrator identifies it as the primary contributor to the trajectory’s failure.
+
+To support systematic improvement, we maintain a buffer for each agent containing its recent failed trajectories. This buffer enables RoPE to analyze recurring errors, identify consistent failure patterns, and provide contextual evidence for targeted prompt refinement. Given an underperforming agent $\mathcal{N}_{i}$ at time $t$, we retrieve its recent failed trajectories, then we generate prompt variants, and reexecutet the original whole agent trajectories with these prompt variants. Then \rope performs contrastive analysis to extract actionable improvements along two complementary dimensions: (i) \textit{operational rules ($\Delta\rho_i^{op}$)}: short-term corrective behaviors derived from recent failures, and (ii) \textit{behavioral principles ($\Delta\rho_i^{bp}$)}: long-term strategies distilled from patterns across multiple trajectories. Formally, the prompt update can be decomposed as:
+\vspace{-5pt}
+\[
+\Delta\rho_{i}=\Delta\rho_{i}^{op}+\Delta\rho_{i}^{bp}
+\]
+\vspace{-2pt}
+where $\Delta\rho_{i}^{op}$ addresses \textit{immediate failure correction} and $\Delta\rho_{i}^{bp}$ promotes \textit{strategic generalization}. Prompt variants are generated along behavioral axes such as thoroughness, risk sensitivity, error correction and heuristic injection, enabling structured exploration to optimize accuracy, robustness, and computational cost (see Appendix~\ref{app:promptt} for prompt details).
+\vspace{-5pt}
+
+\subsubsection{Prompt Consolidation}
+\vspace{-2pt}
+Following variant evaluation, selected updates are integrated into the agent’s prompt via prompt consolidation, which prunes redundant or low-utility instructions to maintain a compact and coherent representation. Formally, this can be expressed as a projection:
+\vspace{-2pt}
+\[
+\rho_{i}^{t+1} = \Pi_{\mathcal{C}}\left(\rho_{i}^{t} \oplus \Delta \rho_{i}\right)
+\]
+
+where $\mathcal{C}$ represents constraints on prompt length and coherence. With the underlying LLM fixed, prompt evolution induces a controlled shift in the agent’s effective policy:
+\[
+\pi_{\mathcal{N}_{i}^{new}}(y|x)\propto\pi_{\mathcal{N}_{i}^{base}}(y|x)\cdot exp(f{\rho_{i}}(x, y))
+\]
+where $x, y$ denote the input and output context of an agent respectively, and $\pi_{\mathcal{N}_{i}^{new}}$ represents its conditional generation policy. The prompt-induced term $f{\rho_{i}}(x, y)$
+biases this mapping by favoring outputs 
+$y$ that better align with the updated role-specific guidance. This induces an implicit regularization effect, analogous to KL constraints, ensuring stable and consistent policy updates.
+\vspace{-8pt}
+\subsection{Topology Mutation}
+\vspace{-8pt}
+While prompt evolution improves agent-level behavior, persistent failures often indicate structural deficiencies in the coordination topology. To address this, \hero performs topology mutation when trajectories consistently fail (\eg, F1 = 0). Upon identification by the orchestrator, \hero explores alternative structures by either replacing the failed agent $\mathcal{N}_{i}$ with an alternative $\mathcal{N}_{i}^{'}$ or augmenting the topology with additional agents, yielding candidate topologies $\Gamma^{'}$. These candidates are then incorporated into the same gradient-free GRPO optimization loop. This process enables the co-evolution of coordination structure and agent behaviors.

@@ -1,0 +1,137 @@
+\section{Methodology}
+\subsection{Problem formulation}
+
+\noindent\textbf{System Model:} Let \(\Agents=\{1,\ldots,n\}\) denote a set of specialist agents. In the implementation studied here, \(n=7\) specialists - policy guard, customer service, risk assessment, compliance, fraud detection, financial analyst, and portfolio manager - are coordinated by a ReAct-style router and followed by a decision-engine node. Let \(x\in\Queries\) be a user query, \(z\) be external evidence returned by tools, \(m_t\in\Memory\) be shared memory at time \(t\), and \(o_i\) be the structured output of agent \(i\). A run produces a trace: $\tau = (x,z,m_0, o_1,\ldots,o_n, e, y, \ell, c, r)$, where \(e\) are defense or detector events, \(y\in\{\textsc{Approve},\textsc{Reject},\textsc{Respond},\textsc{Block}\}\) is the final system decision, \(\ell\) is the oracle log of admitted perturbations, \(c\) is token cost, and \(r\) is latency. The decision stage is modeled as a deterministic gate: $y = G(x, \{o_i\}_{i\in\Agents}, e)$, which rejects if a non-negotiable veto is raised by required specialists or if a defense blocks execution. For write-intent tasks such as transfers, the implementation requires a fixed pre-check chain; for example, transfer requests route through policy, risk, fraud, and compliance checks before final approval.
+A clean baseline run is denoted \(\tau^0\). A perturbed run with perturbed set \(K\subseteq\Agents\) or corrupted shared-context channels is denoted \(\tau^K\). The benchmark evaluates paired traces \((\tau^0_j,\tau^K_j)\) for queries \(j=1,\ldots,N\).
+
+\proposed~studies four threat regimes -- (1) \textbf{Vulnerability type 1: single compromised specialist --} One agent follows a malicious policy subject to a trigger and a stealth budget. Examples include swapping an account identifier, redirecting a portfolio identifier, or changing a stock price; (2) \textbf{Vulnerability type 2: multi-agent collusion --} Several agents each make locally small changes that are designed to be mutually reinforcing. In transfer scenarios, for example, one agent may alter the account subject, a risk agent may reduce the risk rating, and a fraud agent may lower a fraud score; (3) \textbf{Vulnerability type 3: correlated shared-context failure --} Agents remain nominally benign, but shared upstream evidence or shared memory induces directionally correlated errors. This regime captures cases where many agents read the same biased context and fail; (4) \textbf{Vulnerability type 4: temporal or persistent failure --} Perturbations are delayed or recur through time, including triggers that fire only on a specified repetition and failures that persist through shared memory. This regime tests whether defenses catch attacks that are not visible in a single isolated run.
+
+\subsection{Metric Definitions}
+\label{sec:metrics}
+
+\noindent\textbf{Attack Success Rate (ASR):} Let \(\Queries_A\) denote the set of attack-class queries, i.e., queries that contain the trigger pattern required to activate the agent. For each attack query \(x_j \in \Queries_A\), let \(\ell_j\) denote the oracle log generated during execution. A run is considered to expose malicious information only if the oracle log indicates malicious agent trigger. In addition, the response must not be rejected by the generic response-blocking check, and the agent must complete the task with a valid response.
+Let \(R_j\in\{0,1\}\) indicate whether the response is blocked by the generic response-blocking check, and let \(T_j\in\{0,1\}\) indicate whether the task is completed with a proper response. We define the preliminary attack-success indicator as: $h_j =
+\Ind\left[
+|\ell_j|>0
+\wedge R_j=0
+\wedge T_j=1
+\right]$.
+
+Because different defenses may implement different blocking mechanisms, we define a defense-specific blocking indicator \(D_j\in\{0,1\}\), where \(D_j=1\) means that the active defense blocks or terminates run \(j\). This indicator abstracts over defense-specific outcomes produced by defenses such as \texttt{llamafirewall}, \texttt{toolsafe}, and \texttt{integrityguard}. The final attack-success indicator is then: $s_j = h_j \cdot \Ind[D_j=0]$. Equivalently, $s_j =
+\Ind\left[
+|\ell_j|>0
+\wedge R_j=0
+\wedge T_j=1
+\wedge D_j=0
+\right]$.
+We compute true positives, false negatives, and attack success rate as:
+
+% \vspace{-0.2in}
+\[
+TP = \sum_{x_j\in\Queries_A} s_j,
+\qquad
+FN = \sum_{x_j\in\Queries_A} (1-s_j).
+\qquad
+\ASR
+=
+100\cdot\frac{TP}{TP+FN}
+=
+100\cdot
+\frac{1}{|\Queries_A|}
+\sum_{x_j\in\Queries_A} s_j
+\]
+% \vspace{-0.15in}
+
+\noindent\textbf{Impact ($I_S$ \& $I_M$):}
+Each run is scored by a rule-based observer and by AI observers. Let \(S_R(\tau)\in[0,100]\) be the rule score and \(S_A(\tau)\in[0,100]\) be the average AI score. The rule score aggregates entity correctness, decision-engine gating, data integrity, routing, and output truthfulness. The AI score evaluates decision gating, routing, data integrity, access control, response quality, process integrity, and anomaly detection. The impact score is:
+
+% \vspace{-0.1in}
+\begin{equation}
+  I(\tau)=\lambda_R\left(1-\frac{S_R(\tau)}{100}\right)+
+          \lambda_A\left(1-\frac{S_A(\tau)}{100}\right),
+  \qquad \lambda_R,\lambda_A\ge 0,\quad \lambda_R+\lambda_A=1
+\label{eqn:harm}
+\end{equation}
+% \vspace{-0.1in}
+
+The reported experiments use equal weights unless otherwise specified. Safe and malicious harm are:
+% \vspace{-0.1in}
+\begin{equation}
+  \mathrm{I_S}=\frac{1}{N}\sum_{j=1}^N I(\tau^0_j),\qquad
+  \mathrm{I_M}=\frac{1}{N}\sum_{j=1}^N I(\tau^K_j)
+\end{equation}
+% \vspace{-0.1in}
+
+\noindent\textbf{Local and Global Harm ($H_{local}$ and $H_{global}$)}:
+Let \(\mathcal{A}(\tau^K)\) denote the set of all agents that participate in
+the attacked trace \(\tau^K\). Let
+\(\mathcal{A}_{\mathrm{tar}}(\tau^K)\subseteq \mathcal{A}(\tau^K)\) denote the
+subset of participating agents that are targeted by the attack.
+For each participating agent \(a\in\mathcal{A}(\tau^K)\), we compute an agent-level harm
+\begin{equation}
+  H_R^{(a)}(\tau^K,\tau^0)=
+  \frac{\sum_{q\in\mathcal{C}} w_q d_q^{(a)}(\tau^K,\tau^0)}
+       {\sum_{q\in\mathcal{C}} w_q},
+\end{equation}
+where \(d_q^{(a)}\) is the component-level deviation for agent \(a\). Components include numeric, text, entity, stance, and hard-block deviations. 
+For numeric sets \(N,N^0\), entity sets \(E,E^0\), stance labels \(s,s^0\), and block flags \(b,b^0\), representative components are
+% \vspace{-0.1in}
+\begin{align}
+  d_{\mathrm{num}} &= 1-\frac{|N\cap N^0|}{|N\cup N^0|},\qquad
+  d_{\mathrm{text}} = 1-\operatorname{SeqSim}(T,T^0),\\
+  d_{\mathrm{ent}} &= \Ind[E\ne E^0],
+  \qquad
+  d_{\mathrm{stance}} =
+  \begin{cases}
+  0, & s=s^0\in\{\textsc{Approve},\textsc{Reject}\},\\
+  1, & \text{diverse},\\
+  1/2, & \text{otherwise},
+  \end{cases}\\
+  d_{\mathrm{block}} &= \Ind[b\ne b^0]
+\end{align}
+% \vspace{-0.2in}
+
+Two independent AI harm scores,
+\(H_{A1}^{(a)}\) and \(H_{A2}^{(a)}\) are used. The harm score for the agent
+\(a\) is: $H^{(a)}(\tau^K,\tau^0) = (H_{A1}^{(a)} + H_{A2}^{(a)} + H_R^{(a)})/3$.
+The \emph{local harm} is defined as the total deviation contributed by the perturbed/malicious agents and the \emph{global harm} is defined as the total deviation contributed by all agents participating in the trace. They are defined as:
+
+% \vspace{-0.2in}
+\[
+  H_{\mathrm{local}}(\tau^K,\tau^0)
+  =
+  \sum_{a\in\mathcal{A}_{\mathrm{tar}}(\tau^K)}
+  H^{(a)}(\tau^K,\tau^0)
+\qquad
+  H_{\mathrm{global}}(\tau^K,\tau^0)
+  =
+  \sum_{a\in\mathcal{A}(\tau^K)}
+  H^{(a)}(\tau^K,\tau^0)
+\]
+% \vspace{-0.2in}
+
+Thus, \(H_{\mathrm{local}}\) measures the cumulative deviation of only the
+attacked agents, while \(H_{\mathrm{global}}\) measures the cumulative deviation
+of the entire multi-agent trace.
+
+\noindent\textbf{Harm Amplification} ($HA$):
+We measure harm amplification as the extent to which deviations caused by an attack propagate beyond the targeted agents. Since the global deviation includes both targeted and non-targeted agents, while the local deviation includes only the targeted agents, we define the harm amplification factor as:
+% \vspace{-0.15in}
+\begin{equation}
+  \mathrm{HA}(\tau^K,\tau^0)
+  =
+  \frac{
+    H_{\mathrm{global}}(\tau^K,\tau^0)
+  }{
+    H_{\mathrm{local}}(\tau^K,\tau^0)
+  },
+  \qquad
+  H_{\mathrm{local}}(\tau^K,\tau^0)>0.
+\end{equation}
+
+\noindent\textbf{Stealth Factor ($SF$):}
+Stealth measures whether the final answer masks the local manipulation. If \(M\) manipulated outputs are masked and \(O\) are obvious, the rule stealth factor is: $\SF_R = 100\cdot\frac{M}{M+O}$. Two AI stealth estimates, \(\SF_{A1}\) and \(\SF_{A2}\), are recorded analogously, and \(\SF_{\mathrm{avg}}\) is their average.
+% with the rule estimate.
+
+\noindent\textbf{Benign Utility ($\BU$):}
+On benign-class queries, utility is the true-negative rate: $\BU = 100\cdot\frac{\mathrm{TN}}{\mathrm{TN}+\mathrm{FP}}$. More details about Stealth Factor and Benign Utility can be found in Appendix~\ref{app:sealth}.

@@ -1,0 +1,455 @@
+\section{Full Python Code for Case Studies}
+\label{app:fullcode}
+%%DarkGreen
+\subsection{Movie Genre Classification}
+\label{app:moviecase}
+
+\begin{lstlisting}[
+  aboveskip=-0.0\baselineskip,
+  belowskip=-0.0\baselineskip,
+  language=Python,
+  showspaces=false,
+  basicstyle=\ttfamily\scriptsize,
+  commentstyle=\color{gray}, 
+  otherkeywords={expand, filter,execute, PANDAS_DF,group_by, join, feature_domain_range, .count, cache, unique},
+  keywordstyle=\color{blue},
+  caption={Full code for movie genre classification.},
+  captionpos=b,
+  label={lst:movidecasestudy}]
+
+  # RDFFrames imports, graph, and prefixes
+  from rdfframes.knowledge_graph import KnowledgeGraph
+  from rdfframes.dataset.rdfpredicate import RDFPredicate
+  from rdfframes.utils.constants import JoinType
+  from rdfframes.client.http_client import HttpClientDataFormat, HttpClient
+  graph = KnowledgeGraph(graph_uri='http://dbpedia.org',
+                         prefixes= {'dcterms': 'http://purl.org/dc/terms/',
+                                  'rdfs': 'http://www.w3.org/2000/01/rdf-schema#',
+                                  'dbpprop': 'http://dbpedia.org/property/',
+                                  'dbpr': 'http://dbpedia.org/resource/'}) 
+  
+  # RDFFrames code for creating the dataframe
+  dataset = graph.feature_domain_range('dbpp:starring','movie', 'actor')
+  dataset = dataset.expand('actor',[('dbpp:birthPlace', 'actor_country'),('rdfs:label', 'actor_name')])
+           .expand('movie', [('rdfs:label', 'movie_name'),('dcterms:subject', 'subject'),
+            ('dbpp:country', 'movie_country'),('dbpo:genre', 'genre', Optional)]).cache()
+  american = dataset.filter({'actor_country':['regex(str(?actor_country),"USA")']})
+  prolific = dataset.group_by(['actor']).count('movie', 'movie_count', unique=True).filter({'movie_count': ['>=100']})
+  movies = american.join(prolific,'actor', OuterJoin).join(dataset, 'actor', InnerJoin)
+  
+  # Client and execution
+  output_format = HttpClientDataFormat.PANDAS_DF
+  client = HttpClient(endpoint_url=endpoint, return_format=output_format)
+  df = movies.execute(client, return_format=output_format)
+
+  # Preprocessing and preparation
+  import re
+  import nltk
+  
+  def clean(dataframe):
+    for i, row in df.iterrows():
+      if df.loc[i]['genre'] != None:
+      value =df.at[i, 'genre']
+      if re.match(regex,str(value)) is not None:
+          df.at[i, 'genre'] = value.split('/')[-1]
+    return dataframe
+
+  # Remove URL from the 'genre' and convert to label keys
+  df=clean(df)
+
+  # Find the most most frequent genres
+  all_genres = nltk.FreqDist(df['genre'].values)
+  all_genres_df = pd.DataFrame({'genre':list(all_genres.keys()), 'Count':list(all_genres.values())})
+  all_genres_df.sort_values(by=['Count'],ascending=False)
+  
+  # In this example, use 900 movies as a cut off for the frequent movies
+  most_frequent_genres = all_genres_df[all_genres_df['Count']> 900]
+  df = df[df['genre'].isin(list(most_frequent_genres['genre']))]
+
+  # Features and factorization
+  from sklearn.model_selection import train_test_split
+  from sklearn.preprocessing import StandardScaler
+
+  df= df.apply(lambda col: pd.factorize(col, sort=True)[0])
+  features = ["movie_name", "actor_name", "actor_country","subject","movie_country", "subject"]
+  df = df.dropna(subset=['genre'])
+  x = df[features]
+  y = df['genre']
+  x_train, x_test, y_train, y_test = train_test_split(x, y, random_state=20)
+  sc = StandardScaler()
+  x_train = sc.fit_transform(x_train)
+  x_test = sc.fit_transform(x_test)
+
+  # Random Forest classifier
+  from sklearn.ensemble import RandomForestClassifier
+
+  model=RandomForestClassifier(n_estimators=100)
+  model.fit(x_train,y_train)
+  model.fit(x_train,y_train)
+  y_pred=clf.predict(x_test)
+  print("Accuracy:",metrics.accuracy_score(y_test, y_pred))
+    
+\end{lstlisting}
+ \pagebreak
+\subsection{Topic Modeling}
+\label{app:topiccase}
+
+\begin{lstlisting}[
+  aboveskip=0.5\baselineskip,
+  belowskip=-0.0\baselineskip,
+  language=Python,
+  showspaces=false,
+  basicstyle=\ttfamily\scriptsize,
+  commentstyle=\color{gray},
+  otherkeywords={KnowledgeGraph,PANDAS_DF, execute, rdfframes,expand, filter, group_by, join, entities, count, cache, unique, select_cols,apply, lower, nltk,sklearn,TfidfVectorizer,TruncatedSVD,fit,get_feature_names,lambda},
+  keywordstyle=\color{blue},
+  caption={Full code for topic modeling.},
+  captionpos=b,
+  label={lst:topiccasestudy}]
+  # RDFFrames imports, graph, prefixes, and client
+  import pandas as pd
+  from rdfframes.client.http_client import HttpClientDataFormat, HttpClient
+  from rdfframes.knowledge_graph import KnowledgeGraph
+  graph = KnowledgeGraph(
+          graph_uri = 'http://dblp.l3s.de',
+          prefixes = {"xsd": "http://www.w3.org/2001/XMLSchema#",
+          "swrc": "http://swrc.ontoware.org/ontology#",
+          "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+          "dc": "http://purl.org/dc/elements/1.1/",
+          "dcterm": "http://purl.org/dc/terms/",
+          "dblprc": "http://dblp.l3s.de/d2r/resource/conferences/"
+      })
+
+  output_format = HttpClientDataFormat.PANDAS_DF
+  client = HttpClient(endpoint_url=endpoint, port=port,return_format=output_format)
+
+  # RDFFrames code for creating the dataframe
+  papers = graph.entities('swrc:InProceedings', paper)
+  papers = papers.expand('paper',[('dc:creator', 'author'),('dcterm:issued', 'date'), ('swrc:series', 'conference'),
+                        ('dc:title', 'title')]).cache()
+  authors = papers.filter({'date': ['>=2005'],'conference': ['In(dblp:vldb, dblp:sigmod)']}).group_by(['author'])
+                   . count('paper', 'n_papers').filter({'n_papers': '>=20', 'date': ['>=2005']})
+  titles = papers.join(authors, 'author', InnerJoin).select_cols(['title'])
+  df = titles.execute(client, return_format=output_format)
+
+  # Preprocessing and cleaning
+  from nltk.corpus import stopwords
+  df['clean_title'] = df['title'].str.replace("[^a-zA-Z#]", " ")
+  df['clean_title'] = df['clean_title'].apply(lambda x: x.lower())
+  df['clean_title'] = df['clean_title'].apply(lambda x: ' '.join([w for w in str(x).split() if len(w)>3])) 
+  stop_words        = stopwords.words('english')
+  tokenized_doc     = df['clean_title'].apply(lambda x: x.split())
+  df['clean_title'] = tokenized_doc.apply(lambda x:[item for item in x if item not in stop_words])
+
+  # Vectorization and SVD model using the scikit-learn library
+  from sklearn.feature_extraction.text import TfidfVectorizer
+  from sklearn.decomposition import TruncatedSVD
+  vectorizer  = TfidfVectorizer(stop_words='english', max_features= 1000, max_df = 0.5, smooth_idf=True)
+  Tfidf_title = vectorizer.fit_transform(df['clean_title'])
+  svd_model   = TruncatedSVD(n_components=20, algorithm='randomized',n_iter=100, random_state=122)
+  svd_model.fit(Tfidf_titles)  
+
+  # Extracting the learned topics and their keyterms
+  terms = vectorizer.get_feature_names()
+  for i, comp in enumerate(svd_model.components_):
+      terms_comp   = zip(terms, comp)
+      sorted_terms = sorted(terms_comp, key= lambda x:x[1], reverse=True)[:7]
+      print_string = "Topic"+str(i)+": "
+      for t in sorted_terms:
+          print_string += t[0] + " "
+  \end{lstlisting}
+
+ \pagebreak
+\subsection{Knowledge Graph Embedding}
+\label{app:kgecase}
+
+\vspace*{8pt}
+  \begin{lstlisting}[
+    aboveskip=-1.0\baselineskip,
+    belowskip=-0.0\baselineskip,
+    language=Python,
+    showspaces=false,
+    basicstyle=\ttfamily\scriptsize,
+    commentstyle=\color{gray},
+    otherkeywords={KnowledgeGraph, execute, rdfframes, expand, filter, join, group_by, feature_domain_range, execute, PANDAS_DF, ampligraph, train_test_split_no_unseen, ComplEx, fit,mr_score, mrr_score, evaluate_performance, expand, filter, group_by, join, entities, count, cache, unique, select_cols},
+    keywordstyle=\color{blue},
+    caption={Full code for knowledge graph embedding.},
+    captionpos=b,
+    label={lst:kgecasestudy}]
+    # Get all triples where the object is a URI
+  from rdfframes.knowledge_graph import KnowledgeGraph
+  from rdfframes.dataset.rdfpredicate import RDFPredicate
+  from rdfframes.client.http_client import HttpClientDataFormat, HttpClient    
+  output_format = HttpClientDataFormat.PANDAS_DF
+  client = HttpClient(endpoint_url=endpoint,
+                        port=port,
+                        return_format=output_format,
+                        timeout=timeout,
+                        default_graph_uri=default_graph_url,
+                        max_rows=max_rows
+                        )
+  dataset = graph.feature_domain_range(s, p, o).filter({o: ['isURI']})
+  df = dataset.execute(client, return_format=output_format)
+    
+  # Train/test split and create ComplEx model from ampligraph library
+  from ampligraph.evaluation import train_test_split_no_unseen 
+  triples = df.to_numpy()
+  X_train, X_test = train_test_split_no_unseen(triples, test_size=10000)
+  #complEx model from ampligraph library
+  from ampligraph.latent_features import ComplEx
+  from ampligraph.evaluation import evaluate_performance, mrr_score, hits_at_n_score
+  model = ComplEx(batches_count=50,epochs=300,k=100,eta=20, optimizer='adam',optimizer_params={'lr':1e-4}, 
+          loss='multiclass_nll',regularizer='LP', regularizer_params={'p':3, 'lambda':1e-5}, seed=0,verbose=True)
+  model.fit(X_train)
+  # Evaluate embedding model
+  filter_triples = np.concatenate((X_train, X_test))
+  ranks = evaluate_performance(X_test, model=model, filter_triples=filter_triples,
+                                use_default_protocol=True, verbose=True)
+  mr  = mr_score(ranks)
+  mrr = mrr_score(ranks)
+  \end{lstlisting}
+
+  %\vspace*{-30pt}
+\pagebreak
+
+\section{Description of Queries in the Synthetic Workload}
+\label{app:queries}
+\vspace*{-3pt}
+\hfill
+\begin{table*}[th!]
+  \caption{Description of the queries in the sytnthetic workload.\label{tab:def-queries}}
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{|c|p{10cm}|p{4cm}|p{3cm}|} 
+    \hline
+    \textbf{Query} & \textbf{English Description} & \textbf{\rdfframes Operators}& \textbf{\sparql Features}\\
+    \hline 
+    Q1 & Get a list of films in DBpedia. For each film, return the actor, language, country, genre, story, and studio, in addition to the director, producer, and title (if available). & expand (including optional predicates) & OPTIONAL, DISTINCT\\
+    \hline
+
+    Q2 & Get a list of actors available in the DBpedia or YAGO graphs. & join (outer) between two graphs, filter & OPTIONAL, FILTER, UNION
+    \\
+    \hline
+    Q3 & Get a list of American actors available in both the DBpedia and YAGO graphs. & join (inner) between two graphs, expand, filter &  FILTER
+    \\
+    \hline 
+    Q4 & 
+    Get the nationality, place of birth, and date of birth of each basketball player in DBpedia, in addition to the sponsor, name, and president of his team (if available). & join (left outer) between two expandable datasets, expand (including optional predicates) & OPTIONAL
+    \\
+    \hline 
+    Q5 &  Get the players (athletes) in DBpedia and their teams, group by teams, count players, and expand the team's name. &  group\_by, count, expand & GROUP BY, COUNT, DISTINCT
+    \\
+    \hline
+    Q6 &  For films in DBpedia that are produced by any studio in India or the United States excluding 'Eskay Movies', and that have one of the following genres (film score, soundtrack, rock music, house music, or dubstep),
+    get the actor, director, producer, time and language. & expand, filter & FILTER
+    \\ 
+    \hline
+    Q7 & For the films in DBpedia, get actors, director, country, producer, language, title, genre, story, and studio. Filter on country, studio, genre, and runtime. &  expand, filter & FILTER
+    \\
+    \hline
+    Q8 & Get the nationality, place of birth, and date of birth of each basketball player in DBpedia, in addition to the sponsor, name, and president of his team. & join (inner) between two expandable datasets, expand & Multiple conjunctive graph patterns
+    \\
+    \hline 
+    Q9 & Get the list of basketball players in DBpedia, their teams, and the number of players on each team. &  group\_by, count, expand & GROUP BY, COUNT, DISTINCT
+    \\
+    \hline
+    Q10 &  For films in DBpedia that are produced by any studio in India or the United States excluding 'Eskay Movies', and that have one of the following genres (film score, soundtrack, rock music, house music, or dubstep),
+    get the actor and language, in addition to the producer, director, and title (if available). & expand (including optional predicates), filter & OPTIONAL, FILTER
+    \\ 
+    \hline
+    Q11 & Get the list of athletes in DBpedia. For each athlete, return his birthplace and the number of athletes who were born in that place. &  group\_by, count, expand & GROUP BY, COUNT, DISTINCT
+    \\ 
+    \hline
+    Q12 & Get the pairs of films in DBpedia that belong to the same genre and are produced in the same country. For each film in each pair, return the actor, country, story, language, genre, and studio, in addition to the director, producer, and title (if available). & group\_by on multiple columns, count, expand (including optional predicates) &  GROUP BY, COUNT, OPTIONAL, DISTINCT
+    \\
+    \hline
+    Q13 & Get the sponsor, name, president, and the number of basketball players of each basketball team in DBpedia. & join (inner) between two
+    datasests (expandable, group\_by) & GROUP BY, COUNT, DISTINCT
+    \\
+    \hline 
+    Q14 & Get the sponsor, name, president, and the number of basketball players (if available) of each basketball team in DBpedia. & join (left outer) between two datasets (expandable, group\_by), expand (including optional predicates) & GROUP BY, COUNT, OPTIONAL, DISTINCT
+    \\
+    \hline 
+    Q15 & Get a list of the books in DBpedia that were written by American authors who wrote more than two books. For each author, return the birth place, country, and education, and for each book return the title, subject, country (if available), and publisher (if available). &  join (outer), group\_by, count, expand (including optional predicates), filter & GROUP BY, COUNT, HAVING,
+    OPTIONAL, FILTER, UNION
+    \\
+    \hline
+
+    Q16 & Get a list of people in the DBpedia graph who were born in the United States. Get a list of authors from the DBLP graph who have publications dated after 2015. Get a list of people in the YAGO graph who are citizens of the United States. Join the three lists retrieved from the three graphs on name. & join (full outer) between three graphs, expand (including optional predicates), filter & OPTIONAL, FILTER, DISTINCT, UNION
+    \\
+    \hline
+  
+  \end{tabular}
+  }
+\end{table*}
+
+\pagebreak
+%\vspace*{-30pt}
+\section{Naive \sparql Query for Movie Genre Classification}
+\label{app:naiveQuery}
+\vspace*{-2pt}
+%\hfill
+
+\begin{lstlisting}[
+  breaklines=true,
+  columns=fullflexible,
+  aboveskip=-0.0\baselineskip,
+  belowskip=-0.0\baselineskip,
+  language=SQL,
+  showspaces=false,
+  basicstyle=\ttfamily\scriptsize,
+  commentstyle=\color{gray},
+  keywordstyle=\color{blue},
+  otherkeywords={OPTIONAL, FILTER},
+  caption={Naive \sparql query corresponding to the \sparql query shown in Listing~\ref{lst:genresparql}.},
+  captionpos=b,
+  label={lst:naivemovie}
+  ]
+  PREFIX  dbpp: <http://dbpedia.org/property/>
+  PREFIX  dcterms: <http://purl.org/dc/terms/>
+  PREFIX  rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+  PREFIX  dbpo: <http://dbpedia.org/ontology/>
+  PREFIX  dbpr: <http://dbpedia.org/resource/> 
+  SELECT DISTINCT  ?actor_name ?movie_name ?actor_country ?subject ?genre
+  FROM <http://dbpedia.org> WHERE
+    {{{ SELECT  * WHERE
+              {{ SELECT  * WHERE
+                  { { SELECT  ?movie ?actor WHERE
+                        { ?movie  dbpp:starring  ?actor } }
+                    { SELECT  ?actor ?actor_country WHERE
+                        { ?actor  dbpp:birthPlace  ?actor_country } }
+                    { SELECT  ?actor ?actor_name WHERE
+                      { ?actor  rdfs:label  ?actor_name } }
+                    { SELECT  ?movie ?movie_name WHERE
+                      { ?movie  rdfs:label  ?movie_name } }
+                    { SELECT  ?movie ?subject WHERE
+                        { ?movie  dcterms:subject  ?subject } }
+                    { SELECT  ?movie ?movie_country WHERE
+                         { ?movie  dbpp:country  ?movie_country } }
+                    { SELECT  ?actor ?actor_country WHERE
+                        { ?actor  dbpp:birthPlace  ?actor_country
+                          FILTER regex(str(?actor_country), "USA") } }
+                    { SELECT  ?movie ?genre WHERE
+                        { OPTIONAL
+                            { ?movie  dbpo:genre  ?genre } } } } }
+              OPTIONAL
+                { SELECT DISTINCT  ?actor (COUNT(DISTINCT ?movie) AS ?movie_count) WHERE
+                    { { SELECT  ?movie ?actor WHERE
+                          { ?movie  dbpp:starring  ?actor } }
+                      { SELECT  ?actor ?actor_country WHERE
+                          { ?actor  dbpp:birthPlace  ?actor_country } }
+                      { SELECT  ?actor ?actor_name WHERE
+                          { ?actor  rdfs:label  ?actor_name } }
+                      { SELECT  ?movie ?movie_name WHERE
+                          { ?movie  rdfs:label  ?movie_name } }
+                      { SELECT  ?movie ?subject WHERE
+                          { ?movie  dcterms:subject  ?subject } }
+                      { SELECT  ?movie ?movie_country WHERE
+                          { ?movie  dbpp:country  ?movie_country } }
+                      { SELECT  ?movie ?genre WHERE
+                          { OPTIONAL
+                              { ?movie  dbpo:genre  ?genre } } } }
+                  GROUP BY ?actor
+                  HAVING ( COUNT(DISTINCT ?movie) >= 100 ) } } }
+        UNION
+          { SELECT  * WHERE
+            { { SELECT DISTINCT  ?actor (COUNT(DISTINCT ?movie) AS ?movie_count) WHERE
+                  { { SELECT  ?movie ?actor WHERE
+                        { ?movie  dbpp:starring  ?actor } }
+                    { SELECT  ?actor ?actor_country WHERE
+                        { ?actor  dbpp:birthPlace  ?actor_country } }
+                    { SELECT  ?actor ?actor_name WHERE
+                        { ?actor  rdfs:label  ?actor_name } }
+                    { SELECT  ?movie ?movie_name WHERE
+                        { ?movie  rdfs:label  ?movie_name } }
+                    { SELECT  ?movie ?subject WHERE
+                        { ?movie  dcterms:subject  ?subject } }
+                    { SELECT  ?movie ?movie_country WHERE
+                        { ?movie  dbpp:country  ?movie_country } }
+                    { SELECT  ?movie ?genre WHERE
+                        { OPTIONAL { ?movie  dbpo:genre  ?genre } } } }
+                  GROUP BY ?actor
+                  HAVING ( COUNT(DISTINCT ?movie) >= 100 ) }
+                OPTIONAL
+                { SELECT  * WHERE
+                    { { SELECT  ?movie ?actor WHERE
+                          { ?movie  dbpp:starring  ?actor } }
+                      { SELECT  ?actor ?actor_country WHERE
+                          { ?actor  dbpp:birthPlace  ?actor_country } }
+                      { SELECT  ?actor ?actor_name WHERE
+                          { ?actor  rdfs:label  ?actor_name } }
+                      { SELECT  ?movie ?movie_name WHERE
+                          { ?movie  rdfs:label  ?movie_name } }
+                      { SELECT  ?movie ?subject WHERE
+                          { ?movie  dcterms:subject  ?subject } }
+                      { SELECT  ?movie ?movie_country WHERE
+                        { ?movie  dbpp:country  ?movie_country } }
+                      { SELECT  ?actor ?actor_country WHERE
+                          { ?actor  dbpp:birthPlace  ?actor_country
+                            FILTER regex(str(?actor_country), "USA") } }
+                      { SELECT  ?movie ?genre WHERE
+                          { OPTIONAL { ?movie  dbpo:genre  ?genre } } } } } } } } }
+  \end{lstlisting}
+
+\vspace*{5pt}
+%\pagebreak
+\pagebreak
+\section{Naive \sparql Query for Topic Modeling}
+\label{app:naiveQuery2}
+\hfill
+
+\begin{lstlisting}[
+breaklines=true,
+columns=fullflexible,
+aboveskip=-1.0\baselineskip,
+belowskip=-0.0\baselineskip,
+language=SQL,
+showspaces=false,
+basicstyle=\ttfamily\scriptsize,
+commentstyle=\color{gray},
+keywordstyle=\color{blue},
+otherkeywords={OPTIONAL, FILTER},
+caption={Naive \sparql query corresponding to the \sparql query shown in Listing~\ref{lst:topicsparql}.},
+captionpos=b,
+label={lst:naivetopic}
+]
+PREFIX  swrc: <http://swrc.ontoware.org/ontology#>
+PREFIX  rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX  owl:  <http://www.w3.org/2002/07/owl#>
+PREFIX  dcterm: <http://purl.org/dc/terms/>
+PREFIX  xsd:  <http://www.w3.org/2001/XMLSchema#>
+PREFIX  rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX  foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX  dc:   <http://purl.org/dc/elements/1.1/>
+PREFIX  dblprc: <http://dblp.l3s.de/d2r/resource/conferences/>
+
+SELECT  ?title
+FROM <http://dblp.l3s.de>
+WHERE
+  { 
+    {SELECT ?paper WHERE {?paper rdf:type swrc:InProceedings}}.
+    {SELECT ?paper ?author WHERE {?paper dc:creator ?author}}.       
+    {SELECT ?paper ?date WHERE {?paper dcterm:issued  ?date }}.   
+    {SELECT ?paper ?conference WHERE {?paper swrc:series ?conference}} .
+    {SELECT ?paper ?title WHERE {?paper  dc:title  ?title}}.
+    {SELECT ?paper ?date WHERE {?paper dcterm:issued  ?date FILTER ( year(xsd:dateTime(?date)) >= 2005 )  }}
+
+    { SELECT ?author WHERE
+      {
+       { SELECT  ?author COUNT(?paper) as  ?count_paper
+          WHERE
+            {
+              {SELECT ?paper WHERE {?paper rdf:type swrc:InProceedings}}.
+              {SELECT ?paper ?author WHERE {?paper dc:creator ?author}}.       
+              {SELECT ?paper ?date WHERE {?paper dcterm:issued  ?date }}.   
+              {SELECT ?paper ?conference WHERE {?paper swrc:series ?conference}} .
+              {SELECT ?paper ?title WHERE {?paper  dc:title  ?title}}.
+              {SELECT ?paper ?date WHERE {?paper dcterm:issued  ?date FILTER ( year(xsd:dateTime(?date)) >= 2000 )  }} .
+              {SELECT ?paper ?conference WHERE {?paper swrc:series ?conference FILTER( ?conference IN (dblprc:vldb, dblprc:sigmod) )}}
+            }
+          GROUP BY ?author
+        }
+        FILTER ( ?count_paper >= 20 ) 
+      }
+    }
+  }
+\end{lstlisting}

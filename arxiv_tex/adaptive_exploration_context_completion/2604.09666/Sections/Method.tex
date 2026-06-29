@@ -1,0 +1,276 @@
+
+In this section, we introduce \textbf{RAGSearch}, a benchmark designed to systematically study how different retrieval infrastructures interact with agentic search systems. RAGSearch treats dense RAG and GraphRAG as interchangeable \emph{retrieval backends} within a unified agentic search framework, enabling controlled and fair comparison across agentic inference paradigms under standardized settings. An overview of the RAGSearch framework is shown in Figure~\ref{fig:main}.
+We first formalize a general agentic search abstraction and its interaction with retrieval backends in Section~4.1. We then describe two representative agentic pipelines instantiated in RAGSearch: \emph{training-free agentic search}, which relies on structured prompting and heuristic control (Section~4.2), and \emph{reinforcement-learning–based agentic search}, where the agent policy is optimized using domain-specific data (Section~4.3). Finally, Section~4.4 specifies the retrieval backends included in RAGSearch and how they are instantiated as environments within the benchmark.
+
+
+\subsection{General Agentic Search Formulation}
+\label{sec:agentic_formulation}
+
+We formalize agentic search in RAGSearch using a high-level abstraction inspired by the ReAct~\cite{yao2022react} framework, which models inference as an interleaved loop of \emph{reasoning} and \emph{interaction} with a retrieval environment. Given an input query $q$, an agent equipped with an LLM $\mathcal{M}$ interacts with a retrieval backend $\mathcal{B}$ (e.g., dense RAG or GraphRAG) over multiple steps.
+
+At each step $t$, the agent performs reasoning delimited by
+\texttt{\textcolor{blue}{<think>}} and \texttt{\textcolor{blue}{</think>}},
+conditioning on the available information and the interaction history, to decide
+whether to invoke retrieval or to terminate and produce a final answer.
+When retrieval is triggered, the agent emits a search query $q_t$ demarcated by
+\texttt{\textcolor{orange}{<search>}} and \texttt{\textcolor{orange}{</search>}}.
+The system then executes a retrieval operation over $\mathcal{B}$:
+\begin{equation}
+    \mathcal{I}^{q}_{t} = \textsc{Retrieve}(q_t, \mathcal{B}).
+\end{equation}
+Here, $\mathcal{I}^{q}_{t}$ denotes the retrieved information, which can be a set of
+text chunks $C_{q_t}$ or a subgraph $Z_{q_t}$. The information is wrapped with
+\texttt{\textcolor{red}{<information>}} and \texttt{\textcolor{red}{</information>}}
+and appended to the ongoing reasoning sequence. This process continues iteratively until the agent decides to produce the final answer within \texttt{\textcolor{green}{<answer>}} and \texttt{\textcolor{green}{</answer>}}. The generated reasoning process can be expressed as:
+\begin{equation}
+\begin{aligned}
+P(R,a \mid \mathcal{P},\mathcal{B})
+&=
+\underbrace{\prod_{t=1}^{T_{R}} P\!\left(R_t \mid R_{<t}, \mathcal{P},q_t, \mathcal{I}^{q}_{<t}\right)}_{\text{\textcolor{blue}{Reasoning Process}}}
+\cdot
+\underbrace{\prod_{t=1}^{T_a} P\!\left(a \mid R, \mathcal{I}^q,q\right)}_{\text{\textcolor{green}{Answer Generation}}} \, 
+\end{aligned}
+\end{equation}
+Where $\mathcal{P}$ indicates the system template, $R_t$ is the generated reasoning sequence at step $t$.
+
+This formulation intentionally abstracts away low-level details of action spaces and memory representations and highlights two key properties shared by modern agentic systems: (i) retrieval is performed \emph{dynamically during inference}, rather than as a one-shot preprocessing step; and (ii) the same agentic control logic can operate over different retrieval infrastructures. RAGSearch adopts this abstraction to decouple agentic reasoning from retrieval backends, enabling systematic benchmarking of dense RAG and GraphRAG under a unified agentic search framework.
+% At each step $t$, the agent conditions on its current internal state $s_t$—which summarizes the query and all previous interactions—to decide whether and how to retrieve additional information, or to terminate and produce a final answer. This process can be abstracted as the following iterative update:
+% \begin{equation}
+% (s_{t+1}, o_t) = \mathcal{F}\big(s_t, \mathcal{M}, \mathcal{B}\big),
+% \end{equation}
+% where $\mathcal{F}(\cdot)$ denotes one cycle of \emph{thinking} (reasoning with the LLM), \emph{acting} (issuing a retrieval or termination action), and \emph{observing} (receiving evidence from the retrieval backend).
+
+% After a variable number of interaction steps $T$, the agent outputs a final answer conditioned on the accumulated state:
+% \begin{equation}
+% y \sim \mathcal{M}(s_T).
+% \end{equation}
+
+% This formulation intentionally abstracts away low-level details of action spaces and memory representations, and highlights two key properties shared by modern agentic systems: (i) retrieval is performed \emph{dynamically during inference}, rather than as a one-shot preprocessing step; and (ii) the same agentic control logic can operate over different retrieval infrastructures. RAGSearch adopts this abstraction to decouple agentic reasoning from retrieval backends, enabling systematic benchmarking of dense RAG and GraphRAG under a unified agentic search framework.
+
+\subsection{Training-Free Agentic Search Pipelines}
+\label{sec:training_free_agents}
+Based on the general agentic search formulation in Section~\ref{sec:agentic_formulation}, we instantiate a class of \emph{training-free agentic search pipelines} that reflect the design of state-of-the-art systems such as Search-o1~\cite{li2025searcho1} and GraphSearch~\cite{yang2025graphsearch}. These methods do not learn an explicit control policy; instead, they rely on structured prompting and heuristic control to guide multi-round retrieval and reasoning during inference. Concretely, contemporary training-free agentic search systems often fall into two representative paradigms: (i) \textbf{reasoning-driven on-demand search}, where the model triggers retrieval adaptively based on uncertainty or information needs (e.g., Search-o1), and (ii) \textbf{orchestrated multi-agent workflows}, where modular roles are explicitly coordinated via prompting and routing to perform decomposition, verification, and iterative retrieval (e.g., GraphSearch).
+\subsubsection{Reasoning-driven On-demand Search}
+This paradigm typically relies on the model’s own reasoning process to decide whether to invoke search. Compared to the basic ReAct-style loop, this paradigm augments the reasoning--interaction with Reason-in-Documents components:
+\[
+\texttt{Query} \rightarrow
+\underbrace{\texttt{Think} \rightarrow \texttt{Search} \rightarrow \texttt{Knowledge Refinement}}_{\texttt{Iterative}}
+\rightarrow \texttt{Answer}
+\]
+\paragraph{\textbf{Knowledge Refinement}.}
+To support long-horizon reasoning without exceeding context limits, training-free agents typically summarize retrieved observations before incorporating them into the agent state. Following the design of Search-o1~\cite{li2025searcho1}, each retrieval result is compressed into a concise summary that captures the most salient evidence relevant to the current reasoning goal. 
+\subsubsection{Orchestrated Multi-agent Workflows}
+This paradigm foregrounds coordinated multi-module interaction, decomposing the original query into smaller, more tractable sub-queries that can be solved sequentially to answer the original question. This paradigm typically exhibits the following proceudre:
+\[
+\texttt{Query} \rightarrow
+\underbrace{\texttt{Docomposition} \rightarrow \texttt{Search} \rightarrow \texttt{Verification}}_{\texttt{Iterative}}
+\rightarrow \texttt{Answer}
+\]
+\paragraph{\textbf{Query Decomposition}.}
+Instead of issuing a single retrieval query, the agent may decompose the original question into a sequence of sub-queries,  each representing a smaller and tractable component of the original question:
+\begin{equation}
+    \{q_1, q_2,...,q_i\} = Decoposition(q)
+\end{equation}
+Where each sub-query $q_i$ focuses on resolving a single entity, relation, or contextual dependency. Each sub-query $q_i$ and its associated retrieved documents $I_{q_i}$ are processed by the Logic Drafting module to construct a reasoning chain $\mathcal{L}$ that resolves the original problem.This mechanism, inspired by GraphSearch~\cite{yang2025graphsearch}, enables retriever to access fine-grained evidence and reducing the reasoning complexity.
+\paragraph{\textbf{Evidence Verification}.}
+ This module evaluates whether the accumulated evidence in $\mathcal{L}$ is sufficient and logically consistent to support a final answer, by considering factual grounding, coherence, and potential contradictions. When evidence is missing or inconsistent, the module further expands the set of sub-queries and iteratively performs additional retrieval to gather relevant context.
+
+% Based on the general agentic search formulation in Section~\ref{sec:agentic_formulation}, we instantiate a class of \emph{training-free agentic search pipelines} that reflect the design of state-of-the-art systems such as Search-o1~\cite{li2025searcho1} and GraphSearch~\cite{yang2025graphsearch}. These methods do not learn an explicit control policy; instead, they rely on structured prompting and heuristic control to guide multi-round retrieval and reasoning during inference.
+
+% \paragraph{\textbf{Extended Agent Loop}.}
+% Compared to the basic ReAct-style loop, practical training-free agents augment the reasoning--interaction cycle with two additional components: \emph{query decomposition} and \emph{observation summarization}. At a high level, the agent iteratively performs \dz{TODO: check details}
+
+% \[
+% \text{Think} \;\rightarrow\; \text{(Decompose)} \;\rightarrow\; \text{Retrieve} \;\rightarrow\; \text{Summarize},
+% \]
+% until sufficient evidence is gathered to produce a final answer.
+
+% \paragraph{\textbf{Query Decomposition}.}
+% Instead of issuing a single retrieval query, the agent may decompose the original question into a sequence of sub-queries that target different aspects of the problem. Concretely, conditioned on the current state $s_t$, the LLM generates one or more focused sub-queries $\{q_t^{(1)}, \dots, q_t^{(k)}\}$, which are then used to retrieve evidence from the backend. This mechanism, inspired by GraphSearch~\cite{yang2025graphsearch}, allows the agent to explore complex reasoning paths and is naturally applicable to both dense RAG and GraphRAG infrastructures. In dense RAG, sub-queries trigger multiple semantic searches over unstructured text, whereas in GraphRAG, they guide graph traversal, neighborhood expansion, or subgraph extraction.
+
+% \paragraph{\textbf{Observation Summarization}.}
+% To support long-horizon reasoning without exceeding context limits, training-free agents typically summarize retrieved observations before incorporating them into the agent state. Following the design of Search-o1~\cite{li2025searcho1}, each retrieval result is compressed into a concise summary that captures the most salient evidence relevant to the current reasoning goal. These summaries are accumulated as part of the agent’s internal memory and serve as conditioning context for subsequent reasoning and retrieval steps. This design is particularly important for GraphRAG backends, where retrieved structures can be large and highly redundant.
+
+\noindent\textbf{Remark.}
+Under this formulation, Search-o1 and GraphSearch can be viewed as different instantiations of the same training-free agentic framework, differing primarily in the retrieval environment they interact with. Dense RAG environments return unstructured text chunks, while GraphRAG environments return structured graph-based evidence. Crucially, the agentic control remains unchanged. RAGSearch adopts this unified view to benchmark training-free agentic search pipelines over both dense RAG and multiple GraphRAG infrastructures under identical inference protocols.
+
+\subsection{RL-Based Agentic Search Training}
+\label{sec:rl_agents}
+
+While training-free agentic pipelines provide a strong and flexible baseline, their control logic is entirely prompt-driven and fixed at inference time. As a result, such agents rely heavily on the intrinsic reasoning capability of the underlying LLM backbone and cannot adapt their retrieval strategies to specific task distributions or reasoning patterns. This limitation motivates \emph{learning} the agent’s control policy from domain-specific data, enabling retrieval and reasoning behaviors to be adapted to the target task.
+
+\paragraph{\textbf{RL-Based Agentic Search Formulation}.}
+Following Search-R1 and Graph-R1, we formulate agentic search as a reinforcement learning problem, where the agent policy $\pi_\theta$ is parameterized by an LLM with trainable parameters $\theta$. Given an input query $q$, the agent interacts with a retrieval environment $\mathcal{B}$ (dense RAG or GraphRAG) and generates a trajectory
+\[
+\tau^{(i)} = (s^{(i)}_1, a^{(i)}_1, \dots, s^{(i)}_T, a^{(i)}_T),
+\]
+where each action $a_t$ corresponds to a retrieval-related decision or a termination action producing a final answer $y$. A scalar reward $r(q, y, \tau)$ is assigned to the entire trajectory after termination. The learning objective is to maximize the expected reward over the training distribution:
+\begin{equation}
+\max_{\pi_\theta} \;
+\mathbb{E}_{q \sim \mathcal{D},\, \tau \sim \pi_\theta(\cdot \mid q, \mathcal{B})}
+\big[ r(q, y, \tau) \big].
+\end{equation}
+This formulation directly optimizes sequence-level agent behavior, allowing the policy to learn task-specific retrieval and reasoning patterns.
+
+To optimize the agent policy, RAGSearch adopts \emph{Group Relative Policy Optimization} (GRPO), as used in Search-R1 and Graph-R1. For each training query $q$, the agent samples a group of $K$ trajectories $\{\tau^{(1)}, \dots, \tau^{(K)}\}$ under the current policy. Each trajectory receives a reward $r^{(k)}$, which is normalized within the group to compute a relative advantage:
+% \[
+% \hat{A}^{(k)} = r^{(k)} - \frac{1}{K} \sum_{j=1}^{K} r^{(j)}.
+% \]
+\[
+\hat{A}(\tau_i)
+=
+\frac{
+r^{(i)} - \operatorname{mean}\!\left(\left\{ r^{(j)}\right\}_{j=1}^{K}\right)
+}{
+F_{\mathrm{norm}}\!\left(\left\{ r^{(j)}\right\}_{j=1}^{K}\right)
+}.
+\]
+The policy is then updated by increasing the likelihood of trajectories with positive relative advantage, while constraining the update via KL regularization toward a fixed reference policy $\pi_{\mathrm{ref}}$:
+% \begin{equation}
+% \mathcal{L}_{\mathrm{GRPO}}(\theta)
+% = - \mathbb{E}_{k}\!\left[ \hat{A}^{(k)} \log \pi_\theta(\tau^{(k)} \mid q) \right]
+% + \beta \, D_{\mathrm{KL}}\!\left( \pi_\theta \,\|\, \pi_{\mathrm{ref}} \right),
+% \end{equation}
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{GRPO}}(\theta) = \left[
+\frac{1}{K}\sum_{i=1}^{K}\frac{1}{|\tau_i|}
+\sum_{t=1}^{|\tau_i|}
+\min\!\Big(
+\rho_{\theta}\big(a^{(i)}_{t}\big)\,\hat{A}(\tau_i),g\big(\epsilon, \hat{A}(\tau_i)\big)
+\Big)
+\right. \\
+\left.
+-\;\beta\,\mathbb{D}_{\mathrm{KL}}\!\big(\pi_{\theta}\,\|\,\pi_{\mathrm{ref}}\big)
+\right]
+\end{aligned}
+\end{equation}
+where $\rho_{\theta}(a^{(i)}_{t}) = \frac{\pi_{\theta}(a_t^{(i)}|s_{t-1}^{(i)};\mathcal{B})}{\pi_{\theta_{old}}(a_t^{(i)}|s_{t-1}^{(i)};\mathcal{B})}$, $g\big(\epsilon, \hat{A}(t_i)\big)=\operatorname{clip(\rho_{\theta}(a^{(i)}_{t}), 1 \pm \epsilon)\hat{A}(\tau_i)}$, and
+$\beta$ controls the strength of regularization. GRPO avoids explicit value-function learning and has been shown to be effective for training long-horizon LLM-based agents.
+
+\paragraph{\textbf{Reward Design}.}
+In RAGSearch, rewards are defined at the trajectory level and focus on task correctness and output validity. Specifically, we combine (i) an \emph{outcome-based reward} that measures answer correctness (e.g., exact match or task-specific accuracy), and (ii) a \emph{format-based reward} that encourages the agent to follow the expected interaction and answer format. Importantly, the same reward formulation is applied across dense RAG and GraphRAG retrieval environments, ensuring that learned differences in agent behavior reflect the interaction between the policy and the retrieval infrastructure rather than differences in reward design.
+
+\noindent\textbf{Remark.}
+From a unified perspective, RL-based agentic search can be viewed as learning an adaptive control policy within the same agentic framework introduced in Sections~\ref{sec:agentic_formulation} and~\ref{sec:training_free_agents}. The retrieval backends and interaction protocol remain unchanged; only the agent’s policy is optimized using domain-specific supervision. This allows RAGSearch to systematically compare training-free and learned agentic control over identical RAG and GraphRAG infrastructures, and to assess how policy learning interacts with explicit graph structure under agentic search.
+
+\subsection{Retrieval Backends in RAGSearch}
+\label{sec:retrieval_backends}
+
+RAGSearch instantiates a fixed set of retrieval backends as interchangeable environments for agentic search. All backends expose a unified retrieval interface to the agent and differ only in how external knowledge is organized and accessed, enabling controlled comparison across retrieval infrastructures.
+
+We include one structure-agnostic dense RAG baseline, which indexes the corpus as unstructured text chunks and retrieves evidence via semantic similarity search. In addition, we consider five representative GraphRAG backends that span diverse graph construction and retrieval strategies:
+\begin{itemize}[leftmargin=*]
+\item \textbf{\textit{Tree Based:}} \textbf{GraphRAG}~\cite{edge2024local}, based on hierarchical communities for multi-hop evidence aggregation; \textbf{RAPTOR}~\cite{sarthi2024raptor}, which retrieves evidence from a recursive summarization tree;
+\item \textbf{\textit{Entity Graph Based:}} \textbf{HippoRAG2}~\cite{gutiérrez2025hipporag2}, which employs entity-centric graph representations;
+\item \textbf{\textit{HyperGraph Based:}}   \textbf{HypergraphRAG}~\cite{luo2025hypergraphrag}, which captures higher-order relations via hyperedges;
+\item \textbf{\textit{Tri-Graph Based:}} \textbf{LinearRAG}~\cite{zhuang2025linearrag}, which imposes a lightweight linear structure over retrieved content.
+\end{itemize}
+
+All GraphRAG backends incur offline preprocessing to construct their graph representations but are accessed through the same agentic interaction protocol described in Section~4.1, without backend-specific agent modifications. This standardized setup enables direct comparison between dense and graph-structured retrieval under both training-free and RL-based agentic inference.
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.10}
+\caption{Overall Contain Exact Match (EM) for single-shot inference, training-free agentic systems, and RL-based agentic systems. $\spadesuit$ denotes the best result among the five GraphRAG variants. \textcolor{UpRed}{$\uparrow$} and \textcolor{DownGreen}{$\downarrow$} indicate, for the same method, the performance difference between graph-based and dense-retrieval-based RAG;$^\dagger$ denotes the in-domain dataset, and $^\star$ denotes the cross-domain dataset.}
+\label{tab:1}
+
+\begin{tabular}{@{} L{2.2cm} L{3.8cm} *{6}{C{1.5cm}} @{}}
+\toprule
+\multirow{2}{*}{\textbf{System}} &
+\multirow{2}{*}{\textbf{Methods}} &
+\multicolumn{3}{c}{\textbf{General QA}} &
+\multicolumn{3}{c}{\textbf{Multi-Hop QA}} \\
+\cmidrule(r){3-5}\cmidrule(l){6-8}
+& & \textbf{NQ$^\dagger$} & \textbf{PopQA$^\star$} & \textbf{TriviaQA$^\star$}
+  & \textbf{HotpotQA$^\dagger$} & \textbf{2Wiki$^\star$} & \textbf{Musique$^\star$} \\
+\midrule
+
+\multirow{2}{*}{\textbf{Single-shot}} &
+Qwen-2.5-7B-Dense & 46.62 & 32.14 & 58.60 & 19.00 & 35.53 & 20.99 \\
+& Qwen-2.5-7B-GraphRAG$^\spadesuit$ &
+48.31\updiff{1.69} & 32.82\updiff{0.68} & 57.65\downdiff{0.95} &
+46.70\updiff{27.70} & 62.56\updiff{27.03} & 47.95\updiff{26.96} \\
+\midrule
+
+\multirow{4}{*}{\textbf{Training-free}} &
+Search-o1-7B-Dense & 38.20 & 25.57 & 58.74 & 33.76 & 29.64 & 12.62 \\
+& Search-o1-7B-GraphRAG$^\spadesuit$ &
+38.34\updiff{0.14} & 28.01\updiff{2.44} & 59.50\updiff{0.76} &
+42.75\updiff{8.99} & 65.56\updiff{35.92} & 32.44\updiff{19.82} \\
+& GraphSearch-7B-Dense & 58.27 & 36.29 & 68.70 & 38.22 & 47.43 & 13.33 \\
+& GraphSearch-7B-GraphRAG$^\spadesuit$ &
+61.22\updiff{2.95} & 44.77\updiff{8.48} & 72.47\updiff{3.77} &
+58.64\updiff{20.42} & 79.88\updiff{32.45} & 55.26\updiff{41.93} \\
+\midrule
+
+\multirow{2}{*}{\textbf{RL-based}} &
+Search-R1-7B & 48.72 & 33.10 & 63.96 & 35.76 & 33.56 & 14.42 \\
+& Graph-R1-7B$^\spadesuit$ &
+46.71\downdiff{2.01} & 36.23\updiff{3.13} & 66.21\updiff{2.25} &
+53.42\updiff{17.66} & 66.25\updiff{32.69} & 40.82\updiff{26.40} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% \begin{table*}[t]
+% \centering
+% \small
+% \setlength{\tabcolsep}{2pt}
+% \renewcommand{\arraystretch}{1.15}
+% \caption{Overall Contain Exact Match (EM) for single-shot inference, training-free agentic systems, and RL-based agentic systems. $\spadesuit$ denotes the best result among the five GraphRAG variants. \textcolor{UpRed}{$\uparrow$} and \textcolor{DownGreen}{$\downarrow$} indicate, for the same method, the performance difference between graph-based and dense-retrieval-based RAG;$^\dagger$ denotes the in-domain dataset, and $^\star$ denotes the cross-domain dataset.}
+% \begin{tabular}{L{4cm} C{1.5cm} C{1.5cm} C{1.5cm} C{1.5cm} C{1.5cm} C{1.5cm}}
+% \toprule
+% \multirow{2}{*}{\textbf{Methods}} &
+% \multicolumn{3}{c}{\textbf{General QA}} &
+% \multicolumn{3}{c}{\textbf{Multi-Hop QA}} \\
+% \cmidrule(r){2-4}\cmidrule(l){5-7}
+% & \textbf{NQ$^\dagger$} & \textbf{PopQA$^\star$} & \textbf{TriviaQA$^\star$}
+% & \textbf{HotpotQA$^\dagger$} & \textbf{2Wiki$^\star$} & \textbf{Musique$^\star$} \\
+% \midrule
+
+% \multicolumn{7}{l}{\textbf{Single-shot Inference}} \\
+% Qwen-2.5-7B-Dense & 46.62 & 32.14 & 58.60 & 19.00 & 35.53 & 20.99 \\
+% Qwen-2.5-7B-GraphRAG$^\spadesuit$ &
+% 48.31\updiff{1.69} &
+% 32.82\updiff{0.68} &
+% 57.65\downdiff{0.95} &
+% 46.70\updiff{27.70} &
+% 62.56\updiff{27.03} &
+% 47.95\updiff{26.96} \\
+% \midrule
+
+% \multicolumn{7}{l}{\textbf{Training-free Agentic Systems}} \\
+% Search-o1-7B-Dense & 38.20 & 25.57 & 58.74 & 33.76 & 29.64 & 12.62 \\
+% Search-o1-7B-GraphRAG$^\spadesuit$ &
+% 38.34\updiff{0.14} &
+% 28.01\updiff{2.44} &
+% 59.50\updiff{0.76} &
+% 42.75\updiff{8.99} &
+% 65.56\updiff{35.92} &
+% 32.44\updiff{19.82} \\
+% GraphSearch-7B-Dense  & 51.80 & 36.29 & 68.70 & 38.22 & 47.43 & 13.33 \\
+% GraphSearch-7B-GraphRAG$^\spadesuit$ &
+% 50.50\downdiff{1.30} &
+% 43.65\updiff{7.36} &
+% 72.47\updiff{3.77} &
+% 58.64\updiff{20.42} &
+% 79.88\updiff{32.45} &
+% 55.26\updiff{41.93} \\
+% \midrule
+
+% \multicolumn{7}{l}{\textbf{RL-based Agentic Systems}} \\
+% Search-R1-7B  & 48.72 & 33.10 & 63.96 & 35.76 & 33.56 & 14.42 \\
+% Graph-R1-7B$^\spadesuit$ &
+% 46.71\downdiff{2.01} &
+% 36.23\updiff{3.13} &
+% 66.21\updiff{2.25} &
+% 53.42\updiff{17.66} &
+% 66.25\updiff{32.69} &
+% 40.82\updiff{26.40} \\
+% \bottomrule
+% \end{tabular}
+
+% \label{tab:1}
+% \end{table*}

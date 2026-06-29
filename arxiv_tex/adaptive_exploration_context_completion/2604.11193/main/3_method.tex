@@ -1,0 +1,98 @@
+\section{Methodology}
+
+
+
+\subsection{Problem Formulation}
+
+We formulate multi-hop Knowledge Graph Question Answering (KGQA) as a sequential decision-making problem over a knowledge graph $\mathcal{K} = {(e_s, r, e_o)} \subseteq \mathcal{E} \times \mathcal{R} \times \mathcal{E}$, where $\mathcal{E}$ and $\mathcal{R}$ denote the sets of entities and relations, respectively. Given a natural language question $q$ with an associated topic entity set $\mathcal{E}_q \subset \mathcal{E}$, the objective is to identify the correct set of answer entities $\mathcal{A}_q \subset \mathcal{E}$. This is achieved by discovering an optimal reasoning path $\mathcal{P}_q \subseteq \{(e_1, r_1, e_2), (e_2, r_2, e_3), \ldots\}$ such that traversing the path from a topic entity in $\mathcal{E}_q$ leads to the correct answer entities in $\mathcal{A}_q$.
+
+\subsection{Overview of Framework}
+
+In this paper, we propose \textbf{Trajectory-aware Reasoning with Adaptive Context and Exploration Priors} (\method{}), an experiential framework designed to enhance the coherence and robustness of multi-hop KGQA. \method{} consists of three core components: (1) \textbf{Dynamic Context Generation.} At each reasoning step, the evolving reasoning path is dynamically translated into a natural language narrative, ensuring that relation selection is informed by the accumulated reasoning context rather than treated as an isolated decision. (2) \textbf{Exploration Generalization.} When a reasoning trajectory terminates, \method{} summarizes the explored path to capture the semantic and structural decisions made during exploration. These summaries are periodically consolidated into generalizable exploration priors, which are then leveraged to inform subsequent reasoning steps. (3) \textbf{Dual-Feedback Re-ranking.} At each step, an LLM-based retriever generates a top-$k$ set of candidate relations conditioned on the contextual narrative, and their ranking is subsequently refined by incorporating the relation sequence of the current path together with the exploration priors.
+
+
+\subsection{Dynamic Context Generation}
+
+A central challenge in multi-hop KGQA is that relation selection at each step is often made in isolation, overlooking the evolving reasoning context. To overcome this limitation, the \textbf{Dynamic Context Generation} module translates preceding constructed reasoning paths into natural language narratives, which serve as contextual guidance for subsequent steps.
+
+Formally, given a question $q$, we denote the preceding reasoning path up to step $t$ as
+\begin{equation}
+\mathcal{P}_q^{(t)} = \{(e_1, r_1, e_2), (e_2, r_2, e_3), \ldots, (e_t, r_t, e_{t+1})\},
+\end{equation}
+where $(e_i, r_i, e_{i+1}) \in \mathcal{K}$.  
+The corresponding relation sequence is
+\begin{equation}
+R_q^{(t)} = (r_1, r_2, \ldots, r_t).
+\end{equation}
+At each step $t$, the relation sequence $R_q^{(t)}$ is transformed into a contextual narrative $C_q^{(t)}$ by an LLM-based generator $f_{\text{ctx}}(\cdot)$:
+\begin{equation}
+C_q^{(t)} = f_{\text{ctx}}(q, R_q^{(t)}),
+\end{equation}
+where $C_q^{(t)}$ is a natural language description of $R_q^{(t)}$ (e.g., ``find the director’s birthplace’’) that conveys the semantics of the traversed relations in the context of the question. 
+
+By conditioning each decision on both the input question $q$ and the contextual narrative $C_q^{(t)}$, this module maintains semantic coherence across reasoning steps and reduces the risk of logical drift during multi-hop reasoning in KGQA.
+
+
+\subsection{Exploration Generalization}\label{sec:eg}
+
+A key limitation of existing KGQA approaches is that prior exploration trajectories are often not explicitly leveraged to inform subsequent reasoning, resulting in redundant exploration behaviors. To address this limitation, the \textbf{Exploration Generalization} module systematically summarizes prior exploration trajectories and abstracts them into reusable exploration priors. 
+
+For a given question $q$, a reasoning trajectory $\mathcal{P}_q^{(t)}$ is considered a terminated exploration $\mathcal{T}$ if its associated relation sequence $R_q^{(t)}$ reaches the maximum step limit $L$ or cannot be further expanded:
+\begin{equation}
+\mathcal{T} = \mathcal{T}_{\text{depth}} \cup \mathcal{T}_{\text{expand}},
+\end{equation}
+where
+\begin{equation}
+\mathcal{T}_{\text{depth}} = \left\{ \mathcal{P}_q^{(t)} \;\middle|\; |R_q^{(t)}| \geq L \right\},
+\end{equation}
+and
+\begin{equation}
+\mathcal{T}_{\text{expand}} = \left\{ \mathcal{P}_q^{(t)} \mid \text{no expansion relations at step } t \right\},
+\end{equation}
+where $|R_q^{(t)}|$ denotes the number of traversed relations. For each terminated trajectory $\mathcal{P}_q^{(t)}$, an LLM-based summarization function $f_{\text{sum}}(\cdot)$ generates a trajectory summary $D_q$ that characterizes its relation sequence $R_q^{(t)}$:
+
+\begin{equation}
+D_q = f_{\text{sum}}(q, R_q^{(t)}).
+\end{equation}
+
+Although each trajectory summary $D_q$ captures useful information about a specific exploration process, it is inherently path-specific and lacks generality. To address this limitation, \method{} further aggregates and abstracts these trajectory summaries into a set of reusable exploration priors $\mathcal{F}$:
+\begin{equation}
+\mathcal{F} = f_{\text{gen}}\!\left(\{ D_q \;\middle|\; \mathcal{P}_q^{(t)} \in \mathcal{T} \}\right),
+\end{equation}
+where $f_{\text{gen}}(\cdot)$ is an abstraction function that identifies recurring exploration patterns. The resulting exploration priors $\mathcal{F}$ are stored as experiential knowledge and integrated into subsequent reasoning process in Sec.~\ref{sec:dual_feedback}.
+
+
+\subsection{Dual-Feedback Re-ranking}
+\label{sec:dual_feedback}
+While Dynamic Context Generation provides local contextual narratives $C_q^{(t)}$ and Exploration Generalization yields global exploration priors $\mathcal{F}$, an effective mechanism is required to integrate these complementary signals during relation selection. To this end, \method{} introduces a \textbf{Dual-Feedback Re-ranking} module that combines both local and global guidance in a two-stage process.
+
+At each step $t$, an LLM-based retriever $f_{\text{ret}}(\cdot)$ first generates a top-$k$ set of candidate relations from the neighborhood of the current entity $e_t$, conditioned on the contextual narrative $C_q^{(t)}$:
+\begin{equation}
+\mathcal{C}_t = f_{\text{ret}}(q, C_q^{(t)}, \mathcal{N}(e_t)),
+\end{equation}
+where $\mathcal{N}(e_t)$ denotes the set of outgoing relations associated with $e_t \in \mathcal{E}$.  
+Subsequently, each candidate relation $r \in \mathcal{C}_t$ is re-ranked by an LLM-based scoring function $f_{\text{rank}}(\cdot)$, which is conditioned on the relation sequence $R_q^{(t)}$ and the exploration priors $\mathcal{F}$:
+\begin{equation}
+s(r) = f_{\text{rank}}(q, R_q^{(t)}, r, \mathcal{F}),
+\end{equation}
+where $s(r)$ denotes the relevance score assigned to relation $r$, reflecting the combined influence of local contextual information and exploration priors. 
+
+Rather than restricting expansion to the single top-ranked relation, \method{} preserves all candidates whose scores exceed a confidence threshold $\zeta$, which is introduced as a hyperparameter. This design choice enables the framework to balance exploratory breadth with selection robustness. Each retained relation induces a new branch by extending the current path, resulting in a set of expanded reasoning trajectories:
+\begin{equation}
+R_q^{(t+1)} =
+\left ( R_q^{(t)} \oplus r \;\middle|\; r \in \mathcal{C}_t,\ s(r) \geq \zeta \right ).
+\end{equation}
+where $\oplus$ denotes the operation of appending relation $r$ to the current relation sequence $R_q^{(t)}$.
+
+By employing $C_q^{(t)}$ for candidate retrieval and $(R_q^{(t)}, \mathcal{F})$ for re-ranking, this module effectively integrates contextual semantics with experiential knowledge, thereby ensuring coherent and robust reasoning.
+
+
+\subsection{Reasoning Process}
+
+The overall reasoning pipeline of \method{} is illustrated in Appendix~\ref{sec:algorithm}. Reasoning trajectories are initialized from the topic entity set $\mathcal{E}_q$ and iteratively expanded through the joint use of Dynamic Context Generation and Dual-Feedback Re-ranking. At each step, the partial relation sequence $R_q^{(t)}$ is transformed into a contextual narrative $C_q^{(t)}$, which conditions both the retrieval and re-ranking of candidate relations. A trajectory $\mathcal{P}_q^{(t)}$ terminates when the maximum hop limit is reached or no feasible expansion is available. For each terminated trajectory, the Exploration Generalization module summarizes the explored path and abstracts it into exploration priors $\mathcal{F}$. Throughout the process, candidate relations with scores exceeding the confidence threshold $\zeta$ are retained to expand new reasoning trajectories. After finishing the above process, the answer set $\mathcal{A}$ is generated from the reasoning path with the highest relevance score.
+
+
+
+
+
+

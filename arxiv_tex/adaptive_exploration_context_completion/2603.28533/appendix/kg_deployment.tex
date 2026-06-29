@@ -1,0 +1,78 @@
+In this section, we describe the KG deployment infrastructure, including SPARQL query tools, constrained random walk, and optimizations.
+We deploy Virtuoso 7.2.5 with Freebase. 
+Entity types and names are specified via \texttt{type.object.type} and \texttt{type.object.name} with language tags. CVT nodes without readable names are flattened into two-hop relations (details are shown in section~\ref{sec:get_triples}).
+
+
+
+\subsection{Entity Resolution}
+\label{sec:entity_resolution}
+
+Entity names are resolved to MIDs via exact match on \texttt{type.object.name@en}. Multiple candidates are disambiguated by selecting the entity with most types. A case-insensitive fallback is applied if needed. Results are cached. Listing~\ref{lst:entity_query} details this process.
+
+
+\begin{lstlisting}[caption={Entity resolution query.},label=lst:entity_query,float=ht]
+PREFIX ns: <http://rdf.freebase.com/ns/>
+SELECT DISTINCT ?entity ?type WHERE {
+  ?entity ns:type.object.name "Barack Obama"@en .
+  ?entity ns:type.object.type ?type .
+} LIMIT 100
+\end{lstlisting}
+
+\subsection{\texttt{get\_relations}}
+\label{sec:get_relations}
+
+\texttt{get\_relations(entity)} returns relation IDs. We split outgoing/incoming queries to avoid timeout, merge results, apply whitelist filtering, and optionally rank by BM25 similarity to return top-\textbf{k}. CVT flatten relations are appended. See Listing~\ref{lst:relations_query}.
+
+
+\begin{lstlisting}[caption={Outgoing/incoming relation queries.},label=lst:relations_query,float=ht]
+-- Outgoing
+PREFIX ns: <http://rdf.freebase.com/ns/>
+SELECT DISTINCT ?relation WHERE {
+  ns:m.02mjmr ?relation ?tail .
+  FILTER(isIRI(?relation) && STRSTARTS(STR(?relation), 
+         "http://rdf.freebase.com/ns/"))
+} LIMIT 100
+
+-- Incoming
+SELECT DISTINCT ?relation WHERE {
+  ?head ?relation ns:m.02mjmr .
+  FILTER(isIRI(?relation) && STRSTARTS(STR(?relation),
+         "http://rdf.freebase.com/ns/"))
+} LIMIT 100
+\end{lstlisting}
+
+
+\subsection{\texttt{get\_triples} and CVT Flattening}
+\label{sec:get_triples}
+
+\texttt{get\_triples(entity, relations)} returns triples. For each relation, we query tails/heads using \texttt{GROUP BY} and \texttt{SAMPLE} to obtain one name per node. CVT nodes (no name or ID-only name) are flattened: we collect their relations, form two-hop names (e.g., \texttt{rel1.rel2}), and resolve via two-hop queries. Flatten relations are cached for future \texttt{get\_relations} calls. 
+Details are shown in Listings~\ref{lst:triples_query}--\ref{lst:cvt_query}.
+
+
+\begin{lstlisting}[caption={Triples query with aggregation.},label=lst:triples_query,float=ht]
+PREFIX ns: <http://rdf.freebase.com/ns/>
+SELECT ?tail (SAMPLE(?name_en) AS ?preferred_name)
+             (SAMPLE(?name_any) AS ?fallback_name)
+WHERE {
+  ns:m.02mjmr ns:people.person.place_of_birth ?tail .
+  OPTIONAL { 
+    ?tail ns:type.object.name ?name_en .
+    FILTER(LANGMATCHES(LANG(?name_en), 'en'))
+  }
+  OPTIONAL { ?tail ns:type.object.name ?name_any . }
+}
+GROUP BY ?tail LIMIT 40
+\end{lstlisting}
+
+\begin{lstlisting}[caption={CVT relation query.},label=lst:cvt_query,float=ht]
+PREFIX ns: <http://rdf.freebase.com/ns/>
+SELECT DISTINCT ?relation WHERE {
+  ns:<cvt_node_id> ?relation ?tail .
+  FILTER(isIRI(?relation) && STRSTARTS(STR(?relation),
+         "http://rdf.freebase.com/ns/"))
+} LIMIT 50
+\end{lstlisting}
+
+
+
+

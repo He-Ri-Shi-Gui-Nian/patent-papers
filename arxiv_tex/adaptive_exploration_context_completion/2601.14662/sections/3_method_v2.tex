@@ -1,0 +1,157 @@
+\section{Agentic Graph Extraction Attack}
+\label{sec:framework}
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[
+        width=0.8\textwidth,
+        trim=30 10 40 10pt,
+        clip
+    ]{figures/proposed_updated.pdf}
+    \vskip -1.5em
+    \caption{Proposed Agentic Graph Extraction Attack.}
+    \label{fig:agent_attack}
+\end{figure*}
+
+To address the technical challenges, we propose \textbf{A}gentic \textbf{G}raph \textbf{E}xtraction \textbf{A}ttack (\textit{\textbf{AGEA}}), an iterative framework designed to extract the private knowledge graph of a GraphRAG system under a strict query budget. 
+As illustrated in Figure~\ref{fig:agent_attack}, AGEA models extraction as a closed feedback loop with four interacting components: an adaptive attack query generator $Q$, a graph extraction--filter module $F$, and two persistent memory modules---Graph Memory $M_{\mathcal{G}}$ and Query Memory $M_Q$.
+
+At $t$-th iteration, the query generator $Q$ formulates a query $q^{(t)}$ conditioned on the current graph state in $M_{\mathcal{G}}$ and historical interactions in $M_Q$. It alternates between \emph{novelty-guided broad exploration} to discover new entities and relation types, and \emph{targeted exploitation} to deepen extraction around previously discovered entities. The query is sent to the victim GraphRAG system, which returns a text response containing retrieved information.
+
+The extraction--filter module $F$ processes the response to obtain candidate entities and relations. To reconcile rapid discovery with high-precision extraction, AGEA maintains two graph states: a \emph{raw} graph $\mathcal{G}_r$ and a \emph{filtered} graph $\mathcal{G}_f$. Candidates are first ingested into $\mathcal{G}_r$ (Discovery Stage) so that novelty signals can be computed immediately and used for the next mode-selection decision. Subsequently, $F$ applies an LLM-based filtering step and commits only the denoised candidates to $\mathcal{G}_f$ (Filtering Stage). This design decouples discovery measurement from quality assessment, preventing aggressive filtering from artificially depressing novelty scores and stalling exploration. The complete extraction procedure is given in Algorithm~\ref{algo} (Appendix~\ref{app: algo}). Next, we introduce the details.
+
+
+\subsection{Graph Knowledge Extraction}
+\label{sec:knowledge_extraction}
+In the $t$-th attack iteration, the attack query generator $Q$ constructs and sends a query $q^{(t)}$ to the victim GraphRAG system, which returns a response $R^{(t)}$ (Section~\ref{query_generator}). 
+The response $R^{(t)}$ often mixes private entities/relations with generic background text, retrieval artifacts, and even hallucinated or incorrect relationships. Therefore, our objective is to extract the underlying private knowledge while filtering out off-topic content and spurious entities/relations. To achieve this, we propose a two-stage graph knowledge extraction pipeline. This design improves query efficiency by maximizing valid, non-redundant graph updates from each response while keeping per-turn overhead low.
+
+
+\noindent\textbf{Stage A: Discovery.}
+The discovery stage performs fast regex-based parsing to extract candidate entities $\hat{\mathcal{V}}_r^{(t)}$ and relationships $\hat{\mathcal{E}}_r^{(t)}$ from $R^{(t)}$. This is enabled by a tailored \textit{universal extraction command} appended to each query, which instructs the victim LLM to output entities and relations in a structured format. 
+We list the detailed extraction patterns and the universal extraction command in Appendix~\ref{universal_extraction_prompt}. 
+The parser is deterministic and lightweight, performing normalization and deduplication. This design allows us to compute discovery signals (novelty scores) on every response without incurring additional LLM calls, a key factor for query-efficient attacks. 
+% The extracted candidate sets ($\hat{\mathcal{V}}_r^{(t)}$, $\hat{\mathcal{E}}_r^{(t)}$) are merged into $\mathcal{G}_r$ to enable novelty computation for the next turn's query generation.
+
+
+\noindent\textbf{Stage B: Graph Filter Agent.}
+The discovery stage may yield noisy candidates $\hat{\mathcal{V}}_r^{(t)}$ and $\hat{\mathcal{E}}_r^{(t)}$ (e.g., overly generic terms, paraphrased duplicates, or spurious relations). We therefore apply an LLM-based graph filter agent $F$ to denoise and consolidate them before updating the filtered graph $\mathcal{G}_f$. 
+
+\emph{Why memory helps.}
+We maintain a graph memory $\mathcal{G}_f^{(t-1)}$ and use it as a global reference for two reasons.
+It not only prevents redundant verification: candidates that match existing nodes/edges are merged directly, reducing repeated LLM calls and stabilizing the graph over long horizons, but also provides \emph{global context} absent from a single response $R^{(t)}$: previously accepted entities, recurring relations, and overall structural patterns. This context lets $F$ judge whether a new candidate is a plausible extension of the current graph or an inconsistent outlier.
+
+\emph{How we filter.}
+Given response $R^{(t)}$ and discovery candidates $\hat{\mathcal{V}}_r^{(t)},\hat{\mathcal{E}}_r^{(t)}$, we first canonicalize candidates and match them against $\mathcal{G}_f^{(t-1)}$ to merge obvious duplicates.
+For the remaining unseen items, $F$ uses (a) the original evidence in $R^{(t)}$ to validate that entities/relations are explicitly supported, and (b) a compact summary of $\mathcal{G}_f^{(t-1)}$ plus coarse graph statistics to enforce \emph{structural plausibility}. By rejecting spurious candidates, the filter preserves precision and prevents low-yield expansions, which is essential for query-efficient reconstruction.
+
+In particular, the filter flags patterns that frequently correspond to extraction artifacts, such as sudden degree spikes or unusually dense new connections, which can indicate a ``hallucinated hub'' that would otherwise pollute many downstream edges. Prompts are provided in Appendix~\ref{app:graph_filter}.
+
+Formally, $F$ outputs $\hat{\mathcal{V}}_f^{(t)}$ and $\hat{\mathcal{E}}_f^{(t)}$ as:
+\begin{align}
+\hat{\mathcal{V}}_f^{(t)}, \hat{\mathcal{E}}_f^{(t)} 
+= F\big(\hat{\mathcal{V}}_r^{(t)}, \hat{\mathcal{E}}_r^{(t)}, R^{(t)}, \mathcal{G}_f^{(t-1)}, p_F\big),
+\end{align}
+where $p_F$ is the system prompt for the graph filter agent. 
+The filtered graph $\mathcal{G}_f^{(t)}$ is then updated by inserting $\hat{\mathcal{V}}_f^{(t)}$ and $\hat{\mathcal{E}}_f^{(t)}$.
+% The system and user prompts for $F$ are provided in Appendix~\ref{filter_system_prompt} and \ref{filter_user_prompt}.
+
+
+\noindent\textbf{Update Graph Query Memories}
+With the extracted $\mathcal{G}_r^{(t)}$ and $\mathcal{G}_f^{(t-1)}$, we update each graph memory module at $t$-th iteration as:
+\begin{align}
+\mathcal{G}_r^{(t)} &= \mathcal{G}_r^{(t-1)} \cup \big(\hat{\mathcal{V}}_r^{(t)}, \hat{\mathcal{E}}_r^{(t)}\big), \\
+\mathcal{G}_f^{(t)}
+&= \mathcal{G}_f^{(t-1)} \cup \big(\hat{\mathcal{V}}_f^{(t)}, \hat{\mathcal{E}}_f^{(t)}\big),
+\end{align}
+where $\mathcal{G}_r^{(0)} = \mathcal{G}_f^{(0)} = \emptyset$. The filtered graph state $\mathcal{G}_f^{(t)}$ is also used by the query generator to identify high-degree hub entities for exploitation and to avoid redundant queries.
+
+% \suhang{give a little bit more explanation on how and why $\mathcal{G}_f^{t-1}$ can help the filtering (added)}
+
+% The GraphRAG query LLM $E$ represents the black-box target system that processes queries and returns natural language responses containing entities and relationships. The extractor has no knowledge of the attacker's internal state and responds to each query independently. 
+%In the $t$-th attack iteration, the query generator \suhang{XXX} generates and sends a query $q^{(t)}$ to the victim Graph RAG,  which returns the response $R^{(t)}$. We will introduce the details of the generator in Section~\suhang{XXX}. As the response contains private entities and relationships along with \suhang{XXX}, the first step is to accurately extract the private knowledge and filter out \suhang{XXXX}. We propose a two-stage extraction pipeline.
+% be the response from the victim Graph RAG query $q^{(t)}$ is processed through the two-stage extraction pipeline.
+
+% \textbf{Stage A (Regex Parsing):}  The response $R^{(t)}$ is parsed into structured entities $\hat{\mathcal{V}}_r^{(t)}$ and relationships $\hat{\mathcal{E}}_r^{(t)}$ using pattern matching and entity/relationship extraction rules. These regex-parsed items are used for novelty computation to measure discovery signal. \suhang{is it possible to add the pattern matching rule we used, put it in the appendix, and mention it here??} \suhang{it is quite strange on why we use a regex parsing, why not directly use an LLM to do this, which has shown great performance}
+
+
+
+% \begin{figure*}[t]
+%     \centering
+%     \includegraphics[width=1.0\textwidth]{latex/figures/proposed_framework-V1.pdf}
+%     \vskip -2em
+%     \caption{Proposed Agentic Graph Extraction Attack.
+%     }
+%     \label{fig:agent_attack}
+% \end{figure*}
+
+\subsection{Query Mode Selection}
+\label{sec:query_mode}
+
+The query generator $Q$ alternates between two modes: exploration and exploitation, which is conceptually related to the classical exploration–exploitation principles~\cite{auer2002finite,xiong2023iterative}. Exploration mode would generate diversified queries to discover new entities and relation types and expand graph coverage, while exploitation mode generates focused queries around selected entities (e.g., high-degree hubs) to densify local neighborhoods and improve extraction efficiency under a fixed query budget. This mode selection is the core mechanism for query efficiency: allocating queries to maximize new graph structure per turn.
+$Q$ maintains its own context memory $M_Q^{(t)}$ storing recent queries/responses and mode-selection statistics; it uses $\mathcal{G}_r^{(t)}$ for novelty computation and $\mathcal{G}_f^{(t)}$ to select hub entities for exploitation. 
+
+
+%\suhang{Specifically, the graph structure is updated as XXX (we can formally defined $G_r$ here and introduce the updating of the memory graph)} 
+To facilitate query mode selection, we compute a novelty score $N^{(t)}\in [0,1]$ from the regex-parsed candidates extracted during the discovery stage. Computing novelty on pre-filter candidates makes it a stable discovery signal that is not affected by downstream denoising. Intuitively, low novelty indicates saturation (the current queries mostly re-extract known nodes/edges), while high novelty indicates productive discovery.
+
+We define turn-level novelty as a weighted average of node- and edge-level novelty, weighted by the number of extracted candidates:
+\begin{align}
+N^{(t)} = \frac{N_{\text{nodes}}^{(t)} \cdot |\hat{\mathcal{V}}_r^{(t)}| + N_{\text{edges}}^{(t)} \cdot |\hat{\mathcal{E}}_r^{(t)}|}{|\hat{\mathcal{V}}_r^{(t)}| + |\hat{\mathcal{E}}_r^{(t)}|},
+\end{align}
+where $\scalemath{0.8}{|\cdot|}$ represents the count operator for unique items, $\scalemath{0.9}{N_{\text{nodes}}^{(t)} = 1 - |\mathcal{V}_r^{(t-1)} \cap \hat{\mathcal{V}}_r^{(t)}|/|\hat{\mathcal{V}}_r^{(t)}}$ and $\scalemath{0.9}{N_{\text{edges}}^{(t)} = 1 - |\mathcal{E}_{r}^{(t-1)} \cap \hat{\mathcal{E}}_r^{(t)}|/|\hat{\mathcal{E}}_r^{(t)}|}$ measure the fraction of newly discovered nodes/edges compared to the cumulative discovery sets $\mathcal{V}_r^{(t-1)}$ and $\mathcal{E}_r^{(t-1)}$.
+
+Using $N^{(t)}$ as a saturation signal, we employ a novelty-aware $\epsilon$-greedy policy for query mode selection. 
+The exploration probability decays over turns as
+$\epsilon^{(t+1)}=\max(\epsilon_{\min},\,\epsilon^{(t)}\cdot 0.98)$,
+with $\epsilon^{(0)}=\epsilon_{\text{init}}=0.3$ and $\epsilon_{\min}=0.05$.
+At each turn, we select \textsf{explore} with probability $\epsilon^{(t)}$.
+Otherwise, we compute recent novelty $\bar{N}^{(t)}$ as the average $N$ over the last 5 turns and compare it to a threshold $\tau^{(t)}$:
+if $\bar{N}^{(t)}<\tau^{(t)}$, we select \textsf{explore} to escape redundant extraction; else we select \textsf{exploit} to deepen promising neighborhoods.
+We set $\tau^{(t)}=\tau_{\text{init}}\cdot \frac{\epsilon^{(t)}}{\epsilon_{\text{init}}}$ so that early in the attack (larger $\epsilon^{(t)}$) the threshold is higher and exploration is more likely in the non-random branch, while later (as $\epsilon^{(t)}$ approaches $\epsilon_{\min}$) the threshold decreases and the policy becomes more exploitation-oriented. More details are given in Appendices~\ref{app:mode_selection} and \ref{app:hyper}. %
+% \footnote{Refer to Appendices~\ref{app:mode_selection} and \ref{app:hyper} for full details.}
+
+
+% Using $N^{(t)}$ as a saturation signal, we employ a novelty-aware epsilon-greedy policy for query mode selection.
+% With probability $\epsilon^{(t)}$, we force exploration to discover new areas. Otherwise, we compute recent novelty $\bar{N}^{(t)}$ as the average novelty over last 5 turns and compare it to a threshold $\tau^{(t)}$: when $\bar{N}^{(t)}<\tau^{(t)}$, we explore to escape redundant extraction; if $\bar{N}^{(t)} \geq \tau^{(t)}$, we exploit to deepen promising neighborhoods. 
+% We set an adaptive threshold $\tau^{(t)}=\tau_{init}\times\frac{\epsilon^{(t)}}{\epsilon_{init}}$, so that early in the attack, the policy with larger $\tau^{(t)}$ favors broad exploration, while in later turns becomes more exploitation-oriented with smaller $\tau^{(t)}$. %
+% \footnote{Refer to Appendix~\ref{app:mode_selection} for more details in the query mode selection. }
+
+%long: We use an adaptive threshold $\tau^{(t)} = \tau_{\text{init}} \times \frac{\epsilon^{(t)}}{\epsilon_{\text{init}}}$, which ensures that early in the attack when $\epsilon^{(t)} \approx \epsilon_{\text{init}}$, the threshold $\tau^{(t)} \approx \tau_{\text{init}}$ is higher, making it easier to trigger exploration (since $\bar{N}^{(t)} < \tau^{(t)}$ occurs more frequently). As the attack progresses and $\epsilon^{(t)}$ decays toward $\epsilon_{\min}$, the threshold $\tau^{(t)}$ decreases proportionally, making it easier to trigger exploitation (since $\bar{N}^{(t)} \geq \tau^{(t)}$ occurs more frequently). This adaptive design ensures the policy transitions from broad exploration in early stages to focused exploitation in later stages.
+
+% \textbf{Exploration Failure Detection:} To prevent getting stuck in ineffective exploration loops when novelty remains consistently low, we monitor the success rate of recent explore queries. If fewer than 20\% of recent explore queries (minimum 5 queries in last 20 turns) successfully add new nodes to the graph, we temporarily force exploit mode, breaking the feedback loop. This safety mechanism ensures the policy adapts when exploration becomes ineffective, even if novelty-based switching would otherwise continue exploring.
+
+\subsection{Attack Query Generation}
+\label{query_generator}
+With the selected mode $m^{(t)}\in\{\textsf{explore}, \textsf{exploit}\}$ at $t$-th attack, the agentic query generator LLM $Q$ dynamically generates query $q^{(t)}$ using the extracted graph state, recent interaction history, and novelty feedback to maximize graph growth per query.
+In \emph{explore} mode, $Q$ is designed to "cast a wide net" by proposing diverse, high-coverage queries that can surface new entity types/relation categories. 
+we provide the prompt in Appendix~\ref{explore_prompt}. 
+% \suhang{Can we briefly explain the high-level idea of the prompt and why it is designed in this way in the main content? (added)}
+%$Q$ is prompted to generate diverse, wide-net queries that introduce new entity types or relation categories: the explore prompt provides a short history of recent queries and a compact summary of well-connected entities for guidance. %\footnote{Explore prompt is provided in Appendix~\ref{explore_prompt}.}
+% recent query history (last 3 queries) to ensure topic diversity, top-$k$ hub entities from the current extracted graph (for guidance only, maintaining black-box constraints), and domain-specific exploration seeds. 
+In \emph{exploit} mode, $Q$ is instead encouraged to perform targeted probing: it focuses on a selected entity $e$ and asks for additional relations that expand beyond the currently known neighborhoods. We use the prompt in Appendix~\ref{exploit_prompt}.
+%$Q$ is encouraged to focus on a specific target entity $e$ and request additional relations not present in its known neighborhood $\mathcal{N}(e) = \{v \mid (e, v) \in \mathcal{G}_{v,\text{edges}}^{(t)}\}$: the exploit prompt includes the current neighbor list and a query-round aware index to enable multiple probing rounds. %
+%\footnote{Exploit prompt is provided in Appendix~\ref{exploit_prompt}.}
+
+% receives a target entity $e$ selected via degree-weighted sampling from the extracted graph, current connections of $e$: $\mathcal{N}(e) = \{v \mid (e, v) \in \mathcal{G}_{v,\text{edges}}^{(t)}\}$, query round number $r$ (allowing multiple rounds per entity for high-degree hubs), and recently discovered entities (last 2 turns) for bonus weighting.
+
+To choose the exploitation target entity, we assume that high-importance entities act as hubs that participate in many relations, thus further exploitation on them tends to yield more new edges and accelerate graph extraction. Therefore, we sample entities from $\mathcal{G}_f^{(t-1)}$ with probability proportional to their structural importance (e.g., degree-based importance):
+% \suhang{can we explain why it is designed in this way?? Do not worry about the space. We have enough space. Important things should be in the main content if possible (added)}:
+%degree-weighted sampling with frequency penalties:
+\begin{align}
+w(e) = \beta(e) \cdot \frac{\max\{\log(\deg(e) + 1), 1\}}{1 + \lambda \cdot \mathrm{freq}(e)},
+%w(e) = \max\{\log(\deg(e) + 1), 1.0\} \times\notag \\ \beta_{\text{recent}}(e) \cdot \frac{1}{1 + 0.05 \cdot \mathrm{freq}(e)},
+\end{align}
+where $\deg(e)$ is the degree of entity $e$,
+%in $\mathcal{G}_f^{(t)}$, 
+$\mathrm{freq}(e)$ counts for query frequency for $e$, and $\beta_{}(e)$ up-weights newly discovered entities. 
+% \suhang{let's change $\beta_{}(e)$ to $\beta(e)$ to save space (addressed)} 
+% Here, we consider two hyperparameters, where the coefficient $\lambda$ controls the strength of the frequency penalty, and $\beta_{\text{recent}}(e)$ applies a recency-based up-weighting to newly discovered entities. The specific values of these parameters are specified in Section~\jiahao{TODO: Put experiment section number here. Say that we choose $\lambda = 0.05$ and $\beta_{\text{recent}}(e) = 1.2$ if $e$ was recently discovered (otherwise 1.0)}. In our framework, we sampled the entities with probability proportional to $w(e)$. 
+% The adaptive query generator $Q$ uses the filtered graph state $\mathcal{G}_f^{(t-1)}$, mode $m^{(t+1)}$, novelty score $\bar{N}^{(t)}$, and system prompt $p_Q$ to generate the next attack query:
+We generate:
+\begin{align}
+q^{(t)} = Q(\mathcal{G}_f^{(t-1)}, m^{(t)}, \bar{N}^{(t)}, p_Q^{m^{(t)}}),%, \quad t=1,\ldots,T
+\end{align}
+where $p_Q^{\textsf{explore}}$ and $p_Q^{\textsf{exploit}}$ are mode-specific prompt templates (Appendix ~\ref{app:query_generator}).
+After the attack query generation, we append the universal extraction command (Appendix~\ref{universal_extraction_prompt}) before sending the query to the victim GraphRAG system. 
+% The generator produces natural language queries that are contextually aware of the current graph state, avoiding redundant queries and adapting to extraction success patterns. For exploitation queries on entities with existing connections, the generator explicitly instructs the LLM to find relationships \emph{not} already in the connection list, enabling deeper extraction.
+

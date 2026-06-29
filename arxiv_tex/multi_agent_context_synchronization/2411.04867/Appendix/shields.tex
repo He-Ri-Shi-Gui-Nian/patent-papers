@@ -1,0 +1,204 @@
+\section{Details on Shield Construction}\label{appsec:shields}
+
+% \subsection{Prisoner's Dilemma}
+
+% Since in general, RL agents optimise their own reward (towards the Nash equilibrium), they would learn to defect. Thus, a shield can be built that forces the agent to cooperate regardless of what the other agent did in the previous time step:
+% \begin{lstlisting}[language=Prolog, caption={Shield for \textit{Prisoner's Dilemma}}]
+% % actions
+% action(0)::action(cooperate);
+% action(1)::action(defect).
+
+% % sensors
+% sensor_value(0)::sensor(other_cooperate).
+% sensor_value(1)::sensor(other_defect).
+
+% % safety constraints
+% unsafe_next :- action(defect).
+% safe_next :- \+unsafe_next.
+% \end{lstlisting}
+
+% Within the literature accounting the \textit{Prisoner's Dilemma}, such an agent is known as an \textit{always cooperate} agent . By computing the safety of an action under this shield we can monitor whether it was a cooperate or defect action due to the safety constraint (the cooperative action has a safety of 1 and defect has a safety of 0). Variations on this simple shield structure will be used often for other experiments as well in this thesis. 
+
+% Also notice that the information that is passed into the sensors are not being used at all in this shield -- these are redundant and we can simplify the shield as follows:
+
+% \begin{lstlisting}[language=Prolog, caption={Simplified shield (\shieldname{coop}) for \textit{Prisoner's Dilemma}}, label={shield:pd}]
+% % actions
+% action(0)::action(cooperate);
+% action(1)::action(defect).
+
+% % safety constraints
+% unsafe_next :- action(defect).
+% safe_next :- \+unsafe_next.
+% \end{lstlisting}
+
+
+\subsection{Stag-Hunt}
+
+For the pure equilibria, {cooperation} would refer to collaborating with the other agent to hunt the stag and \texttt{defect} refers to an agent individually going for the hare instead.
+\begin{lstlisting}[language=Prolog, caption={Shield (\shieldname{pure}) for pure Nash equilibrum for \textit{Stag-Hunt}}, label={shield:pure}]
+% actions
+action(0)::action(stag);
+action(1)::action(hare).
+
+% safety constraints
+unsafe_next :- action(hare).
+safe_next :- \+unsafe_next.
+\end{lstlisting}
+
+For the mixed equilibria, we would need a more sophisticated shield, given the current limitations of the existing implementation of \citet{yang2023safe}. One way of doing this is to add soft constraints to the actions based on how far they differ from the mixed equilibrium. As a proxy for the policy of the agent, a set of the latest $h$ historical actions of the agents can be collected -- this is termed a \textit{buffer}. A \textbf{mean policy} $\hat{\pi}_h$ at the current time $t$ can then be derived from these actions, iterating over all $a'\in\mathcal{A}$:
+\begin{equation}
+    \hat{\pi}_h(a'\mid s) = \frac{1}{h}\sum_{i\in\{1,...,h\}} \mathbb{I}\left(a^{t-i}=a'\right)
+\end{equation}
+
+Let an \textit{a-priori} normative policy be ${\pi}^*$, say, the mixed Nash strategy. If $\hat{\pi}_h$ is too distant from the expected mixed strategy with respect to some divergence measure, then we can re-normalize the input policy using Definition~2 to be more similar to ${\pi}^*$. The divergence measure should be bounded between $[0,1]$ in order to feed it into the ProbLog shield program. For \textit{Stag-Hunt}, let such an input be the absolute difference between $\hat{\pi}_h$ and ${\pi}^*$:
+\begin{align}
+    \texttt{sensor(stag\_diff)} &:= |{\pi}^*(\text{\textit{Stag}}\mid s)-\hat{\pi}_h(\text{\textit{Stag}}\mid s)|\\
+    \texttt{sensor(hare\_diff)} &:= |{\pi}^*(\text{\textit{Hare}}\mid s)-\hat{\pi}_h(\text{\textit{Hare}}\mid s)|
+\end{align}
+% \newpage
+We can then construct a shield as follows:
+
+\begin{lstlisting}[language=Prolog, caption={Shield (\shieldname{mixed}) towards mixed Nash equilibrum for \textit{Stag-Hunt}}, label={shield:mixed}]
+% actions
+action(0)::action(stag);
+action(1)::action(hare).
+
+% sensors
+sensor_value(0)::sensor(stag_diff).
+sensor_value(1)::sensor(hare_diff).
+
+% safety constraints
+unsafe_next :- action(stag), sensor(stag_diff).
+unsafe_next :- action(hare), sensor(hare_diff).
+safe_next :- \+unsafe_next.
+\end{lstlisting}
+
+The constraints that define the value of the \texttt{unsafe\_next} predicate can be interpreted as \textit{it is unsafe to take action stag proportional to the value of sensor(stag\_diff)} (and analogously for playing \textit{Hare}). Thus, the higher the difference between the Nash strategy and the historical policy for each agent, the more the policy is normalized. The policy is not normalized at all when \texttt{sensor(stag\_diff)} and \texttt{sensor(hare\_diff)} are both zero. In this case, the overall policy is perfectly safe.
+
+For the experiments discussed below, the buffer length is set to $h=50$. Additionally, under the payoff matrix in Figure~\ref{fig:app:nfg_utilities}, the \textit{a priori} mixed Nash equilibrium can be computed such that $\pi^*(\text{\textit{Stag}}\mid s)=0.6$ and $\pi^*(\text{\textit{Hare}}\mid s)=0.4$ for both agents. The evaluation safety is computed based on $\mathcal{T}_{pure}$ as it directly reflects the actions of the agents (with $\mathbf{P}_{\mathcal{T}_{pure}}(\text{\textit{Stag}}\mid s)=1$ and $\mathbf{P}_{\mathcal{T}_{pure}}(\text{\textit{Hare}}\mid s)=0$).
+
+\subsection{Centipede Game}
+
+Since the agents have two actions, we can use a shield to force the agents to always play \textit{C} at every time step (regardless of previous actions) until the game terminates and a reward is attained using the following shield.
+\begin{lstlisting}[language=Prolog, caption={Simple shield \shieldname{continue} for \textit{Centipede}}, label={shield:centipede}]
+% actions
+action(0)::action(continue);
+action(1)::action(stop).
+
+% safety constraints
+unsafe_next :- action(stop).
+safe_next :- \+unsafe_next.
+\end{lstlisting}
+As a result, it is expected that shielded agents will always continue, as this is the only safe action in any round.
+
+
+\subsection{Extended Public Goods Game}
+
+Since, at each time step $t$, there is effectively a new simultaneous game with 2 actions, we can dictate the actions of the agents with a simple shield such as the one used for the \textit{Centipede Game}. Thus, it is trivial to create a shield that dictates the actions of the agents to have a certain policy such as \textit{always play cooperate}, regardless of inputs.
+
+Let us instead create a shield that that uses a model $\hat{\mu}$ of the true $\mu$ estimated over training so far. Additionally, we can use the standard deviation of the multiplication factors so far, $\hat{\sigma}$ to model the uncertainty the agent has with respect to the current $f_t$ compared to $\hat{\mu}$. This can be done online without the need of a buffer using Welford's method \citep{welford1962note}. 
+% by setting $\hat{\mu}_{new}\leftarrow\hat{\mu}_{old}+(f_t-\hat{\mu}_{old})/t$. 
+We then compare $\hat{\mu}$ to the predetermined Nash outcomes and decide if it is high enough to warrant defecting -- if $\hat{\mu}\geq1$, \textit{cooperate}, else \textit{defect}. In Shield~\ref{shield:pgg}, this is set as the (Boolean) value of the fact \texttt{sensor(mu\_high)} -- its value is set to 1 if $\hat{\mu}\geq1$ else 0. The agents will err on the side of a cooperative strategy when $1<\hat{\mu}<2$, where the rational strategy would be mixed.
+
+We then might want to include uncertainty to increase exploitation if it has high certainty about the environment (align the agent more strongly with the inductive bias induced via the shield), and contrariwise, increase exploration if there is high uncertainty (guide the agent more weakly). We must thus construct a smooth distance measure $d$ between $f_t$ and $\hat{\mu}$ bounded between $[0,1]$ such that $d(f_t,\hat{\mu})=1$ when $f_t=\hat\mu$ and $d(f_t,\hat{\mu})=0$ when $|f_t-\hat{\mu}|\rightarrow\infty$. One of many possibilities is described here. First, we compute the $z$-score of the current $f_t$ with respect to the estimated parameters so far:
+\begin{equation}
+    z(f_t\mid \hat{\mu}, \hat{\sigma}) = \frac{f_t-\hat{\mu}}{\hat{\sigma}}
+\end{equation}
+We then use the CDF of a standard normal distribution to translate this into a probability value $\Phi(z(f_t\mid \hat{\mu}, \hat{\sigma}))$. Subtracting 0.5 centers $\Phi(z(f_t\mid\hat{\mu}, \hat{\sigma}))$ around 0 for $z(f_t\mid \hat{\mu}, \hat{\sigma})=0$. Doubling the absolute value and subtracting from 1 inverts the scale to make it 1 at the mean and symmetrically 0 at extreme tails. Thus the final distance function is:
+\begin{equation}
+    d(f_t,\hat{\mu}) = 1-2\cdot\left|\Phi(z(f_t\mid \hat{\mu}, \hat{\sigma}))-0.5\right|
+\end{equation}
+
+\noindent In Shield~\ref{shield:pgg} below, the value of the fact \texttt{sensor(f\_certainty)} is thus set to $d(f_t,\hat{\mu})$. Thus using the inputs defined above, the shield is constructed as follows:
+\begin{lstlisting}[language=Prolog, caption={Shield (\shieldname{EPGG}) for EPGG capturing uncertainty.}, label={shield:pgg}]
+% actions
+action(0)::action(cooperate);
+action(1)::action(defect).
+
+% sensors
+sensor_value(0)::sensor(mu_high).
+sensor_value(1)::sensor(f_certainty).
+
+% safety constraints
+unsafe_next :- \+action(cooperate), sensor(mu_high), sensor(f_certainty).
+unsafe_next :- \+action(defect), \+sensor(mu_high), sensor(f_certainty).
+safe_next :- \+unsafe_next.
+\end{lstlisting}
+
+\noindent The two constraints on lines 10 and 11 essentially say, \textit{it is unsafe if cooperate is not played and $\hat\mu>1$ with some certainty about $f_t$} (and analogously for \textit{defect}).
+
+
+\subsection{Markov Stag-Hunt}
+
+Let us focus on constructing a shield that might help the agents learn how to cooperate and hunt a stag together. Similar shields can be constructed for non-cooperative behavior too, however, it is much harder for the agents to converge to the cooperative behavior in the first place.
+
+Since the environment is rather complex, there are a myriad of ways this goal may be achieved, and two are described here. The inputs to the shield are the policy and some sensors that describe relative positions of the stag and the other agent:
+
+\begin{lstlisting}[language=Prolog, caption={Partial shield for \textit{Markov Stag-Hunt.}}]
+% actions
+action(0)::action(left);
+action(1)::action(right);
+action(2)::action(up);
+action(3)::action(down);
+action(4)::action(stay).
+
+% sensors
+sensor_value(0)::sensor(left).
+sensor_value(1)::sensor(right).
+sensor_value(2)::sensor(up).
+sensor_value(3)::sensor(down).
+sensor_value(4)::sensor(stag_near_self).
+sensor_value(5)::sensor(stag_near_other).
+\end{lstlisting}
+
+The value of the sensor predicates \texttt{sensor(stag\_near\_self)} and \texttt{sensor(stag\_near\_other)} is 1 when the stag is adjacent to the acting agent and the other agent respectively, and 0 otherwise. The sensors with literals named after the cardinal directions are binary and represent the relative position of the stag with respect to the agent -- for example, \texttt{sensor(left)} is 1 when the stag is strictly to the left of the acting agent and 0 otherwise.
+
+A first shield can be constructed that influences the actions of the agents such that they strongly tend to go towards the stag, wait for the other agent, and then hunt the stag together. Such a shield can be implemented as such:
+\begin{lstlisting}[language=Prolog, caption={Strong shield ($\mathcal{T}_{strong}$) for \textit{Markov Stag-Hunt}.}, label={shield:msh_strong}]
+% actions & sensors go here
+...
+
+% define movement towards the stag
+go_towards_stag :- action(Dir), sensor(Dir).
+% define a state where both agents are near the stag
+stag_surrounded :- sensor(stag_near_self), 
+                   sensor(stag_near_other).
+
+% 1) it is unsafe to not go towards the stag if it not near
+unsafe_next :- \+go_towards_stag, 
+               \+sensor(stag_near_self).
+% 2) it is unsafe to not wait, the stag is near without another agent
+unsafe_next :-  \+action(stay), sensor(stag_near_self), 
+                \+sensor(stag_near_other).
+% 3) it is unsafe to not hunt, the stag is near and there is another agent
+unsafe_next :- \+go_towards_stag, stag_surrounded.
+
+% combine all unsafe conditions to get safety
+safe_next :- \+unsafe_next.
+\end{lstlisting}
+
+This shield will be referred to as the \textit{strong shield} in this environment, since it significantly affects the policy of the agent regardless of its position on the grid.
+
+However, in general, depending on the environment, we may not know how to construct a strongly shielded agent or we may wish to constrain the agent less in order for it to learn optimal policies in a more end-to-end fashion. Thus, in these cases, a shield can be constructed that only significantly effects the agent's policy in a small number of cases. For \textit{Markov Stag-Hunt} another shield created is the following:
+
+\begin{lstlisting}[language=Prolog, caption={Weak shield ($\mathcal{T}_{weak}$) for \textit{Markov Stag-Hunt}.}, label={shield:msh_weak}]
+% actions & sensors go here
+...
+
+% define movement towards the stag
+go_towards_stag :- action(Dir), sensor(Dir).
+% define a state where both agents are near the stag
+stag_surrounded :- sensor(stag_near_self), 
+                   sensor(stag_near_other).
+
+% it is unsafe not to hunt stag and it is surrounded
+unsafe_next :- \+go_towards_stag, stag_surrounded.
+safe_next :- \+unsafe_next.
+
+% if the stag is not nearby, any action is fine (safety=1)
+safe_next :- \+sensor(stag_near_self).
+\end{lstlisting}
+
+This shield will be called the \textit{weak shield} as it affects the policy of an agent that is in the neighborhood of the stag. It only guides the agent to hunt the stag when another agent is nearby, and otherwise allows the policy to explore freely. 
+
+The set of safety-related sentences $\mathcal{BK}$ for the weak shield can be argued to be a subset of that of the strong shield ($\mathcal{BK}_{weak}\subset\mathcal{BK}_{strong}$). An additional line (line 14 in the weak shield) has to be added to ensure that the behaviour of the agent over all the sensor space is well-defined, and to allow any policy to be safe in the complement of $\mathcal{BK}_{weak}$ with respect to $\mathcal{BK}_{strong}$ (i.e. the sentences $\mathcal{BK}_{strong}\setminus\mathcal{BK}_{weak}$).

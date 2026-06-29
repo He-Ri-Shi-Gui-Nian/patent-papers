@@ -1,0 +1,190 @@
+
+\begin{algorithm}[H]
+\caption{\hero — Top Level}
+\begin{algorithmic}[1]
+\Require query $q$, corpus $\mathcal{D}$, orchestrator $\pi_{\mathcal{O}}$, iterations $T$
+\Ensure optimized experience library $\mathcal{E}$, evolved agent prompts $\{\rho_1, \dots, \rho_K\}$
+
+\State $\mathcal{E} \leftarrow \emptyset$
+\State $\mathcal{N} \leftarrow \textsc{InitializeAgents}()$
+\Comment{each $\mathcal{N}_i = (\pi_i, \rho_i, \mathcal{T}_i)$}
+
+\For{$t = 1$ \textbf{to} $T$}
+    \State Sample query $q \sim \mathcal{Q}$
+
+    \Comment{Orchestration }
+    \State $\Gamma \leftarrow \textsc{Orchestrate}(q, \mathcal{E}, \mathcal{N})$
+    \Comment{sample topology: order + dependencies}
+    \State $\tau \leftarrow \textsc{Execute}(\Gamma, q, \mathcal{D})$
+    \Comment{run agents, produce trajectory}
+
+    \Comment{Gradient-free GRPO-style orchestrator update}
+    \State $\textsc{OrchestratorUpdate}(q, \mathcal{E}, \mathcal{N})$
+
+    \Comment{RoPE: agent prompt evolution}
+    \State $\mathcal{N}_{\text{fail}} \leftarrow \pi_{\mathcal{O}}.\textsc{IdentifyFailedAgents}(\tau)$
+    \For{each $\mathcal{N}_i \in \mathcal{N}_{\text{fail}}$}
+        \State $\textsc{RoPE}(\mathcal{N}_i, \tau)$
+    \EndFor
+\EndFor
+
+\State \Return $\mathcal{E},\ \{\rho_1, \dots, \rho_K\}$
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+\caption{OrchestratorUpdate (GRPO-style)}
+\begin{algorithmic}[1]
+\Require query $q$, experience library $\mathcal{E}$, agent set $\mathcal{N}$, group size $G$
+
+\State $\text{group} \leftarrow [\,]$
+\For{$i = 1$ to $G$}
+    \State $\Gamma_i \leftarrow \textsc{SampleTopology}(q, \mathcal{E}, \mathcal{N})$
+    \State $\tau_i \leftarrow \textsc{Execute}(\Gamma_i, q, \mathcal{D})$
+    \State $r_{\text{task}} \leftarrow \textsc{Evaluate}(\tau_i,\ \text{metric}=\text{F1})$
+    \State $r_{\text{eff}} \leftarrow \textsc{Evaluate}(\tau_i,\ \text{metric}=\text{token\_cost})$
+    \State $\text{group}.\textsc{Append}\bigl((\Gamma_i,\, \tau_i,\, r_{\text{task}},\, r_{\text{eff}})\bigr)$
+\EndFor
+
+\If{$\neg\,\textsc{HasMixedOutcomes}(\text{group})$}
+    \State \Return
+    \Comment{Reflection and insight extraction is only based on groups that have explicit successful and failed trajectories}
+\EndIf
+
+\State $\text{group}_{\text{sorted}} \leftarrow \textsc{Sort}\!\left(\text{group},\ \text{key}=(r_{\text{task}}{\downarrow},\, r_{\text{eff}}{\uparrow})\right)$
+\Comment{task perf first, efficiency second}
+
+\State $\mathcal{I} \leftarrow \pi_{\mathcal{O}}.\textsc{ReflectOnGroup}(\text{group}_{\text{sorted}})$
+\Comment{natural language semantic advantages}
+
+\State $\textsc{ExperienceLibraryUpdate}(\mathcal{E}, \mathcal{I}, q)$
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+\caption{ExperienceLibraryUpdate (ADD / MERGE / PRUNE / KEEP)}
+\begin{algorithmic}[1]
+\Require experience library $\mathcal{E}$, new insights $\mathcal{I}$, query $q$
+
+\State $c \leftarrow \textsc{CharacterizeQuery}(q)$
+
+\For{each insight $z \in \mathcal{I}$}
+    \State $\text{matches} \leftarrow \textsc{Retrieve}(\mathcal{E}, z, c)$
+
+    \If{$\text{matches} = \emptyset$}
+        \State $\mathcal{E}.\textcolor{blue}{\textsc{Add}}\bigl((c,\, z,\, u{=}0)\bigr)$
+        \Comment{novel insight}
+
+    \ElsIf{$\textsc{Complementary}(z,\, \text{matches})$}
+        \State $\mathcal{E}.\textcolor{orange}{\textsc{Merge}}(z,\, \text{matches})$
+        \Comment{combine semantically similar entries}
+
+    \ElsIf{$\textsc{Conflicts}(z,\, \text{matches})$}
+        \State $\text{low}_u \leftarrow \textsc{FilterLowUtility}(\text{matches})$
+        \State $\mathcal{E}.\textcolor{green}{\textsc{Prune}}(\text{low}_u)$
+        \Comment{remove conflicting or stale entries}
+
+    \Else
+        \State $\mathcal{E}.\textcolor{purple}{\textsc{Keep}}()$
+        \Comment{no change needed}
+    \EndIf
+\EndFor
+
+\For{each $(c,\, z,\, u) \in \mathcal{E}$}
+    \If{$z$ was used \textbf{and} outcome $=$ success}
+        \State $u \leftarrow u + 1$
+    \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+\caption{Orchestrate (experience-guided topology sampling)}
+\begin{algorithmic}[1]
+\Require query $q$, experience library $\mathcal{E}$, agent set $\mathcal{N}$
+
+\State $c \leftarrow \textsc{CharacterizeQuery}(q)$
+
+\State $\mathcal{E}_{\text{rel}} \leftarrow [\,]$
+\For{each $(c',\, z,\, u) \in \mathcal{E}$ sorted by $u$ descending}
+    \If{$\textsc{Similar}(c', c)$ \textbf{and} $\neg\,\textsc{Redundant}(z,\, \mathcal{E}_{\text{rel}})$}
+        \State $\mathcal{E}_{\text{rel}}.\textsc{Append}((z, u))$
+        \Comment{balance utility and diversity}
+    \EndIf
+\EndFor
+
+\State $\Gamma \sim \pi_{\mathcal{O}}\!\left(\cdot \mid q,\, \mathcal{E}_{\text{rel}},\, \mathcal{N}\right)$
+\Comment{$\Gamma$ specifies agents, execution order, dependencies}
+
+\State \Return $\Gamma$
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+\caption{RoPE — Role-aware Prompt Evolution}
+\begin{algorithmic}[1]
+\Require failed agent $\mathcal{N}_i$, global trajectory $\tau$
+
+\State $\mathcal{B}_i \leftarrow \textsc{GetRecentFailures}(\mathcal{N}_i)$
+\Comment{buffer of recent failed trajectories}
+
+\State $\text{variants} \leftarrow [\,]$
+\For{each $\text{axis} \in \{\text{efficiency},\ \text{thoroughness},\ \text{risk\_sensitivity}\}$}
+    \State $\rho^{\text{var}} \leftarrow \textsc{GenerateVariant}(\rho_i,\ \text{axis})$
+    \State $\text{variants}.\textsc{Append}(\rho^{\text{var}})$
+\EndFor
+
+\State $\text{results} \leftarrow [\,]$
+\For{each $\rho^{\text{var}} \in \text{variants}$}
+    \State $\mathcal{N}_i.\rho \leftarrow \rho^{\text{var}}$
+    \State $\tau^{\text{var}} \leftarrow \textsc{ReExecute}(\tau,\, \mathcal{N}_i)$
+    \Comment{replay full trajectory with variant prompt}
+    \State $\text{results}.\textsc{Append}\bigl((\rho^{\text{var}},\, \tau^{\text{var}},\, \textsc{Eval}(\tau^{\text{var}}))\bigr)$
+\EndFor
+
+\State $\Delta\rho_i^{op} \leftarrow \textsc{ExtractOperationalRules}(\mathcal{B}_i,\ \text{results})$
+\Comment{short-term: correct immediate failure patterns}
+\State $\Delta\rho_i^{bp} \leftarrow \textsc{ExtractBehavioralPrinciples}(\mathcal{B}_i,\ \text{results})$
+\Comment{long-term: generalize across failure patterns}
+
+\State $\Delta\rho_i \leftarrow \Delta\rho_i^{op} + \Delta\rho_i^{bp}$
+
+\State $\rho_i^{t+1} \leftarrow \Pi_{\mathcal{C}}\!\left(\rho_i^{t} \oplus \Delta\rho_i\right)$
+\Comment{project onto length and coherence constraints $\mathcal{C}$}
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}[H]
+\caption{TopologyMutation (structural fallback)}
+\begin{algorithmic}[1]
+\Require current topology $\Gamma$, failed agents $\mathcal{N}_{\text{fail}}$, agent pool $\mathcal{N}$
+\Comment{triggered when trajectories consistently fail, \eg F1 $= 0$}
+
+\State $\mathcal{C}_{\Gamma} \leftarrow [\,]$
+\Comment{candidate topologies}
+
+\For{each $\mathcal{N}_i \in \mathcal{N}_{\text{fail}}$}
+
+    \State \textbf{// Option A: replace failed agent}
+    \State $\mathcal{N}_i' \leftarrow \textsc{SelectAlternative}(\mathcal{N},\ \text{exclude}=\mathcal{N}_i)$
+    \State $\Gamma_{\text{replace}} \leftarrow \Gamma\ \text{with}\ \mathcal{N}_i\ \text{replaced by}\ \mathcal{N}_i'$
+    \State $\mathcal{C}_{\Gamma}.\textsc{Append}(\Gamma_{\text{replace}})$
+
+    \State \textbf{// Option B: augment topology}
+    \State $\mathcal{N}_i^{\text{new}} \leftarrow \textsc{CreateNewAgent}()$
+    \State $\Gamma_{\text{augment}} \leftarrow \Gamma\ \text{with}\ \mathcal{N}_i^{\text{new}}\ \text{inserted after}\ \mathcal{N}_i$
+    \State $\mathcal{C}_{\Gamma}.\textsc{Append}(\Gamma_{\text{augment}})$
+
+\EndFor
+
+\For{each $\Gamma' \in \mathcal{C}_{\Gamma}$}
+    \State $\textsc{OrchestratorUpdate}(q,\, \mathcal{E},\, \mathcal{N},\ \text{topology}{=}\Gamma')$
+    \Comment{feed candidates back into GRPO loop}
+\EndFor
+\end{algorithmic}
+\end{algorithm}

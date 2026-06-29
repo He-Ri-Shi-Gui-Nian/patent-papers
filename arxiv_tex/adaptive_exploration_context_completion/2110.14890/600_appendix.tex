@@ -1,0 +1,122 @@
+% !TEX root = main.tex
+
+
+\newpage
+\onecolumn
+\appendix
+\begin{center}
+\begin{huge}
+\textbf{Appendix}
+\end{huge}
+\end{center}
+
+\section{Query computation plan}\label{app:computegraph}
+
+As shown in~\Figref{fig:query}, the computation plan of a query consists of nodes $\Vcal_q \cup \{V_1, \dots, V_k, V_?\}$. Note each node of the computation plan corresponds to \emph{a set of entities} on the KG. The edges on the computation plan represent a logical/relational transformation of this set:
+\vspace{-1mm}
+\begin{enumerate}[noitemsep,topsep=0pt,parsep=1pt,partopsep=0pt, leftmargin=*]
+    \item \textbf{Relation Projection:} Given a set of entities $S \subseteq \Vcal$ and relation type $r \in \Rcal$, compute adjacent entities $\cup_{v \in S} A_r(v)$ related to $S$ via $r$: $A_r(v) \equiv \{v^{\prime} \in \Vcal: \ (v, r, v^{\prime})\in\Ecal\}$.
+    \item \textbf{Intersection:} Given sets of entities $\{ S_1, S_2, \ldots, S_n\}$, compute their intersection $\cap_{i = 1}^n S_i$.
+    \item \textbf{Complement/Negation:} Given a set of entities $S \subseteq \Vcal$, compute its complement $\overline{S} \equiv \Vcal \:\backslash\: S$.
+\end{enumerate}
+\vspace{-1mm}
+According to the De Morgan's laws,  
+$\cup_{i=1}^n S_i$ is equivalent to $\overline{\cap_{i=1}^n \overline{S}}$, union operation can be replaced with three negation and one intersection operations. 
+
+\input{110_models}
+
+\section{Reverse directional sampling}
+\label{app:reverse_sample}
+Following prior work \citep{ren2020query2box,ren2020beta}, we use reverse directional sampling to construct queries from a KG. The overall instantiation process corresponds to a depth-first search where at each step we aim to ground a node/edge on the query structure with an entity/relation from the KG. Here we use one example to illustrate the whole idea. As shown in \Figref{fig:query}, if we aim to instantiate a \texttt{ip} query from the query structure, then we start the instantiation process from the root node, where we randomly sample an entity from the KG, here being \texttt{Neal}. Then following the query structure, we aim to ground the edge that points to the root in the query structure, and we sample a relation type from the KG that points to the entity \texttt{Neal}, \eg, \texttt{Co-author}. Then we ground the next node, which has the relation \texttt{Co-author} with \texttt{Neal}, \eg, \texttt{Bengio}. In the next step, since the edge is a logical operation \texttt{Intersection}, we may directly ground the next node with the same entity \texttt{Bengio}, and we sample another relation on the KG the relates to \texttt{Bengio}, \eg, \texttt{Win}, and finally reaches the anchor entity (leaf) by sampling an entity on KG that has the relation \texttt{Win} with \texttt{Bengio}, \eg, \texttt{Turing Award}. The overall complexity of this process is linear with respect to the number of hops of a query (structure).
+
+
+
+\textbf{Dynamic programming for optimal node cut.}
+\label{app:cut_dp}
+As the computation plan of $q$ is a tree, we propose to solve the above optimization problem in \eqnref{eq:optimal_sheduling} with dynamic programming (DP). Before presenting the algorithm, we first need to understand the cost of each operation, so as to only model the dominating cost in the dynamic programming. 
+
+We consider the following operations: 
+\begin{itemize}[noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt, leftmargin=*]
+    \item \textit{Relation projection}: this operation enlarges the current set of entities by a factor of $C$ (the maximum node degree) in the worst case. Thus the total cost would grows exponentially with the number of relation projection operations in a reasoning path.
+    \item \textit{Intersection / Union}: if we maintain the set of entities as a sorted list, intersection / union of the two sets only takes linear time w.r.t the number of entities in both sets. Thus it will not be the limiting factor in the overall computation cost if we only merge a constant number of sets together. 
+    \item \textit{Negation / Complement}: The computation cost of a single set complement operation $\Ocal(|\Vcal|)$, \ie, the total number of entities in the KG. However, we can delay the complement operation to the next step on the computation plan, \ie, perform complement+union/intersection simultaneously. This reduces the complexity from $\Ocal(\Vcal)$ to that of an intersection operation. For example in $(\neg a) \wedge b$, instead of first finding the complement of $a$ (of complexity $|\Ocal(\Vcal)|$) and then do $\wedge$ (of complexity $\Ocal(|\Vcal-a|+|b|)$), we can directory do set difference $b-a$ (of complexity $\Ocal(|a|+|b|)$.
+    The only exception is the relation projection after the negation immediately. However there are other equivalent forms for this expression and thus we explicitly exclude such possibility in constructing the query structure.
+\end{itemize}
+With the analysis above, we can see the only thing we need to focus is the maximum number of relation projections in any reasoning path (\ie, a path that connects a leaf/anchor entity $v\in \Vcal_q$ and the root/answer entity $V_?$).
+
+We first define a set of functions:
+\begin{itemize}[noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt, leftmargin=*]
+	\item $u(v)$: number of relation projections in the path from node $v$ to root $V_?$;
+	\item $s(v)$: the maximum length of path from $v$ to any anchors. The ``length'' is measured by the number of relation projections on that path.
+	\item $o(v)$: the optimal cost of resolving all the reasoning paths that includes $v$ in the best plan. Note this cost only cares the dominating one under the big-O notation, not the cost of entire search/reasoning.
+\end{itemize}
+Note that the ``cost'' are measured in the logarithmic scale, as we only care the dominating order of the polynomials in the complexity calculation. 
+We use $p(v)$ to denote the parent of node $v$, and $ch(v)$ to denote the set of children. When $v$ only has one child node, then we overload $ch(v)$ to denote that specific child. Then we can work on the recursion as below:
+\begin{eqnarray}
+	u(v) &=& u(p(v)) + \text{IsRel}(v \rightarrow p(v)) \nonumber \\
+	s(v) &=& \begin{cases}
+     0, \quad \text{if }v \in \Vcal_q \\
+     \max_{z \in ch(v)} s(z), \quad \\
+     \quad \quad \text{if edges between $v$ and $ch(v)$ are $\wedge$ or $\vee$} \nonumber \\
+    s(ch(v)) + \text{NotNeg}(ch(v) \rightarrow v), \quad \text{else} \\
+            \end{cases} \\
+     o(v) &=& \begin{cases}
+    u(v), \quad \text{if }v \in \Vcal_q \nonumber \\
+     {\displaystyle \min\cbr{\max_{z \in ch(v)} o(z), \max\cbr{u(v), s(v)}}}, \quad \text{else} \\
+            \end{cases}
+\end{eqnarray}
+
+$\text{IsRel}(v\to p(v))$ returns 1 if the edge between $v$ and $p(v)$ represents a relation projection and 0 otherwise; $\text{NotNeg}(ch(v)\to v)$ returns 1 if the edge between $ch(v)$ and $v$ is not negation and 0 otherwise.
+
+After solving the above DP, we can construct the node cut from solution $o(\cdot)$ in a top-down direction:
+\begin{itemize}[noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt, leftmargin=*]
+	\item If for any node $v$ we have $\max_{z \in ch(v)} o(z)$ larger than\\ $\max\cbr{u(v), s(v)}$, then we add $v$ to node cut;
+	\item Otherwise, we do the check recursively for $z \in ch(v)$. 
+\end{itemize}
+
+The above procedure works in a linear runtime w.r.t. the size of $q$, which is good enough for some large queries containing hundreds of operations. Example query structures and their corresponding optimal node cuts are shown in \Figref{fig:query_tree}. Note the structures considered in the current literature are small enough to find the optimal cut with the brute force algorithms. But our DP can greatly improve the efficiency when the query structures are large enough in certain applications.
+
+\section{Comparison with neural link predictor \cite{arakelyan2020complex}}\label{app:link-predictor}
+Here we discuss the neural link predictor \cite{arakelyan2020complex}, which uses fuzzy logic to answer complex queries. It either requires online optimization for test query answering or traverses the KG with beam search, which is hard to scale to large KGs with their own unique challenges. In this paper, we focus on scaling up query embedding methods and leave scaling fuzzy-logic-based methods as future work.
+
+\section{Detailed task setup}\label{app:task-setup}
+Following the standard experimental setup~\citep{ren2020query2box,ren2020beta}, the goal is to evaluate whether the trained model is able to discover the missing answers of a query on an incomplete KG.
+Following the standard evaluation metrics, we adopt mean reciprocal rank (MRR) with the filtered setting as our metric. 
+Given the training, validation, test splits of the edges $\Ecal_\text{train}$, $\Ecal_\text{valid}$, $\Ecal_\text{test}$ in a KG, we create three subgraphs $\Gcal_\text{train}=(\Vcal, \Ecal_\text{train}, \Rcal)$, $\Gcal_\text{valid}=(\Vcal, \Ecal_\text{train}\cup\Ecal_\text{valid}, \Rcal)$, $\Gcal_\text{test}=(\Vcal, \Ecal_\text{train}\cup\Ecal_\text{valid}\cup\Ecal_\text{test},\Rcal)$. During training, we sample queries from the $\Gcal_\text{train}$ using our sampler as introduced in~\Secref{sec:sampler} and train each multi-hop reasoning model. During validation, we are given a set of evaluation queries. For each query, we may first traverse the training KG, $\Gcal_\text{train}$, to obtain its training answers $\Acal_q^{\Gcal_\text{train}}$, and then we further traverse the validation KG ,$\Gcal_\text{valid}$, to obtain the answers $\Acal_q^{\Gcal_\text{valid}}$. The evaluation setup is to evaluate the performance of the model on predicting all missing answers $v\in\Acal_q^{\Gcal_\text{valid}}\backslash\Acal_q^{\Gcal_\text{train}}$. During the test phase, we have the same setup, the only difference is that we evaluate whether the model can discover all missing answers $\Acal_q^{\Gcal_\text{test}}\backslash \Acal_q^{\Gcal_\text{valid}}$.% for a given test query $q$.
+
+\section{Calculation of evaluation metrics}\label{app:metrics}
+Given a test query $q$, we rank each missing answer $v\in\Acal_q^{\Gcal_\text{test}}\backslash \Acal_q^{\Gcal_\text{valid}}$ against the $\Vcal \backslash\Acal_q^{\Gcal_\text{test}}$, filtering the other answers. For large-scale graphs, comparing $v$ with all $\Vcal \backslash\Acal_q^{\Gcal_\text{test}}$ is impractical, thus, following standard practice in link prediction tasks~\citep{zheng2020dgl}, we randomly sample 1000 negative answers from $\Vcal \backslash\Acal_q^{\Gcal_\text{test}}$ for each query. Denote the rank of answer $v$ as $\text{Rank}(v)$, the metrics of a query $q$ can be calculated by:
+\begin{align}% \label{eq:newhk}
+    &\text{Metrics}(q) = \frac{1}{|\Acal_q^{\Gcal_\text{test}}\backslash \Acal_q^{\Gcal_\text{valid}}|} \sum_{v \in \Acal_q^{\Gcal_\text{test}}\backslash \Acal_q^{\Gcal_\text{valid}}} f_{\text{metrics}}(\text{Rank}(v)), \nonumber
+\end{align}
+where $f_\text{metrics}(x)=\frac{1}{x}$ for MRR and $f_\text{metrics}(x)=1[x\leq k]$ for Hit@$k$. For a test set of queries, we average the metrics for each query in the set as the final performance of the model.
+
+
+\section{Additional results on bidirectional rejection sampler}
+\label{app:more_exp_results}
+
+\begin{figure*}[t]
+\includegraphics[width=0.325\textwidth]{speed-2p}
+\includegraphics[width=0.325\textwidth]{speed-ip}
+\includegraphics[width=0.325\textwidth]{speed-pi}\\
+
+\includegraphics[width=0.325\textwidth]{speed-inp}
+\includegraphics[width=0.325\textwidth]{speed-pni}
+\includegraphics[width=0.325\textwidth]{speed-up}
+\caption{Speedup of bidirectional rejection sampler over exhaustive search based sampler, on different query structures. \label{fig:more_sampler_speed}}
+\end{figure*}
+
+\Figref{fig:more_sampler_speed} shows the speed-up of bidirectional rejection sampler over exhaustive samplers on several more query structures. Ours is consistently significantly better than exhaustive traversal.
+
+\section{Detailed MRR on large KGs}\label{app:detailedmrr}
+Here we list the detailed MRR results (\%) of each reasoning model on large KGs in Table \ref{tab:large_kg_results}. For FB400k, we report the performance in Table \ref{tab:kgqa} on answering the SPARQL queries from the questions in Complex Webquestions dataset. The standard deviation of three runs on all query structures are less than 0.15.
+\input{table_largekg}
+\input{table_kgqa}
+\section{MRR results of queries with negation}\label{app:negation}
+Besides the conjunctive queries and queries with union, we further evaluate the performance of answering the 5 query structures with negation. As the only method that can handle negation, BetaE can effectively model negation especially on ogbl-wikikg2. 
+
+
+\input{table_negation}
+
+\section{Baseline code}
+Following Marius~\cite{mohoney2021marius}, we adopt the same official release of DGL-KE and PBG. For Marius, we use the release at \url{https://github.com/marius-team/marius/tree/osdi2021}.

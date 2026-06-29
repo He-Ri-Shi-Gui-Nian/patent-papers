@@ -1,0 +1,582 @@
+%% The first command in your LaTeX source must be the \documentclass command.
+%%
+%% Options:
+%% twocolumn : Two column layout. Do not use twocolumn for papers submitted to CEUR-WS!
+%% hf: enable header and footer.
+\documentclass[
+% twocolumn,
+% hf,
+]{ceurart}
+
+%%
+%% One can fix some overfulls
+\sloppy
+
+%%
+%% Minted listings support 
+%% Need pygment <http://pygments.org/> <http://pypi.python.org/pypi/Pygments>
+\usepackage{listings}
+\usepackage{xcolor}
+
+\newcommand{\accup}[2]{\makebox[0.9em][c]{\textcolor{green!#1!black}{$\uparrow$}}#2}
+\newcommand{\accdown}[2]{\makebox[0.9em][c]{\textcolor{red!#1!black}{$\downarrow$}}#2}
+\newcommand{\accsame}[1]{\makebox[0.9em][c]{\textcolor{gray}{$\rightarrow$}}#1}
+
+\usepackage{tabularx}
+
+%% auto break lines
+\lstset{breaklines=true}
+
+%%
+%% end of the preamble, start of the body of the document source.
+\begin{document}
+
+%%
+%% Rights management information.
+%% CC-BY is default license.
+\copyrightyear{2022}
+\copyrightclause{Copyright for this paper by its authors.
+  Use permitted under Creative Commons License Attribution 4.0
+  International (CC BY 4.0).}
+
+%%
+%% This command is for the conference information
+\conference{Submitted at IJCAI-ECAI 2026 Joint Workshop on GENAIK and NORA}
+
+%%
+%% The "title" command
+\title{Why Neighborhoods Matter: Traversal Context and Provenance in Agentic GraphRAG}
+
+%%
+%% The "author" command and its associated commands are used to define
+%% the authors and their affiliations.
+\author[1]{Riccardo Terrenzi}[%
+orcid=0009-0006-8310-1940,
+email=rite@mmmi.sdu.dk,
+]
+\address[1]{Centre for Industrial Software, University of Southern Denmark, Alsion 2, 6400 Sønderborg, Denmark}
+
+\author[1]{Maximilian von Zastrow}[%
+orcid=0000-0001-9848-3714,
+email=maxvz@mmmi.sdu.dk,
+]
+
+\author[1]{Serkan Ayvaz}[%
+orcid=0000-0003-2016-4443,
+email=seay@mmmi.sdu.dk,
+]
+\cormark[1]
+
+%% Footnotes
+\cortext[1]{Corresponding author.}
+
+%%
+%% The abstract is a short summary of the work to be presented in the
+%% article.
+\begin{abstract}
+Retrieval-Augmented Generation can improve factuality by grounding answers in external evidence, but Agentic GraphRAG complicates what it means for citations to be faithful. In these systems, an agent explores a knowledge graph before producing an answer and a small set of citations. We frame citation faithfulness as a trajectory-level problem: final citations should not only support the answer, but also account for the graph traversal, structure, and visited-but-uncited entities that may influence it. Through controlled ablation experiments, we compare the effects of isolating, removing, and masking cited and uncited graph entities. Our results show that cited evidence is often necessary, as removing it substantially changes answers and reduces accuracy. However, citations are not sufficient, because accurate answers can also depend on uncited traversal context and surrounding graph structure. These findings suggest that citation evaluation in Agentic GraphRAG should move beyond source support toward provenance over the broader retrieval trajectory.
+\end{abstract}
+
+%%
+%% Keywords. The author(s) should pick words that accurately describe
+%% the work being presented. Separate the keywords with commas.
+\begin{keywords}
+  agentic graphRAG \sep
+  citation faithfulness \sep
+  retrieval-augmented generation \sep
+  knowledge graphs \sep
+  provenance
+\end{keywords}
+
+%%
+%% This command processes the author and affiliation and title
+%% information and builds the first part of the formatted document.
+\date{\today}
+\maketitle
+
+\section{Introduction}
+
+Although Large Language Models (LLMs) are becoming increasingly capable, factuality and faithfulness remain a fundamental problem due to hallucinations~\cite{huang2025survey}. Hallucination is likely rooted in how LLMs are trained, since models are essentially rewarded for providing an answer rather than admitting uncertainty~\cite{kalai_evaluating_2026}. One solution is to ground answers through Retrieval-Augmented Generation (RAG)~\cite{RAG_origin}, where external sources supplement the model's own knowledge.  In RAG, sources are typically retrieved from vector databases via semantic similarity. Graph RAG~\cite{peng2025graph} instead retrieves directly from knowledge graphs, following typed entity-relation-entity triples via explicit paths making retrieved evidence more structured and auditable. Beyond factual grounding, RAG enables a second advantage: attribution. When answers are grounded in retrieved sources, those sources can be cited, making claims verifiable by the reader. This makes RAG useful for improving both accuracy and transparency.
+
+The latest development is the use of AI agents~\cite{Abou_Ali_2025}: the combination of reasoning models and the ability to execute actions through tools enables LLMs to achieve a degree of autonomy. The LLM acts as a controller, making decisions based on observations and invoking tools, for example following the ReAct framework~\cite{yao2022react}. Applied to retrieval, this creates Agentic RAG: rather than a single retrieval step, the agent autonomously and iteratively decides what to query, inspects results, and issues further queries until it can produce a final answer with cited evidence. The same idea applies to Agentic Graph RAG, where the agent can traverse the knowledge graph autonomously to reach the answer.
+
+This last setting raises a question about faithfulness and citation management. Prior work~\cite{bohnet2023attributedqaeval, gao2023enablinglargelanguagemodels} usually asks whether cited sources truly supported the answer, or whether the model's reliance on those sources was genuine~\cite{wallat2024correctness}. Agentic GraphRAG raises an additional question: whether the cited entities are even a complete account of what the agent used to answer. As it traverses the graph, the agent has access to far more than the entities it ultimately cites---neighboring nodes, relation patterns, and community structure are all part of its working context, and any of them may shape its reasoning. Yet only some entities appear in the final citations. If the traversal as a whole meaningfully shapes the answer, then the citation set understates the model’s evidential basis. This means that an audit framed only around ``which sources were used'' misses part of the graph context that influenced the response.
+
+We hypothesize that, in Agentic GraphRAG, final citations capture only part of the information the agent relies on, and that the visited entities together with the structural context have a measurable effect on the accuracy and robustness of generated answers. To test this, we study the impact of cited entities, visited-but-uncited entities and graph traversal across three settings of Agentic GraphRAG. 
+
+The paper proposes the following contributions:
+\begin{itemize}
+    \item We frame citation faithfulness in Agentic GraphRAG as a trajectory-level problem, where graph traversal, structure, and visited-but-uncited entities may be relevant to the answer.
+
+    \item We introduce a graph-ablation methodology to test whether cited evidence is necessary, sufficient, and complete as an explanation of answer generation.
+
+    \item We show that cited entities are often necessary but not sufficient, since accurate answers can depend on broader graph context not reflected in the final citations.
+\end{itemize}
+
+
+%We hypothesize that, in Agentic GraphRAG, final citations are only a surface of the information used by the agent, and that the act of traversing the graph (that additional context we mentioned) is relevant for producing answers in an accurate and robust way.
+
+%RAG and Agentic RAG promise both factual grounding and transparent attribution, but neither holds reliably in practice. Factuality can still fail even with retrieval, as models may ignore retrieved context, contradict it, or blend it with parametric memory. Attribution introduces its own problem too. A cited source is not proof the model relied on it. We distinguish citation correctness (does the source support the claim?) from citation faithfulness (did the model actually use it?)~\cite{wallat2024correctness}. A model may reach an answer through its parametric knowledge and attach a supporting citation afterwards, making the attribution a post-hoc decoration rather than a genuine trace.~\cite{wallat2024correctness}
+
+
+
+%Such autonomy may, however, amplify existing attribution problems. If single-step RAG already struggles with citation faithfulness, an agentic loop introduces more opportunities for the same failure. Each traversal and retrieval step is a new chance for evidence to influence the final answer without being cited, whether through accidental omission or selective attribution. And as agents become more autonomous, this gap between what they retrieve and what they disclose will only grow.  
+
+%In RAG only document in context matters, in agentic graph rag relationship have impact on the results. 
+
+%In this study we therefore investigate whether a simple ReAct agent that autonomously retrieves evidence from a knowledge graph tends to under-cite retrieved evidence. We hypothesise that such an agentic Graph RAG system visits evidence that is necessary for correct answers without citing it, leaving users with an incomplete and unverifiable evidence trail.
+
+%GraphRAG -> index by KG and documents in text unit.
+%search -> reading
+%hybrid graph -> relationship vs. actual text
+
+%So most RAG systems operate under the assumption that the cited evidence is the only one used to answer. Vector definitly works this way. 
+
+%Graph RAG add relationship and structure to data? Usually we look only at cited entities and if they fit the answer, was agent was really there? 
+
+%context ie. structure, relationships, neighborbood, communities.
+
+%We hypothesis that the act of a an agent traversing a Knowledge graph therefore, constitutes additional context, This additonal context is valuable to Agentic RAG, both for factuality / correctness, robustness.
+
+%So we ask wether visited-but-uncited entities actually contstitute additional information. 
+
+%While prior work has examined citation faithfulness in single-step RAG~\cite{wallat2024correctness}, we are, to the best of our knowledge, the first to study evidence attribution omission in agentic Graph RAG systems operating over knowledge graphs. %and counterfactual evidence removal in heterogeneous text corpora~\cite{}, neither considers the agentic setting where evidence accumulates across iterative graph traversal steps. %We operationalise the distinction between corroborative and contributive attribution~\cite{cohen2024contextcite; worledge2023unifying} behaviourally, through visited versus cited nodes, without requiring access to model internals.
+
+% In dieser Studie wollen wir deshalb untersuchen ob ein einfacher ReAct Agent der Fragen beantwortet und sich eigentständig Beweise aus einem KG holen kann dazu neigt unterzureferenzieren. 
+% Wir sind nach besten wissen und gewissen die ersten die diese Lücke für Agentic RAG auf KGs untersuchen. 
+
+%Cleaner AI Version: 
+
+% LLMs are becoming remarkably capable, yet factuality remains a fundamental problem. Hallucination is partly a training artefact: models are rewarded for answering confidently rather than admitting uncertainty [kalai_evaluating_2026]. Retrieval-Augmented Generation (RAG) [RAG_origin] addresses this by grounding answers in external sources, typically via vector databases over document corpora. Knowledge graphs offer more structured grounding [peng2024graphrag], and GraphRAG [edge2024local] extends this by retrieving entire subgraphs, making reasoning more interpretable.
+% But retrieval alone doesn't guarantee faithfulness. Wallat et al. [wallat2024correctness] distinguish citation correctness (does the cited source support the claim?) from citation faithfulness (did the model actually use it?), finding that up to 57% of citations are post-hoc rationalisations rather than genuine attributions.
+% Agents make this harder. AI agents [Abou_Ali_2025] combine reasoning with tool use in an iterative observe-decide-act loop formalised by ReAct [yao2022react]. Agentic RAG [singh2025agentic] applies this to retrieval, letting the agent decide autonomously what to fetch and when.
+% This creates a structural problem. In standard RAG, the gap between retrieved and cited evidence is small and observable. In an agentic loop traversing a knowledge graph, evidence accumulates across steps; nodes visited early may shape reasoning without appearing in the final answer. RAGONITE [saha2025ragonite] tests counterfactual evidence removal but not in agentic or graph settings. Buchmann & Gurevych [buchmann2025citation] show citation failure worsens with relational complexity, which graph traversal makes inherent. We operationalise the distinction between corroborative and contributive attribution [cohen2024contextcite; worledge2023unifying] behaviourally through visited versus cited nodes, controlling explicitly for parametric recall [joren2025sufficient].
+% We investigate whether a simple ReAct agent querying a knowledge graph tends to under-cite, and whether uncited retrieved evidence is nonetheless load-bearing. Three ablation experiments over HotPotQA [yang2018hotpotqa] test citation sufficiency, citation necessity, and the contribution of uncited visited nodes. Does the agent hide evidence?
+
+
+%LLMs are prone to mistakes, for example due to halluciations, etc. -> hallucinations might even be inevitable. Reasoning / Chain-of-Thought and RAG~\cite{RAG_origin} was introduced to base Ai results on evidence from documents or KGs. However, even with RAG the question remains if such models are faithful. Unfaithfulness is problem caused by different biases inherent to LLMs. %It can be shown that LLMs are biased towards their prior or parametric knowledge, ie. answer they would give without the retrived evidence. Or going even further 
+% A model might even only retrieve evidence biased towards its parametric knowledge, i.e. only getting references that support its assumptions or even document that only mention the topic on a surface-level. This phenomenon is refered to as post-rationalization by ... et. al. 
+
+
+% Now combining Chain-of-Thought prompting + Action agent with tool use = (ReAct) agentic AI.
+% When we talk about agents or AI in this paper we refer to the concept of LLM orchestration as defined by ... , not multi-agent systems. 
+% Like an RL agent but also action of thought. The agent can now decide if and when to retrieve which evidence and use it. Such an agentic AI begin able to use a tool to retrieve documents from a database or knowledge graph, we will refer to as Agentic RAG. But does it still rely on its parametric knowledge? Or even worse only use evidence that supports its parametric knowledge, ie post rationalization. This is worse because then it becomes even harder to fact-check AI? 
+
+% When we talk about agents or AI in this paper we refer to the concept of LLM orchestration as defined by ... . We are using Langchain. We are however not looking at multi-agent systems 
+
+% Therefore in this prelimiary study we are looking to answer these questions for Agentic Knowledge graph RAG on a small dataset to see if post-rationalisation can exist using agentic RAG and if this merits a deeper study. To best of our knowledge first to investigate post-rationalisation bias for Agentic RAG. 
+
+% Does Agentic RAG undercite?
+
+% First experiment to check undercitation: 
+% Step 1 -> give prompt and agentic gets evidence
+% Step 2 -> remove given evidence from KG
+% Step 3 -> same question without cited evidence
+
+% Foure outcomes: 
+% - Question was correct before, is correct after: 
+% -> underciting, or overciting there were still nodes left that could have answered it? -> this is comparable to Recall, maybe also parametric knowledge 
+% - Question was correct before, is not correct after: 
+% -> citation was correct or overcitation
+% - Question was wrong before, is now correct
+% -> random chance, or not search deep enough
+% - Q wrong, still wrong -> do not care
+
+% Isolation experiment to check undercitation: 
+% Step 1 -> give prompt and agentic gets evidence
+% Step 2 -> remove everything but cited evidence from KG
+% Step 3 -> same question
+
+% Four outcomes: 
+% Correct -> Correct: 
+% The answer is in the citations
+% Correct -> Wrong:
+% agent must have seen the answer but not cited it -> high probability
+% Wrong -> Correct:
+% Agent was confused by too much information? 
+% Wrong -> Wrong: we dont care
+
+% Additional experiment: 
+% We remove only the visited ones:
+% Correct -> Correct: 
+% Visited were not important
+% Correct -> Wrong: 
+% Visited actually contained answer, cited did not 
+% Wrong -> Correct:
+% Visited information confused the Agent
+
+
+
+% We found that one question did not require evidence that is why removed it from the all the experiments. 
+
+% Half of the time it gave us bullshit evidence -> 
+
+% We are looking at single agent, not multi-agent. 
+
+% Faithfulness -> Do the actual reasoning and the result match?
+
+% Is Agentic AI Wasting resources, by being overly complex in its retrivial? Does it retrieve superflous stuff?
+
+% agentic rag adds additional prooblems to faithfulles of citiations? 
+% agent hides 
+
+% traditional rag -> decision what to cite? 
+% agentic rag -> decision what to even look at? 
+
+% agentic rag it adds additional potential for biases? additional layer of unfaithfuls. 
+
+% Poential Problems for Faithfulness 
+% - Suffientcy - Agent it visits a node and then does not cite it -> it got sufficient information, but citation are sufficient to answer question? 
+% -> If you check one paper, and you do not check 
+% - the agents get additional information from a source but does not cite it. 
+% - Nessecity -> Agent Was the cited evidence actually needed to answer the question
+
+% undercitation or overcitation
+% are they hiding things? 
+% agents do not rank? 
+
+% In general in the literature checks are the agents actually using what they are citing? But does the agent cite everything that they are using. 
+
+% Is it not citing enough?
+
+% Agent gets a lot of evidence but not uses all of it 
+
+% Agents reads evidence but decides not to cite it.   
+
+% Does an Agent really use evidence they find? -> 
+% Does it cite everything it uses? 
+
+
+% Does it cite evidence that it did not fetch? 
+
+% Does an agent find all of the evidence needed? 
+% If citation faithfulness is well suited for Agentic AI. 
+
+% Does the way the evidence is handled effect the faithfulness, and factualness? 
+
+% now we have setup experiments to test over and undercitation and also we are looking at different Agent setup to maybe mitigate this? 
+
+
+
+%Terms to focus on from workshop description: 
+%Evaluation of grounding/faithfulness, factuality, reasoning, robustness
+
+% Grounding -> Factuality 
+
+% Faithfulness
+
+% Factuality
+
+% Reasoning 
+
+% Robustness
+
+
+
+% \section{Related Work}
+
+% Problems with LLMs
+% RAG
+% Problems with RAG
+% Agentic AI
+% Agentic RAG
+
+\section{Experimental Design}
+
+To investigate how agentic Graph RAG systems utilise visited entities together with the structural context they expose in their answers, we conduct a study over an established multi-hop QA benchmark. We build a knowledge base from the answer set and evaluate six systems to establish a performance baseline, ranging from a plain LLM to RAG, Graph RAG, and three agentic Graph RAG configurations (cf. Figure~\ref{fig:agentsettings}). 
+
+We then run three graph ablation studies with two experiments each, applied to all three agentic settings. The ablations examine the effect of isolating only cited evidence, removing cited evidence compared to removing a random set of entities, and removing visited-but-uncited entities (cf. Figure \ref{fig:experiments}). Together these conditions let us assess how and to what extent each agent setting relies on the knowledge graph structural context when producing its answers. The remainder of this section describes each component in detail.
+
+\subsection{Dataset \& Knowledge Base}
+
+We built a 30-question benchmark from the 2WikiMultiHopQA~\cite{ho-etal-2020-constructing} development set. We chose this benchmark because it provides multi-hop questions with supporting facts, evidence triples, and distractor paragraphs, making it well suited for studying how agents use cited entities and graph structural context. We selected only 30 development-set questions to keep the experiments manageable while allowing qualitative inspection, filtering for bridge or comparison questions with short entity answers, at least two evidence triples, at least two supporting facts, and enough context. The subset covers 12 local-path questions, where the answer follows a clear gold evidence chain; 12 distractor-path questions, where overlapping distractor paragraphs create plausible wrong routes; and 6 summary-vs-local comparison questions, where the answer requires comparing or combining information across multiple entities.
+
+The knowledge base was built from the selected questions and their associated paragraphs. We merged gold and distractor paragraphs into a corpus of 275 unique paragraphs, then chunked them into 318 text units. The graph was initialized from the dataset’s annotated evidence triples, producing gold entities and relationships. We then enriched the graph by extracting additional entities and relationships from distractor text units. Finally, we detected graph communities using Leiden algorithm~\cite{traag2019louvain}, generated community summaries, and built embedding indices for text units, entities, and communities. The resulting graph contains 1,815 entities, 1,692 relationships, and 7 communities.
+
+\subsection{Baseline and Agent Settings}
+
+We evaluate six QA LLM-based systems that differ in how much external context and graph-guided reasoning they expose to the model. The LLM used in all settings is \texttt{Mistral-Small-4-119B-2603}. We selected this model because it offers a favorable cost--performance trade-off while remaining capable both as a standalone question-answering model and as a tool-using agent.
+
+The LLM baseline answers directly from the model’s parametric knowledge, without retrieval. This setting gives us an idea of how many of the questions are already answerable just using the model's parametric knowledge. RAG retrieves the most relevant text units by embedding similarity and asks the model to answer from those passages only. GraphRAG is a non-agentic graph baseline: it retrieves relevant entities and communities, expands nearby relationships and linked text units, then gives this graph-derived context to the model in a single prompt. Agentic GraphRAG instead lets the model actively investigate the graph through tools: \textit{search entities}, \textit{get entity details}, \textit{get neighbors}, \textit{read textunit}, \textit{search communities}, \textit{read community}, and \textit{submit answer}, allowing iterative traversal before producing an answer with cited entities, relationships, text units, and communities. The two constrained variants use the same agentic GraphRAG environment but add provenance controls: in \textit{visited only} when the agent submits an answer and citations are checked to see if the entities mentioned have also been visited; if not, the citations are rejected and the agent is asked to rephrase the response, while \textit{evidence first} requires the agent to submit and validate its cited evidence before it is allowed to submit the final answer. These versions have been introduced because they allow us to test the agent’s behavior and performance under conditions in which it is forced to handle citations without having the freedom, for example, to perform post-rationalization of citations or to cite false entities.
+
+\subsection{Graph Ablation Studies}
+
+In order to study the effect of graph structure on the citation and answering behavior of our agentic Graph RAG settings, we run six graph ablation experiments organized into three studies. All experiments follow a common procedure. Given the trace from the baseline run, we categorize every entity in the graph into three groups for each individual question: entities that were not visited, entities that were visited and cited, and entities that were visited but not cited (cf. Figure~\ref{fig:experiments}). We then construct a question-specific modified graph according to these labels by removing entities or restricting access to their linked text units, and run a fresh agent instance on the same question with the modified graph.
+
+\subsubsection*{Study 1 - Isolation of Evidence}
+
+To measure how much of the answer can be attributed to the cited evidence alone, we restrict each agent to its originally cited evidence in two ways.
+In \textbf{Full Isolation} every entity except those cited in the baseline is removed from the graph, leaving the agent with only the cited evidence to generate its answer. If the agent still answers correctly, the cited evidence was sufficient. If accuracy drops, the original answer depended on non-cited entities, text units, or relationships. In \textbf{Text-only Isolation} no entities are removed, but access to text units attached to non-cited entities is blocked. The metadata of the non cited entities in this case is available, allowing the agent to collect traversal information. The graph structure remains intact, and the agent can still traverse entity nodes and their neighbors, but can only read text units from cited entities. If accuracy rises back, compared to full isolation, it shows the impact of preserving the graph structure.
+
+\subsubsection*{Study 2 - Cited Evidence Ablation}
+
+Where Study 1 tests whether cited evidence is sufficient, Study 2 tests whether it is necessary. We perform another two experiments. In \textbf{Cited Removal} every entity cited in the baseline is removed from the graph, this process is performed singularly and specifically for each single question. The agent must now answer without the evidence it explicitly attributed, while the rest of the graph structure remains intact. Simply observing that removing cited evidence degrades accuracy is not enough to conclude that citations are meaningful — any removal of entities from the graph reduces the information available to the agent and may degrade accuracy for structural reasons alone. In \textbf{Random Removal} we additionally removed a same-sized random set of non-cited but plausibly retrievable text units. Since the number of removed entities is the same, any difference in accuracy between the two conditions can be attributed specifically to the informational value of the cited entities rather than to the structural disruption caused by removing nodes from the graph.
+
+\subsubsection*{Study 3 - Visited-but-uncited entities Ablation}
+
+Study 3 examines the role of entities the agent visited but did not cite. During multi-step graph exploration, the agent follows edges and inspects neighbors to navigate toward an answer, yet many of the visited nodes never appear in the final citation. If removing these entities degrades accuracy, the most direct explanation is that the agent relied on evidence it did not cite. However, it may also indicate that the traversal path itself shaped the answer through the context it exposed during navigation or the structure it used to reach the cited evidence. To test the second theory, similarly to Study 1 we also compared the effect of fully removing the entities in \textbf{Entity Removal} or only restricting access to the text in \textbf{Entity text mask}. In the \textbf{Entity text mask}, differently compared to \textbf{Text-only Isolation}, the metadata of the blocked entities will not be available in order to avoid any information leakage from the traversal context.
+
+% \subsection{Main Experiment}
+
+% Our main research objective is to investigate wether the compared methods are actually faithfully attributing their answers, or if they get their answer from a part of the knowledge graph they have looked at but do not attribute it. Given this premise we can first filter out some questions. (1) Question that were answered incorrectly are not interesting to this premise since we are looking at faithfulness for correclty answered questions. (2) Questions that were answered by the LLM without any RAG can be removed since they were very likely answered from parameteric knowledge. 
+
+% So for each questions that is left we are splitting our graph into three parts. Entities that were not visited, Entities that were visited and cited and finally entities that were visited but not cited. If now we have a fresh new agent and we give it the same question again but remove exactly those entities that it did visit but did not cite and it now is not able to answer the question, there is a high likelihood it gained the answer from those nodes but did not cite them, or at least needed this information partially if it is a multihop question.
+
+% So the procedure is: 
+% (1) Get the answer from the baseline
+% (2) 
+
+% \subsection{Further Studies}
+
+% In order to explore different setting and other possible problems, explanations we ran the following additional studies following the same procedure as our main experiment but removing different other parts of the KQ:
+% \begin{description}
+%     \item[Visited-but-not cited masking]
+%     \item[Full Isolation] full isolation restricted each system to its originally cited evidence
+%     \item[Text-only isolation] 
+%     \item[Cited Removal] cited ablation removed originally cited text units
+%     \item[Random Removal] random ablation removed a same-sized random set of non-cited but plausibly retrievable text units, and textunits-only isolation restricted only readable text while leaving graph structure available.
+% \end{description}
+
+% Short intro on the connection between research question and experiements
+
+% Description of Dataset
+% Description of Knowledge Base
+% Description of Baseline competitors
+% Description of Actual Experiments and meaning of different outcomes
+
+\begin{figure}
+  \centering
+  \includegraphics[width=\linewidth-80pt]{figures/agentic_settings.drawio.pdf}
+  \caption{Representation of the three agentic graphRAG systems we test in our experimental design.}
+  \label{fig:agentsettings}
+\end{figure}
+
+
+%We conducted five main experiment suites. Step 11 measured baseline accuracy and evidence usage for all four systems on the 30 questions. Step 12 tested citation necessity and sufficiency: cited ablation removed originally cited text units, while full isolation restricted each system to its originally cited evidence. Step 13 added controls: random ablation removed a same-sized random set of non-cited but plausibly retrievable text units, and textunits-only isolation restricted only readable text while leaving graph structure available. Step 14 tested topology sensitivity by rerunning graph systems on dense and sparse graph variants created by removing 5 percent of entities from high-degree or low-degree candidate pools. Step 15 tested uncited working context by removing or masking entities that the graph systems visited during traversal but did not include in the final cited entity set.
+
+\begin{figure}
+  \centering
+  \includegraphics[width=\linewidth-80pt]{figures/experiment.drawio.pdf}
+  \caption{Example of the three graph ablations effect on a synthetic subgraph. Cited entities are represented in green, visited but not cited in blue, not visited in red.}
+   \label{fig:experiments}
+\end{figure}
+
+%Overall, the design separates several claims: whether cited text is causally necessary, whether final citations are sufficient to reproduce graph-system behavior, whether graph topology matters, and whether uncited traversal context contributes to answers.
+
+% Results section fragment.
+% CEUR-compatible table style: use booktabs with table/table* floats and plain tabular environments.
+
+\section{Results \& Discussion}
+
+% Findings: 
+% Baseline: 
+% -> Agentic Graph rag settings outperform Simple Graph RAG, Vanilla RAG and llm baseline, llm baseline is low only 5 questions answered without citaion. 
+% -> both citation forcing setting outperorm the normal Graph RAG, best is evidence first
+% -> Vanila RAG retrieves 5 cites one. Agentic ones visit 10, cite 2 and only retrive around 1 TU -> so there might be info hidden in the visited nodes, also makes decitions on simply visiting nodes and not fechting TU, since Simpe Graph RAG retrives 13 and cites simliar amount. Simple graph rag also visits 4 more on average, showign that agents are more direct
+% -> Even in the questions where llm baseline does it the Agents still visit entities and cite? 
+% Study 1 - Isolation: 
+% -> Full Isolation: Norrmal Agent and SimpleGraph RAG do not suffer that much, but are lower suggesting for some questions, suggesting other factors must be there, but extreme for Evidence and visited only 
+% -> Text-only Isolation: 
+
+% Our main finding can be gained from the combination of three observations. For Agentic graph rag if we compare the amount of correct answers after the removal of the cited entities (Cited entities ablation)and the amount of correct answers only given the cited entities (Full Isolation) we can see that these results do not fit together. One would assume that if the agent got 17 questions correct with only the evidence and we remove that evidence and give it only the rest of the graph, it might get 2-3 questions correct, but the actual value is 9. That means, assuming we succeeded in removing parameteic knowledge, the agent missed citing useful information. However we can actually see that by removint those entities the agent visited but not cited the accuracy does not change at all. 
+
+
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\caption{Baseline experiment accuracy and evidence-usage footprint. TUs stands for text units.}
+\label{tab:step11-baseline}
+\begin{tabular}{@{}p{0.24\textwidth}ccccc@{}}
+\toprule
+System & Accuracy & Retrieved TUs & Cited TUs & Visited entities & Cited entities \\
+\midrule
+\textbf{Agentic GraphRAG} & 76.0\% & 1.5 & 1.6 & 11.9 & 1.9 \\
+\hspace{1em}\textit{evidence first} & \textbf{80.0}\% & 1.4 & 1.3 & 10.5 & 1.8 \\
+\hspace{1em}\textit{visited only} & 72.0\% & 1.6 & 1.3 & 11.1 & 1.6 \\
+\textbf{GraphRAG} & 60.0\% & 13.3 & 1.4 & 15.6 & 1.8 \\
+\textbf{RAG} & 56.7\% & 5.0 & 1.0 & - & - \\
+\textbf{LLM} & 16.7\% & - & - & - & - \\
+
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+
+
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\caption{Intervention results by system after excluding the five questions answered correctly by the single LLM baseline. ``Output changed'' reports the percentage of changed answers after intervention. Parentheses in ``Output changed'' rows report originally correct answers that stayed correct after intervention out of originally correct answers. ``Acc.'' denotes post-intervention accuracy. Parentheses in ``Acc.'' rows report correctly answered questions out of total. Arrows represent symbolically the accuracy delta for each setting between intervention and baseline.}
+\label{tab:all-intervention-results-system-llm-filtered}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+Condition & Outcome
+& Agentic GraphRAG
+& Evidence-first
+& Visited-only
+& Simple GraphRAG \\
+\midrule
+
+\multicolumn{6}{@{}l}{\textit{Baseline experiment}} \\
+\cmidrule(lr){1-6}
+Baseline & Acc.
+& 76.0\% (19/25)
+& 80.0\% (20/25)
+& 72.0\% (18/25)
+& 60.0\% (15/25) \\
+\midrule
+
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Cited entities ablation}} \\
+\cmidrule(lr){1-6}
+Cited ablation & Output changed
+& 76.0\% (6/19)
+& 72.0\% (7/20)
+& 68.0\% (7/18)
+& 80.0\% (5/15) \\
+                 & Acc.
+& \accdown{85}{36.0\% (9/25)}
+& \accdown{90}{32.0\% (8/25)}
+& \accdown{80}{40.0\% (10/25)}
+& \accdown{80}{28.0\% (7/25)} \\
+
+\addlinespace
+Random ablation & Output changed
+& 30.7\% (18/19)
+& 30.7\% (16.3/20)
+& 36.0\% (15.7/18)
+& 53.3\% (10.7/15) \\
+                & Acc.
+& \accup{45}{84.0\% (21/25)}
+& \accdown{30}{76.0\% (19/25)}
+& \accup{45}{80.0\% (20/25)}
+& \accdown{20}{58.7\% (14.7/25)} \\
+\midrule
+
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Isolation}} \\
+\cmidrule(lr){1-6}
+Full isolation & Output changed
+& 40.0\% (14/19)
+& 68.0\% (7/20)
+& 80.0\% (5/18)
+& 36.0\% (12/15) \\
+               & Acc.
+& \accdown{45}{68.0\% (17/25)}
+& \accdown{95}{28.0\% (7/25)}
+& \accdown{90}{24.0\% (6/25)}
+& \accdown{50}{48.0\% (12/25)} \\
+
+\addlinespace
+Text-only isolation & Output changed
+& 20.0\% (18/19)
+& 36.0\% (15/20)
+& 40.0\% (15/18)
+& 24.0\% (15/15) \\
+                    & Acc.
+& \accdown{30}{72.0\% (18/25)}
+& \accdown{65}{60.0\% (15/25)}
+& \accdown{45}{64.0\% (16/25)}
+& \accsame{60.0\% (15/25)} \\
+\midrule
+
+\addlinespace
+\multicolumn{6}{@{}l}{\textit{Visited-but-uncited entities ablation}} \\
+\cmidrule(lr){1-6}
+Entity removal & Output changed
+& 32.0\% (17/19)
+& 36.0\% (15/20)
+& 44.0\% (13/18)
+& 28.0\% (14/15) \\
+               & Acc.
+& \accdown{45}{68.0\% (17/25)}
+& \accdown{50}{68.0\% (17/25)}
+& \accdown{50}{60.0\% (15/25)}
+& \accdown{30}{56.0\% (14/25)} \\
+
+\addlinespace
+Entity text mask & Output changed
+& 40.0\% (16/19)
+& 48.0\% (12/20)
+& 52.0\% (12/18)
+& 72.0\% (6/15) \\
+                 & Acc.
+& \accdown{30}{72.0\% (18/25)}
+& \accdown{65}{60.0\% (15/25)}
+& \accdown{65}{52.0\% (13/25)}
+& \accdown{65}{40.0\% (10/25)} \\
+
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+
+The findings indicate that citation faithfulness in agentic GraphRAG is neither a binary property nor adequately characterized by verifying whether the final citations support the generated answer. Across our experiments, final citations appear to be behaviorally meaningful but incomplete: they often identify evidence whose removal changes the answer or reduces accuracy, yet they do not capture the broader graph context that contributes to the agent's reasoning process.
+
+Table~\ref{tab:step11-baseline} shows that agentic systems typically visit ten to twelve entities while citing only around two, creating a gap between the graph-interaction trace and the final provenance trace. This gap is not, by itself, evidence of unfaithfulness, since a visited entity may have been surfaced by a graph tool without being explicitly used by the model. However, it raises an important question of provenance sufficiency: are final citations enough to explain answer behavior, or does uncited graph context remain behaviorally relevant? To reduce the influence of parametric knowledge, we exclude the five questions answered correctly by the LLM-only baseline from subsequent experiments, leaving 25 questions that more directly isolate the role of external graph context.
+
+The \textit{Cited Entities ablation} shows that final citations are not merely decorative. Removing cited entities leads to a high rate of answer changes and a substantial drop in accuracy across all systems, indicating that cited entities often contain evidence important for preserving the original answer. This effect is not simply a consequence of perturbing the graph: in the \textit{Random Entities ablation}, randomly removing entities does not produce a comparable accuracy drop and, in some cases, improves performance by reducing graph noise. At the same time, systems still answer correctly in more than 30\% of cases after cited entities are removed, suggesting that cited entities are important but not sufficient to fully account for answer generation.
+
+The \textit{Isolation} experiments further clarify the distinction between citation support and provenance sufficiency. When systems are restricted to only the originally cited entities, accuracy decreases across all settings, with especially large drops in the constrained agentic variants and more moderate but still present drops for \textit{Agentic GraphRAG} and \textit{GraphRAG}. This indicates that final citations alone do not provide a robust reconstruction of the context needed for accurate answering. We attribute this gap to traversal context: the additional information exposed through graph exploration, including visited-but-uncited entities, their relations, local neighborhoods, and structural cues.
+
+The \textit{Text-only Isolation} condition supports this interpretation. When graph structure is preserved but text units from non-cited entities are masked, both accuracy and answer stability improve relative to full isolation. This suggests that even without access to non-cited textual content, the presence, position, and connectivity of uncited entities can guide traversal, constrain the search space, or provide structural signals that influence answer generation.
+
+Finally, the \textit{visited-but-uncited ablation} interventions show that uncited context is not merely incidental. Both entity removal and text masking reduce performance across all settings, although less severely than in the isolation experiments. This indicates that visited-but-uncited entities contribute through their textual content, metadata, or structural context. In the \textit{Entity Text Mask} condition, masking also removes access to entity metadata, which likely explains the additional decrease in accuracy and robustness observed in most settings.
+
+Taken together, these results distinguish citation correctness from provenance sufficiency. A citation may support the final answer while still omitting context that was behaviorally important during generation. Faithfulness and  provenance for agentic graph-based systems therefore require accounting not only for final cited entities, but also for the broader graph-interaction trace: visited-but-uncited entities, neighborhood structure, traversal paths, and implicit structural signals that shape the agent's answer.
+
+\section{Conclusion}
+
+This paper examined whether final citations in Agentic GraphRAG are sufficient to explain the evidence basis of generated answers. Our findings suggest that they are not. While cited entities often play a necessary role and removing them substantially changes answers and reduces accuracy, the experiments also show that accurate answering depends on more than the entities ultimately cited. Graph traversal, neighborhood structure, and visited-but-uncited entities can all influence how the agent discovers, selects, and interprets evidence.
+
+The results show that citation faithfulness in Agentic GraphRAG requires a broader notion of provenance. A citation set may correctly identify supporting evidence, yet still omit parts of the retrieval trajectory that were relevant to producing the answer. Therefore, evaluating citations only by checking whether the cited sources support the answer, or whether they were visited by the agent, is insufficient. Faithful citation mechanisms should also account for the graph context and retrieval path that shape the final response.
+
+Overall, our results indicate that provenance in agentic graph-based retrieval should be treated as a trajectory-level property rather than only a final-output property. 
+
+\section{Limitations}
+This study is limited by the small benchmark size and by its use of a controlled knowledge graph built from 2WikiMultiHopQA rather than a large real-world knowledge graph. Future work should evaluate the same interventions on larger datasets, richer graph structures, and domain-specific knowledge bases, and should develop citation mechanisms that expose not only final supporting entities but also the relevant traversal context.
+
+Future work will focus on expanding our experiments across all dimensions—larger datasets, diverse benchmarks, and real-world knowledge bases—while investigating how graph structure influences Agentic AI performance and the interplay between parametric knowledge, cited knowledge, and knowledge acquired through traversal.
+
+
+%% The declaration on generative AI comes in effect
+%% in Janary 2025. See also
+%% https://ceur-ws.org/GenAI/Policy.html
+\section*{Declaration on Generative AI}
+
+During the preparation of this work, the author(s) used Claude (Anthropic) and ChatGPT (OpenAI) in order to: drafting content, improve writing style, generate literature review, paraphrase and reword, and content enhancement. After using this tool/service, the author(s) reviewed and edited the content as needed and take(s) full responsibility for the publication's content.
+ %  {\em Either:}\newline
+ %  The author(s) have not employed any Generative AI tools.
+ %  \newline
+  
+ % \noindent{\em Or (by using the activity taxonomy in ceur-ws.org/genai-tax.html):\newline}
+ % During the preparation of this work, the author(s) used X-GPT-4 and Gramby in order to: Grammar and spelling check. Further, the author(s) used X-AI-IMG for figures 3 and 4 in order to: Generate images. After using these tool(s)/service(s), the author(s) reviewed and edited the content as needed and take(s) full responsibility for the publication’s content. 
+
+%%
+%% Define the bibliography file to be used
+\bibliography{references}
+
+%%
+%% If your work has an appendix, this is the place to put it.
+% \appendix
+
+% \section{Online Resources}
+
+
+% The sources for the ceur-art style are available via
+% \begin{itemize}
+% \item \href{https://github.com/yamadharma/ceurart}{GitHub},
+% % \item \href{https://www.overleaf.com/project/5e76702c4acae70001d3bc87}{Overleaf},
+% \item
+%   \href{https://www.overleaf.com/latex/templates/template-for-submissions-to-ceur-workshop-proceedings-ceur-ws-dot-org/pkfscdkgkhcq}{Overleaf
+%     template}.
+% \end{itemize}
+
+\end{document}
+
+%%
+%% End of file

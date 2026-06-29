@@ -1,0 +1,150 @@
+%\section{Attritable MCTS with Regret Minimization}
+\subsection{Overview of the A-MCTS algorithm}
+\label{sec:attritable}
+We develop Attritable MCTS (A-MCTS), an online decentralized MCTS algorithm that quickly adapts to agents' attrition and efficiently coordinates action between the remaining agents. Its performance mainly relies on two key factors, including the joint-utility-guided decentralized tree search, and the best response policy given the shared intentions of others.
+Each agent runs A-MCTS distributedly to plan for itself a path that is expected to maximize the total utility of the whole mission. Agents then execute the first planned action and observe any changes. After that, they perform replanning from their new state and update the planned paths based on newly available information. The search tree may be pruned by removing all children of the root except the selected branch. This cycle of planning and execution continues until the travel budget expires.
+The pseudo-code of A-MCTS for agent $n$ is shown in Algorithm~\ref{alg:A-MCTS}.
+
+The tree $\mathcal{T}_n$ of agent $n$ is incrementally built over its action sequences space $\Xc_n$ while considering the possible behaviors of others $\Xc_{-n}$ (Line 6-9). In the \emph{selection phase}, the discounted upper confidence bound on Tree (D-UCT)~\citep{best2019dec} is applied to handle the abrupt changes in reward values caused by the actions of other agents.
+
+\begin{algorithm}[ht!]
+ \caption{A-MCTS algorithm for agent $n$}
+ \label{alg:A-MCTS}
+ \begin{algorithmic}[1]
+ \renewcommand{\algorithmicrequire}{\textbf{Input:}}
+ \REQUIRE Global objective function $U_g$, actions budget $B$\\
+ \renewcommand{\algorithmicrequire}{\textbf{Output:}}
+ \REQUIRE best action sequence $x^\ast_n$ for agent $n$\\
+ \STATE $\mathcal{T}_n\ {\leftarrow}  \textit{Initilize MCTS Tree}$
+ \STATE \textbf{while} computation budget not met \textbf{do}
+ \STATE \quad $\hat{\mathcal{X}_n}\ {\leftarrow} \textit{Select Subset From} (\mathcal{T}_n)$
+ \STATE \quad $(\hat{\mathcal{X}}, \hat{\mathcal{X}}_{-n})\ {\leftarrow} \textit{Communicate and Update} (\hat{\mathcal{X}_n})$
+ \STATE \quad $x^{BR}\ {\leftarrow} \textit{Regret Matching Coordination} (\hat{\mathcal{X}})$
+ \STATE \quad \textbf{for} fixed number of iterations \textbf{do}
+ \STATE \quad \quad $x_n\ {\leftarrow} \textit{D-UCT Select, Expand \& Rollout} (\mathcal{T}_n, B)$
+ \STATE \quad \quad $F_n\ {\leftarrow} U_g(x_n, x^{BR}_{-n})$ 
+ \STATE \quad \quad  $\mathcal{T}_n\ {\leftarrow} Backpropagation (\mathcal{T}_n, F_n)$
+ % \STATE \quad \textbf{end for}
+ % \STATE \textbf{end while}
+ \STATE $x^\ast_n\ {\leftarrow} \textit{Best Next Action} (\mathcal{T}_n)$
+ \STATE \textbf{return} $x^\ast_n$
+ \end{algorithmic}
+\end{algorithm}
+
+The key idea of our proposed algorithm is to have the search trees of every agent be guided by the same utility of the joint action sequences. This is achieved by letting all agents optimize their local actions using the global utility $U_g$ directly (Line 8). Each agent can then decide its path $x_n$ independently to maximize $U_g$ and be aware of the change in the global rewards immediately if there are failures in the system.
+However, the uncertainty in other agents' plans has also been shown to degrade the overall performance when using the global objective function to optimize local actions~\citep{wolpert2013probability}. To overcome this issue, we propose to let each agent improve its policy iteratively while assuming others keep their policies fixed.
+
+More precisely, given a set of all possible action sequences of all agents $\Xc=(\Xc_n,\Xc_{-n})$, A-MCTS will periodically compute a ``best response" set of joint action sequences that maximize the joint utility for all participants $x^{BR}:= \{x^{BR}_n, x^{BR}_{-n}\}$ (Line 5). Each agent will then assume other agents coordinately determine their policies following such ``best response" $x^{BR}_{-n}$ and uses such information to compute the utility for its action sequence selection while growing the MCTS tree (Line 8). In general, the cardinality of $\mathcal{X}_n$ can be very large and it grows exponentially. To reduce the computation and communication requirements, we consider only those dynamically updated subsets $\mathcal{\hat{X}}_n \subseteq \mathcal{X}_n$ of the most promising action sequences. The set $\mathcal{\hat{X}}_n$ is chosen as the best rollouts of $M$ fixed nodes in the search tree $\mathcal{T}_n$ with the highest discounted empirical average (Line 3). We then define the following problem:
+
+\begin{problem}\label{prob:2}(\textit{Best joint policy for multi-agent planning)}
+\begin{equation}\label{eq:objectivefunctionRM}
+     \underset{(x_1, x_2, \dots, x_N)}{\text{maximize}}\ U_g(x_1, x_2, ...,x_N)\
+\end{equation}
+%\quad Subject to:
+ \begin{align}
+        \text{Subject to:} \quad  &  x_n \in \hat{\Xc}_n,  \quad \forall n \in \mathcal{N}
+	\end{align}
+\end{problem}
+
+The objective is to find an action profile $(x_1, x_2, \dots, x_{N})$ that maximizes the global utility $U_g(\cdot)$.
+Such an optimization problem cannot be solved efficiently. Indeed it is NP-hard to maximize a submodular function~\citep{rezazadeh2023distributed}. Seeking a Nash equilibrium (NE) (where each agent policy is the best response to the others) that achieves a good efficiency compared to the optimal solution is more accessible~\citep{qu2019distributed}. A greedy algorithm is usually employed to find an approximation solution~\citep{nemhauser1978analysis}. However, we will show later with simulations that greedy solutions can be substantially suboptimal even in scenarios with few agents. In the following section, we provide a distributed regret-based solution to Problem~\ref{prob:2} that quickly and efficiently computes an NE joint policy for multi-agent systems, regardless of their complexity.
+
+\subsection{Regret Matching For Cooperative Coordination}
+
+% \dn{\subsection{Model of the Coordination Game}}
+% https://www.sto.nato.int/publications/STO%20Meeting%20Proceedings/STO-MP-IST-166/MP-IST-166-01.pdf (Section 5.1)
+% https://opus.lib.uts.edu.au/handle/10453/169276
+% https://arxiv.org/pdf/2305.01869.pdf
+% https://mers-papers.csail.mit.edu/Theses/Nikhil%20Bhargava/nkb-phd.pdf
+% https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9913973
+In this paper, we consider the distributed solution of the optimization problem~\ref{prob:2} where each agent decides its path based on local information and limited communication from its peers. We aim to design a decision-making method that is capable of operating and adapting with occasional communication or less, where every agent acts solely based on its local observation and does not need to constantly communicate every decision with the others. This is to guarantee that the algorithm can effectively handle the agent attrition situation described in Section~\ref{sec:attrition_settings}. The main difficulty here is how to ensure the independent decisions of the agents lead to jointly optimal decisions for the group. To address this challenge, we formulate the problem of finding for each agent an action sequence that collectively maximizes the joint utility as a multi-agent cooperative game. We then propose a distributed mechanism, where every agent independently simulates a multi-player cooperative game based on the local information available to itself and solves the game by self-play. For this purpose, a game theory learning algorithm based on the Regret Matching technique~\citep{hart2000simple} is employed to approximate the Nash equilibrium of the game.
+
+%(without communication or explicit coordination)
+% \DN{Nhat, please update Algorithm 2 accordingly to reflect the method of best Nash selection.}
+% \DN{Need further discussion on why Nash solution is useful under agent attrition scenario (Duong to fill in).}
+Let $\hat{\Xc}=(\hat{\Xc_n},\hat{\Xc}_{-n})$ denote the joint set of action sequences that are shared between all agents, and $x_{nm}$ denote the action sequence $m$ of agent $n$. In our approach, periodically, every agent independently constructs a matrix game in which the set of players contains all the active agents and the set of actions is $\hat{\Xc}$. At this stage, each agent applies the Regret Matching (RM) procedure as proposed in~\citep{hart2000simple} to its estimated matrix game to compute a best response joint decision. The pseudo-code of our RM game is shown in Algorithm~\ref{alg:RM}.
+
+To further improve the performance of RM in cooperative settings, we let the agents use the global utility to calculate the regrets instead of the local utility. At each iteration $t$, an action $x_{nm} \in \Xc$ is sampled for each agent based on a probability distribution. Let $p$ denote this probability distribution where $p(x_{nm})$ is the probability for $x_{nm}$ and $\sum_{j=1}^{M} p(x_{nj}) = 1, \forall n \in \mathcal{N}$. With $x^{(t)} := \{x^{(t)}_n, x^{(t)}_{-n}\}$, we denote the sampled set at iteration $t$, where $x^{(t)}_n$ is the sample action for agent $n$ and $x^{(t)}_{-n}$ is the sampled actions for all agents except agent $n$. We then define the regret of agent $n$ for not taking action $m$ at iteration $t$ as
+$R^{(t)}_{nm} = U_g(x_{nm}, x^{(t)}_{-n}) -  U_g(x^{(t)}).$
+Denote $\Rc$ as the cumulative regret matrix where an element $\Rc_{nm}$ is the regret for $x_{nm}$ and $\Rc^+_{nm} = \max \{\Rc_{nm}, 0\}$. Then, the probability distribution $p$ used at the next iteration will be updated as
+\begin{equation}
+    p(x_{nm}) =
+     \begin{cases} 
+      \frac{\Rc^+_{nm}}{\sum_{m=1}^{M} \Rc^+_{nm}} & \text{if $\sum_{m=1}^{M} \Rc^+_{nm} > 0$,}\\
+      \frac{1}{M} & \text{otherwise.}
+    \end{cases}   \label{eq:prob_reget}
+\end{equation}
+
+\begin{algorithm}[!t]
+ \caption{ \footnotesize Regret Matching Coordination algorithm \normalsize } %
+ \label{alg:RM}
+ \begin{algorithmic}[1]
+ \renewcommand{\algorithmicrequire}
+{\textbf{Input:}}
+ \REQUIRE Global objective function $U_g$, joint compressed action sequences set $\hat{\Xc}$\\
+ \renewcommand{\algorithmicrequire}{\textbf{Output:}}
+ \REQUIRE Best response joint action sequences $x^{BR}$\\
+ \STATE Every agent $n\in \Nc$ performs the following steps $2-9$ 
+ \STATE \quad Initialize $\Rc$ to zeroes and $p$ to uniformly random
+ \STATE \quad \textbf{for} $t=1,2, \dots$ \textbf{do}
+ \STATE \quad \quad $x^{(t)} {\leftarrow} \textit{Sample} (\hat{\Xc}, p)$
+ \STATE \quad \quad \textbf{for each} $x_{nm} \in \hat{\Xc}$ \textbf{do}
+ \STATE \quad \quad \quad $\Rc_{nm}\ {\leftarrow} \Rc_{nm} + U_g(x_{nm}, x^{(t)}_{-n}) -  U_g(x^{(t)})$ 
+ \STATE \quad \quad \quad Update $p(x_{nm})$ using Eq. (\ref{eq:prob_reget})
+
+% \begin{equation*} 
+% p(x_{nm}) {\leftarrow}
+%  \begin{cases}
+%  \frac{\Rc^+_{nm}}{\sum_{j=1}^{M} \Rc^+_{nm}}  & \text{if} \sum_{j=1}^{M} \Rc^+_{nm} > 0\\
+%  \frac{1}{M} & \text{otherwise}
+%  \end{cases}
+%  \end{equation*}
+ % \STATE \quad \textbf{end for}
+ % \STATE \textbf{end for}
+ \STATE \quad $x^{RM}_n {\leftarrow} \argmax_{x_{im} \in \hat{\Xc_i}} [p(x_{im})], \forall i \in \mathcal{N}$
+ \STATE \quad $x^{RM}_{-n}\ {\leftarrow} \textit{Communicate and Update} (x^{RM}_n)$
+ \STATE \textbf{return} $x^{BR} {\leftarrow} \argmax_{(x^{RM}_n,\ x^{RM}_{-n})} [U_g(x^{RM}_n,\ x^{RM}_{-n})]$
+ \end{algorithmic}
+\end{algorithm}
+
+Denote the joint decision computed using RM by agent $n$, which is the set of action sequences, one per agent, that has the highest probability $p(x_{nm})$, as $x^{RM}_n$. Similarly, let $x^{RM}_{-n}$ be the computed set for all agents except agent $n$. Finally, these sets are exchanged between every agent, and the most payoff-dominant solution is chosen as the best response joint decision $x^{BR}=(x^{BR}_n,x^{BR}_{-n})$.
+
+%========================================================
+\subsection{Analysis and Discussion}
+% We now provide an analysis testifying to the benefits of using Regret Matching as a distributed coordination algorithm for multi-agent cooperation.
+% \subsubsection{Why RM for computing NE strategy?}
+It has been shown in~\citep{berg2017exclusion} that there exists no polynomial time algorithm to compute a pure NE in multiplayer nonzero-sum stochastic games. Hence, we employ an approximate method of finding the NE by proposing a decentralized Nash selection method based on Regret Matching for making choices in a multiplayer matrix game formulated at each decision-making state. Regret Matching is a regret-based algorithm for learning strategies in games, and is often used to compute correlated equilibria in multi-player repeated games with imperfect information. Although the regret matching technique has been widely used for non-cooperative games, its application in cooperative games, such as the problem studied in our paper with a submodular utility function, has only been recently explored~\citep{nguyen2023social}. In this work, by leveraging the submodularity property of the joint objective function, we employ Regret Matching as a self-play technique to independently learn a Nash-based strategy for each player. We theoretically prove a stronger result of convergence using Regret Matching to an approximate pure-strategy Nash solution (see Definition~\ref{def:PSNE}), rather than the commonly-used correlated equilibrium, in games where players' utility functions are submodular.
+
+\begin{definition}[Pure-Strategy Nash Equilibrium]\label{def:PSNE}
+A pure-strategy Nash equilibrium (PSNE) is a joint action profile $x^*=(x^*_n,x^*_{-n}) \in \hat{\Xc}$ if for all $n\in \Nc$ and all $x_n \in \hat{\Xc}_n$ such that: 
+$U_n(x^*_n,x^*_{-n}) \geq U_n(x_n,x^*_{-n})\ .$ 
+\end{definition}
+
+% Our main theoretical result is as follows:
+\begin{theorem}
+\label{theorem:PSNE_convergence}
+The best response joint decision $x^{BR}$ computed using RM, under the assumption of submodular utility functions, is a PSNE solution of the matrix-game representation generated by the set of best feasible paths $\hat{\Xc_n}\subseteq \Xc_n$ chosen by every agent at each decision point\footnote{For proof and analysis, please see Appendix B in the Supplementary Material }.
+\end{theorem}
+
+
+% The proof is presented in Appendix \ref{app:B}. Additionally, Appendix \ref{app:C} includes the rationale behind the Nash equilibrium solution and further analysis of the distributed and parallel execution and computational complexity of Algorithm \ref{alg:RM}.
+
+
+% Nash equilibrium is a good solution for multiagent decentralized path planning because it provides a stable outcome for the agents involved in the planning process. In a Nash equilibrium, each agent chooses a strategy that is optimal given the strategies of the other agents. This means that no agent can improve its outcome by unilaterally changing its strategy1.
+
+% In multiagent decentralized path planning, each agent has its own objective and constraints. Nash equilibrium provides a way to find a set of strategies for each agent that is optimal given the strategies of the other agents. This results in a stable outcome where no agent can improve its outcome by unilaterally changing its strategy.
+
+%the algorithm requires $\mathcal{O}(\Ac_i^2)$, where $\Ac_i$ is the upper bound on the number of actions per agent.
+% 
+%A multi-agent normal-form game can be represented with a utility set $\Uc$ in which $u_i(a_i, a_{\Bar{i}})$ specifies an individual utility for agent $i$ under a combination of actions $(a_i, a_{\Bar{i}})$. The number of action combination grows exponentially in the number of agents, i.e., a game with $|\mathcal{I}|$ agents and at most $|\mathcal{A}_i|$ actions per agent $i$ $(i \in \mathcal{I})$ has $|\mathcal{A}_i|^{|\mathcal{I}|}$ action combination in total. Each agent has one individual utility for each action combination and thus it requires $|\mathcal{I}| \times |\mathcal{A}_i|^{|\mathcal{I}|}$ integer numbers to represent all agents' utilities. Therefore, the complexity of searching over the space of all possible action combination is $\mathcal{O}(|\mathcal{I}| \times |\mathcal{A}_i|^{|\mathcal{I}|})$, which is exponential in the size of the input and thus is generally intractable both for storing a game and computing its solution.
+% One important aspect of our proposed distributed mechanism is that the computation can be performed in parallel by all the agent in each decision stage of the game. This feature reduces the computation time of the algorithm dramatically and thus can offer many advantages over traditional centralised solutions, such as enhanced speed, scalability, and efficiency. In particular, our algorithm allows every agent independently decides its action in a distributed fashion based on its own utility observation. Using our method, at each time step $t$, every agent $i$ announces its chosen action to a BS which is subsequently broadcast to the remaining $|\mathcal{I}\setminus\{i\}|$ agents. Based on the announced joint action vector $\left(a_i^{(t)},a^{(t)}_{\Bar{i}}\right)$, each agent $i$ learns only its utility vector $\left\{u^{(t)}_i\left(k,a^{(t)}_{\Bar{i}}\right)\right\}_{k\in \mathcal{A}_i}$ to update its action decision strategy in the next time step. Note that since the agents can do their calculations in parallel, the total amount of queries over time required by each agent to run the algorithm will therefore be less than~$\sim\mathcal{O}(|\mathcal{I}| \times \Psi)$, where $\Psi$ is the number of iterations until convergence. Furthermore, at each decision point, each agent has to compute its expected utilities for all the alternative actions available, for which consequently the run-time for performing an action update for every time step grows linearly with the number of each agent's actions $|\mathcal{A}_i|$, according to~\citep{CFan2020}. Put together, the total run-time of our solution scales as $\sim\mathcal{O}(|\mathcal{A}_i| \times |\mathcal{I}| \times \Psi)$. Overall, the total run-time of Algorithm~\ref{alg:RMalg} grows linearly in the number of agents, the number of agents' actions, and the number of iterations until convergence. Note that, in the absence of leveraging parallelism, i.e., one runs the mechanism on a single core and use it as a centralized optimization method, the proposed algorithm would scale as $\sim\mathcal{O}(|\mathcal{A}_i| \times |\mathcal{I}|^2 \times \Psi)$.
+% \noindent\DN{the tradeoff between the quality of Nash solution and the run time}
+% \dn{\subsubsection{Submodular function and optimality}}
+% \dn{\subsubsection{The quality of NE for cooperative path planning}}
+% \noindent\DN{Why reaching a Nash solution in a game model involving submodular utility function (reward collection) tends to yield globally near-optimal solution.}
+%It has been shown in~\citep{} that the Nash equilibrium solution tends to yield globally optional solutions in a game model involving convex payoff functions. 
+% "submodular function" AND "regret matching"
+% "reward collection" submodular function
+% https://www.sciencedirect.com/science/article/pii/S0005109819301281
+% https://www.sciencedirect.com/science/article/pii/S000510982300153X
+% https://arxiv.org/pdf/2112.08000.pdf

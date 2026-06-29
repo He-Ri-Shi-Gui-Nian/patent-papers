@@ -1,0 +1,60 @@
+\subsection{Architecture}\label{sec:architecture}
+
+CSI is a multi-backend command-line interface that wraps various LLM agent scaffolds behind a single executable, \texttt{csi}, and a local routing proxy (Figure~\ref{fig:arch}). The same proxy intermediates every request issued by every backend, which is what makes the per-scaffold telemetry uniform, the cost accounting comparable across runs, and the multi-scaffold extension of Section~\ref{sec:multiagent} feasible without modifying the scaffolds themselves.
+
+\begin{figure*}[t]
+\centering
+\input{tex/fig_arch.tex}
+\caption{CSI architecture. The \texttt{csi} wrapper dispatches to one of four scaffold backends. Every request issued by every backend transits the local routing proxy, which performs wire-protocol translation across upstream providers (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses), enforces a non-API-path block list, and writes a unified JSONL ledger with per-request cost. Telemetry suppression operates in three layers: environment variables, a \texttt{fetch}/\texttt{https.request} patch loaded into the Claude Code runtime, and the proxy's own whitelist. The proxy is the single hook point on which the multi-scaffold blackboard of Section~\ref{sec:multiagent} is anchored.}
+\label{fig:arch}
+\end{figure*}
+
+\subsection{Scaffolds under comparison}\label{sec:scaffolds}
+
+All scaffolds compared in this paper share the same model (\aliasmini{}), the same per-challenge wall-clock timeout drawn from the upstream cybench \texttt{Est.~Time} field, and the same per-challenge harness. \aliasmini{} is fixed as a mid-capability reference point within the broader \texttt{alias} model series and contemporary frontier; Appendix~\ref{app:model-context} (Figures~\ref{fig:alias-progression}--\ref{fig:alias-heatmap-full}) places it in context relative to frontier models from Anthropic, Google, OpenAI, and Mistral AI on the same cybench subset under $pass@3$. We fix the model deliberately at this mid-capability point for three reasons. First, holding capability below the frontier isolates the \emph{scaffold} as the variable under study, since a frontier model would saturate the easier difficulty tiers and compress the inter-scaffold variance that this work measures. Second, \aliasmini{} runs fully on-premises, which enables a private cybersecurity AI agentic behavior in which neither targets, findings, nor operator context leave the deployment boundary. Third, it is the model in demand for this setting, currently deployed by various nation-state and law enforcement groups across Europe. The scaffolds' structural differences are described below.
+
+\subsubsection{\textcolor{cc_color}{\texttt{CSI::Claude}}}\label{sec:cc}
+
+\texttt{CSI::Claude} wraps the upstream Claude Code CLI (CC) \cite{anthropic2025claudecode} (pinned to v2.1.87 for this work) inside a Kali-Linux Docker runner. It runs an iterative tool-loop with free shell access and explicit per-turn semantics, the dominant pattern in published agentic security systems \cite{deng2024pentestgpt,redteamllm2025}. The CC binary is patched at install time to disable telemetry, route \texttt{/v1/messages} requests through the local proxy, and align banner and login flows with the alias API.
+
+\subsubsection{\textcolor{codex_color}{\texttt{CSI::Codex}}}\label{sec:codex}
+
+\texttt{CSI::Codex} drives the upstream OpenAI Codex CLI \cite{openai2025codex} (Rust implementation, v0.104.0) under \texttt{--full-auto}. It exposes the same shell-driven tool loop as \texttt{CSI::Claude} but communicates with the proxy on the OpenAI Responses wire protocol, which the proxy translates to/from Chat Completions for the alias API. Per-turn context is smaller than \texttt{CSI::Claude}'s and turn semantics differ.
+
+\subsubsection{\textcolor{cai_orange}{\texttt{CSI::CAI}}}\label{sec:cai}
+
+\texttt{CSI::CAI} wraps the CAI framework \cite{mayoral2025cai} (Python, v1.0.4) as a constrained-Python tool registry. It enforces a hard \$10 per-run cost cap and a 100-turn cap; the tool registry is small (filesystem and execution primitives) compared with \texttt{CSI::Claude}'s free shell. The routing proxy is started for unified JSONL logging and the alias API key is forwarded via \texttt{ALIAS\_API\_KEY}; the agent loop, TUI, and tool dispatch are inherited from the upstream framework \cite{mayoral2025offensive}.
+
+\subsubsection{\textcolor{gcai_color}{\texttt{CSI::GCAI}}}\label{sec:gcai}
+
+\texttt{CSI::GCAI} (Generative Cybersecurity AI) is a generative, deliberately minimalistic scaffold. It is a $1{,}344$-line standalone TypeScript agent compiled to a single bundle via \texttt{esbuild}, using only the Node.js standard library; the meta-harness that iteratively rewrites the scaffold body, plus evaluation and progress utilities, contributes a further $\sim 1{,}200$ lines of Python. 
+Unlike \texttt{CSI::Claude} and \texttt{CSI::Codex}, which wrap mature production CLIs, GCAI is intended as a compact blueprint for rapid specialisation to particular use cases: the runtime is an explicit agent loop with five tools (\texttt{bash}, \texttt{read\_file}, \texttt{write\_file}, \texttt{edit\_file}, \texttt{load\_skill}), a tight system prompt, a $300$-turn cap, an LLM-driven context compression pass, and JSONL-backed persistent task tracking.
+
+The meta-harness that generates GCAI is not a genetic-programming search; it follows the autoresearch \cite{karpathy2025autoresearch} modify $\rightarrow$ compile $\rightarrow$ benchmark $\rightarrow$ accept/reject loop in which each iteration asks an LLM to rewrite the scaffold body along one of eight rotating change-focuses (system-prompt methodology; token efficiency; tool definitions; agent-loop logic; CTF-specific patterns; flag detection; \texttt{bash}-tool ergonomics; and high-level methodology), recompiles via \texttt{esbuild}, evaluates the candidate against the cybench training items on a $0.70/0.15/0.15$ weighted score over solve rate, time bonus, and step bonus, and only accepts the candidate if its score strictly exceeds the incumbent best. There is no population, no crossover, and no mutation operator; it is single-trace coordinate descent over scaffold code, driven by an LLM editor and gated by real-benchmark evaluation. For the runs reported in this paper we benchmark a fixed accepted scaffold against the 33-challenge subset. The empirical cost and wall-time signature of this design is analysed alongside the scoreboard in Section~\ref{sec:scoreboard}.
+
+\subsubsection{\textcolor{mistral_vibe}{\texttt{CSI::Mistral}}}\label{sec:mistral-scaffold}
+
+\texttt{CSI::Mistral} wraps Mistral Vibe\footnote{\url{https://github.com/mistralai/mistral-vibe}}\todo{[review C6.4] Mistral Vibe has only a URL footnote; anthropic2025claudecode and openai2025codex are @misc bib entries with version pins, so add a parallel mistral2025vibe entry pinned at v2.9.6 and replace this footnote with a cite.} (v2.9.6), a minimal CLI coding agent developed by Mistral AI. Vibe uses Mistral's native function-calling protocol, which the CSI proxy translates to/from the alias API's Chat Completions format. Unlike the iterative multi-turn scaffolds (\texttt{CSI::Claude}, \texttt{CSI::Codex}), Vibe follows a single-turn dispatch model with iterative re-prompting, resulting in lower per-challenge token consumption ($193$\,M input across 33 challenges, versus $1.01$\,B for \texttt{CSI::Claude}). \texttt{CSI::Mistral} was tested independently under the same per-scenario timeouts and anti-cheat harness as the four primary scaffolds; its results are reported as a case study in Section~\ref{sec:mistral}.
+
+\subsection{Benchmark}\label{sec:benchmark}
+
+We use a 33-challenge subset of cybench \cite{sanzgomez2025cybersecurityaibenchmarkcaibench}, selected as the challenges that pass continuous integration validation end-to-end. The 33 challenges span five difficulty tiers (Very Easy through Very Hard) and four challenge categories: cryptography, reverse engineering, web exploitation, and miscellaneous. The full per-challenge list with per-scaffold solve outcomes is given in Table~\ref{tab:per-challenge} (Appendix~\ref{app:per-challenge}).
+
+\subsection{Harness}\label{sec:harness}
+
+Each scaffold runs inside a dedicated Docker container built from a Kali-Linux base image that includes the scaffold binary, the CSI proxy, and a standard penetration-testing toolkit. The container is launched with \texttt{--network=host} access to a per-challenge CTF target (itself a Docker container, pulled from the upstream cybench registry), and is clamped to the challenge's upstream \texttt{Est.~Time} budget via a hard wall-clock timeout enforced by the orchestrator. Scaffold containers are isolated from each other: in the per-scaffold independent campaign (Section~\ref{sec:scoreboard}) each container sees only its own CTF target; in the parallel race (Section~\ref{sec:bbresults}) four containers run simultaneously against four identical CTF instances of the same challenge, with no shared filesystem; in the blackboard cross-write (Section~\ref{sec:bbcrosswrite}) the four containers share a single mounted directory (\texttt{/blackboard/}) but still run against isolated CTF targets.
+
+Two anti-cheat measures are enforced at the orchestrator level before any scaffold is launched. First, the challenge metadata file (\texttt{ctf\_configs.jsonl}), which contains literal flag strings, is made unreadable (\texttt{chmod 000}) inside the CTF container; the entry-point command needed by the harness is passed via a base64-encoded environment variable (\texttt{CSI\_CTF\_ENTRY\_B64}) instead. Second, a flag-scrubbing pass removes well-known flag files (\texttt{/usr/src/app/flag.txt}, \texttt{/challenge/flag.txt}, \texttt{/challenge/flag}, \texttt{/home/user/flag.py}) from the running CTF container and greps the filesystem for the literal flag string, deleting any matches. These measures ensure\todo{[review C5.3] "ensure" is overclaimed: scaffolds could still read backup flag files, recover from process memory, decode CSI\_CTF\_ENTRY\_B64 for hints, or extract from packed binaries; weaken to "substantially reduce the surface area for" and add one sentence stating the threat model and whether any such cases appeared in the per-challenge logs.} that scaffolds must engage with the challenge logic rather than reading pre-baked artefacts.
+
+The harness emits a per-challenge JSON record containing each scaffold's flag-found boolean, duration, cost, command count, error count, and token totals. A Python aggregator on top of those records computes per-scaffold rollups, set operations on the solve sets, ensemble selection over the $2^{4}-1 = 15$ non-empty subsets, and the cost-vs-coverage Pareto frontier.
+
+\subsection{Solve sets and ensemble metrics}\label{sec:metrics}
+
+For each scaffold $s \in \{Claude, Codex, GCAI, CAI\}$ we let $S_{s}$ be the set of cybench challenges that scaffold $s$ solves (binary flag-found). The headline metrics are:
+\begin{align*}
+\mathrm{Solve}_s &= |S_s|,                                              \\
+\mathrm{Union}   &= \bigl|\textstyle\bigcup_s S_s\bigr|,                 \\
+\mathrm{Core}    &= \bigl|\textstyle\bigcap_s S_s\bigr|,                 \\
+\mathrm{Excl}_s  &= \bigl|S_s \setminus \textstyle\bigcup_{t \neq s} S_t\bigr|,
+\end{align*}
+where $\mathrm{Excl}_s$ is the number of challenges only $s$ solves, and $\mathrm{Union}$ is the upper bound on coverage attainable by any combination of the four scaffolds. We further compute the greedy ensemble curve, namely the largest union attainable by the best subset of size $k \in \{1, 2, 3, 4\}$, and the Pareto frontier on the (total cost, union solves) plane over all 15 non-empty subsets. Both are visualised in Figure~\ref{fig:ensemble}.

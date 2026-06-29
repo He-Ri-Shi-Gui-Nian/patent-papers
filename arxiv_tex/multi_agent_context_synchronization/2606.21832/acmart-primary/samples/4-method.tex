@@ -1,0 +1,131 @@
+
+
+\section{Methodology}
+
+\textbf{Overview.} In this section, we formally present the AgentCAT framework. We first outline the overall workflow of multi-agent collaboration within AgentCAT. Subsequently, we detail three core components: the Examinee Agent for simulating examinee response behaviors, the Selection Agent for knowledge-concept-aware question retrieval, and the Supervisor Module for robust ability estimation. It is worth noting that our primary focus lies on the Selection Agent and the Supervisor Module, which represent extended research built upon the foundation of existing the Examinee Agent work.
+
+
+\subsection{The AgentCAT Framework}
+Distinct from traditional computerized adaptive testing methods that rely on statistical metrics or are data-driven but confined to static offline data, AgentCAT models the adaptive testing process as a multi-turn closed-loop interaction among agents. The framework is shown in the Figure\ref{framework}. The framework comprises three main entities: the Selection Agent ($\mathcal{A}_{sel}$) acting as the examiner, the Examinee Agent ($\mathcal{A}_{exa}$) acting as the examinee, and the Supervisor Module ($\mathcal{V}$) acting as the auditor. Formally, let $\mathcal{S}$ denotes the target examinee set, $\mathcal{Q} $ denotes the question bank, and $\mathcal{K} = \{k_1, k_2, k_3, \dots, k_{|\mathcal{K}|}\}$ denotes the set of knowledge concepts, where each question $q_j$ is characterized by a tuple $(c_j, k_j, a_j, b_j)$, representing the question text content, knowledge concept, discrimination parameter, and difficulty parameter, respectively. The relationships between knowledge concepts are defined by a Knowledge Concept Graph $\mathcal{G}$. The entire CAT process proceeds over discrete time steps $t=1, 2, \dots, T$. At each step $t$, the system maintains an estimated latent ability value $\hat{\theta}^{(t)}$ and a historical interaction set $\mathcal{H} = \{(q_1, y_1), (q_2, y_2), \dots, (q_t, y_t)\}$, where $y \in \{0, 1\}$ is the label indicating whether the response is correct (recorded as 1 for correct, 0 otherwise). The overall workflow is illustrated in Algorithm\ref{alg:agentcat}. 
+
+
+
+
+\subsection{Examinee Agent}
+To address the inherent data sparsity challenges in static educational datasets and enable counterfactual evaluation on unobserved questions, we employ a generative Examinee Agent as a digital twin of real examinees. Built upon the Agent4Edu\cite{gao2025agent4edu} architecture, our Examinee Agent transcends traditional probabilistic generative models, constructing a cognitive simulator that mimics the full lifecycle of learning and problem-solving. This agent is synergistically driven by three integrated modules: Profiling, Memory, and Action. The Profiling Module is responsible for initializing the agent's inherent characteristics, including learning activity, diversity preferences, success rate and initial latent ability. These features are extracted from historical interaction data via the IRT model, ensuring the behavioral consistency of the simulated persona. The Memory Module implements a multi-level storage mechanism inspired by human cognitive theories: Sensory Memory buffers current question inputs; Short-term Memory maintains recent interaction contexts; and Long-term Memory stores consolidated knowledge proficiency and key learning facts. Crucially, the Action Module discards the black-box mode of directly generating binary labels, instead explicitly simulating the mental flow of problem-solving through a Cognitive Task Chain. For a given question, the agent sequentially executes: (1)~Willingness Assessment: Deciding whether to attempt the question based on perceived difficulty. (2)~Concept Identification: Parsing the underlying knowledge concepts behind the question. (3)~Reasoning Generation: Outputting a solution path in textual form. (4)~Self-Reflection: Predicting response correctness and providing a confidence signal. This mechanism endows AgentCAT with the unique capability to explore examinee performance within the counterfactual space where ground-truth labels are absent.
+
+\subsection{Selection Agent}
+The Selection Agent serves as the decision-making core of AgentCAT, aiming to recommend the question with the highest diagnostic value at each step. Unlike traditional methods that greedily maximize statistical information gain, AgentCAT confronts two unique engineering challenges: the real-time retrieval latency in large-scale question banks, and the context window constraints of LLMs, which prevent effective perception of information across the entire bank. To address these issues, we discard the brute-force search pattern over the entire question bank $\mathcal{Q}$ and propose a bucket-based ‘‘ Coarse-to-Fine ’’ selection mechanism\cite{jiang2023active}. This mechanism aims to balance the depth of semantic reasoning with computational real-time performance within a massive search space through structured index preprocessing.
+\subsubsection{Bucketing Strategy}
+To achieve efficient retrieval within the large-scale unstructured question bank $\mathcal{Q}$, we first perform a structural reorganization. In the memory module of the Selection Agent, drawing inspiration from database indexing principles \cite{douze2025faiss}, we propose an IRT parameter stratification mechanism to construct a multi-dimensional index structure. Specifically, for each knowledge concept $k \in \mathcal{K}$, we partition the questions into distinct ‘‘ buckets ’’ based on the question difficulty parameter $b_j$ and discrimination parameter $a_j$ of question $q_j$. The bucket $\mathcal{B}^{k}_{l,d}$ corresponding to knowledge concept $k$ is defined as follows, and the question $q_j$ with this knowledge concept is stored in it:
+\begin{align}
+    \mathcal{B}_{l,d}^k = \{ q_j \in \mathcal{Q} \mid \text{KC}(q_j) = k, \text{Dif}(b_j) = l, \text{Dis}(a_j) = d \},
+\end{align}
+where KC, Dif, and Dis represent the knowledge concept, difficulty, and discrimination features of question $q_j$, respectively. We map the numerical distribution interval of $b_j$ into three difficulty levels $l \in \{\text{Easy, Medium, Hard}\}$, and partition the numerical distribution of $a_j$ into two discrimination levels $d \in \{\text{Low, High}\}$. This bucketing structure significantly reduces the question search space from a linear global complexity of $O(|\mathcal{Q}|)$ to a bucket-level complexity of $O(|\mathcal{B}_{avg}|)$ (where $|\mathcal{B}_{avg}|$ denotes the average number of questions per bucket). This not only substantially enhances retrieval real-time performance but also lays the data foundation for the subsequent Agent's “ Coarse-to-Fine ”  hierarchical decision-making.
+
+
+
+
+
+
+\subsubsection{Coarse-to-Fine}
+Based on the constructed multi-dimensional bucket index, the decision process of the Selection Agent is decoupled into two phases: Coarse-grained Instructional Planning and Fine-grained Hierarchical Retrieval.
+
+\textbf{Phase 1: Coarse-grained Instructional Planning.} In this phase, the Selection Agent does not directly process specific question entities but acts as an Instructional Planner, making macro-decisions at the knowledge concept level. Leveraging the LLM's powerful semantic reasoning capabilities and its understanding of the  $\mathcal{G}$, the agent infers the next most valuable target knowledge concept ($k_{tgt}$) based on the examinee's historical response  $\mathcal{H}_{t-1}$ and current latent ability state $\hat{\theta}^{(t-1)}$. This decision process mainly follows two pedagogical principles:
+(1) Prerequisite Dependency: If the examinee fails at the current concept, the LLMs traces back along the $\mathcal{G}$ to select prerequisite concepts for remedial testing.
+(2) Zone of Proximal Development (ZPD)\cite{wass2014sharpening}: If the examinee performs well, the LLMs recommends successor or highly related advanced concepts.
+The output of this phase is an explicit retrieval instruction $k_{tgt}$. The system then automatically maps the target  bucket  $\mathcal{B}_{tgt}$.
+
+\textbf{Phase 2: Fine-grained Hierarchical Retrieval Strategy.} Due to the inherent sparsity in the distribution of knowledge concepts and difficulty within real-world question banks, retrieving directly from the target bucket $\mathcal{B}_{tgt}$ poses a high risk of deadlock—either running out of suitable questions or facing severe difficulty mismatches. To address this, we designed a Four-Level Stratified Retrieval Strategy. This strategy adheres to the principle of Prioritizing Pedagogical Coherence with Difficulty Adaptation as a Safety Net, locking onto the optimal question $q_t$ by progressively relaxing constraints. First, we define a comprehensive scoring function $S(q)$ to evaluate the compatibility of a candidate question $q$ with the current state:
+\begin{align}
+    S(q) = w_1 \cdot Gap(q) + w_2 \cdot \mathcal{C} \cdot \mathbb{I}(k_q = k_{tgt}) + w_3 \cdot (1 - \text{Prof}_q),
+\end{align}
+where the first term penalizes the difficulty deviation $Gap(q) = |b_q - \theta_{t-1}|$. The second term rewards knowledge concept hits, where $k_q$ denotes the concept of the candidate question. Here, $\mathcal{C}$ represents the Planning Confidence of the Selection Agent, reflecting its certainty regarding the current target concept. This mechanism acts as a soft-gate, automatically relaxing semantic constraints when the decision is uncertain to prioritize difficulty adaptation while attempting to maintain pedagogical coherence. The third term serves as the Weakness Priority factor, where $\text{Prof}_q$ indicates the examinee's historical proficiency on the concept of question $q$. This term utilizes $(1 - \text{Prof}_q)$ to assign higher weights to concepts with lower mastery, effectively implementing a remedial strategy to explore the examinee's cognitive weak concepts. The specific retrieval process within a bucket proceeds as follows:
+
+\begin{itemize}
+    \item \textbf{Tier 1: Strict Target Matching.} The system prioritizes retrieval within the target difficulty bucket $B_{tgt}$ of the target knowledge concept. If the difficulty gap of the optimal question within the bucket satisfies the strict threshold constraint (i.e., $\text{Gap}(q) < \epsilon_{strict}$), this question is directly selected. This achieves optimal difficulty adaptation while simultaneously maintaining instructional continuity.
+    \item \textbf{Tier 2: Intra-Concept Relaxation.} If Tier 1 retrieval fails (i.e., the bucket is empty or the gap is too large), the system expands the retrieval scope to \textit{all} difficulty buckets under $k_{tgt}$. If the optimal question found within this scope satisfies the relaxed threshold constraint (i.e., $\text{Gap}(q) < \epsilon_{relaxed}$, where $\epsilon_{relaxed} > \epsilon_{strict}$), it is selected. This strategy prioritizes maintaining the instructional continuity of the knowledge concept by sacrificing a degree of difficulty adaptation precision.
+    \item \textbf{Tier 3: Neighbor Topological Hop.} If Tier 2 still fails to meet the conditions, it indicates a severe mismatch between available questions for this concept and the examinee's current ability. At this concept, the system searches the topological neighbor nodes (neighbor concepts) of $k_{tgt}$ along the  $\mathcal{G}$\cite{huang2021knowledge}. If a question in the neighbor nodes offers significantly better difficulty adaptation (i.e., $\text{Gap}_{neighbor} \ll \text{Gap}_{tier2}$), the system performs a semantic hop. This strategy effectively resolves the single-concept question exhaustion issue by leveraging graph connectivity.
+    \item \textbf{Tier 4: Global Robust Fallback.} Serving as the final guarantee of system robustness, if no question satisfying the maximum tolerance ($\tau_{max}$) is found within the aforementioned scopes, the system performs a global search across the entire question bank $\mathcal{Q} \setminus \mathcal{H}_{t-1}$. At this stage, the system selects the mathematically best-matched question based solely on the comprehensive scoring formula $S(q)$, ensuring the testing process does not suffer interruption.
+\end{itemize}
+
+Through this cascading mechanism, AgentCAT fully leverages the instructional planning capabilities of LLMs while simultaneously guaranteeing the adaptive convergence of CAT via rigorous mathematical constraints.
+
+\subsection{Supervisor Module}
+Due to the hallucination issues and generative uncertainty inherent in LLMs\cite{zhang2025llm}, directly adopting the outputs of the Examinee Agent may lead to drift or oscillation in the CAT system's ability estimation\cite{shinn2023reflexion}. Acting as the ‘‘ Auditor ’’ and ‘‘  Arbitrator ’’ of the entire simulation system, the Supervisor Module $\mathcal{V}$ is designed to ensure the stability and convergence of the assessment process through dual-side output auditing and robust ability update mechanisms\cite{ma2025advancing}.
+
+
+\subsubsection{Dual-Agent Auditing Mechanism}
+Before executing the ability update, the Supervisor Module $\mathcal{V}$ constructs two "safety guardrails" to intercept and audit the outputs of the Selection Agent and the Examinee Agent in real-time.
+
+\textbf{Validity Auditing for Selection Agent (Selection Auditing)}:
+To prevent the selection strategy from falling into local loops or recommending invalid questions, we design an IRT-probability-based validity check. For a selected question $q_t$, the system calculates the predicted correct response probability $P(\hat{\theta}^{(t-1)})$ under the current ability $\hat{\theta}^{(t-1)}$. If $P(\hat{\theta}^{(t-1)})$ falls outside the valid interval, it indicates the question difficulty is too extreme. Such questions, due to their Fisher Information approaching zero, not only fail to provide effective diagnostic gain but may also lead to examinee frustration or ineffective practice \cite{lord2012applications}. Consequently, such selections are Rejected, triggering the Selection Agent's re-planning mechanism. Simultaneously, the system maintains a short-term question queue $\mathcal{Q}_{recent}$ to forcibly intercept recurring questions (i.e., $q_t \notin \mathcal{Q}_{recent}$), strictly ensuring the diversity of the test sequence.
+
+
+
+\textbf{Cognitive Auditing for Examinee Agent (Examinee Auditing)}: To detect whether the Examinee Agent is trapped in a reasoning loop, we introduced a text detection mechanism based on Jaccard similarity \cite{nguyen2025enhancing}. Let $T^{(t)}_{idea}$ denote the reasoning text generated by the Examinee Agent at step $t$. The system calculates the bag-of-words similarity between it and the most recent historical reasoning $T^{(t-1)}_{idea}$:
+\begin{align}
+    J(T^{(t)}{idea}, T^{(t-1)}{idea}) = \frac{|\text{Set}(T^{(t)}{idea}) \cap \text{Set}(T^{(t-1)}{idea})|}{|\text{Set}(T^{(t)}{idea}) \cup \text{Set}(T^{(t-1)}{idea})|},
+\end{align}
+where $\text{Set}(TE)$ represents the set of unique tokens contained in text $TE$. If $J > 0.90$, the system judges the response as an invalid repetition, triggering a regeneration or truncation mechanism to prevent erroneous cognitive states from self-reinforcing in a closed loop.
+
+
+
+
+
+
+
+
+
+
+
+\subsubsection{Robust Ability Update}
+Upon obtaining audited responses, the system faces a core challenge: how to reconcile the simulated response $y_{agent}$ from the Examinee Agent with the historical ground truth label $y_{truth}$ (if it exists). To balance between preventing ability inflation and avoiding ability underestimation, we propose an Asymmetric Soft-Overwriting Strategy. We define $w_t$ as the examinee agent's accumulated confidence. The determination logic for the final label $y_t$ is as follows: 
+
+
+\begin{itemize}
+    \item \textbf{Consistency Scenario:} If $y_{agent} = y_{truth}$, the system directly adopts it and increments  $w_t$.
+    
+    \item \textbf{Conflict Scenario A: Preventing Ability Inflation.} When $y_{agent} = 1$ but $y_{truth} = 0$, there is a high risk of false positives. Directly trusting the Agent would cause the ability estimate to skyrocket abnormally. Therefore, we set an extremely strict overwriting threshold: we allow adopting $y_{agent}=1$ only if $w_t$ is sufficiently large \and the IRT model also predicts a high probability of correctness; otherwise, $y_{truth}=0$ is forcibly maintained as a safety baseline. This ensures the system prefers conservative estimation over unreliable score inflation.
+    
+    \item \textbf{Conflict Scenario B: Preventing Ability Underestimation.} When $y_{agent} = 0$ but $y_{truth} = 1$, directly trusting the Agent would lead to erroneous underestimation. Typically, we prioritize the historical truth $y_{truth}=1$, assuming the examinee has mastered the concept. \textbf{Exception Handling}: However, to capture the dynamic forgetting effect, if strong evidence exists---i.e., the agent is highly credible and the IRT model predicts a very low probability of correctness for the current ability---we allow the system to overwrite the historical truth and adopt $y_{agent}=0$. This enables AgentCAT to keenly diagnose knowledge blind spots that were once mastered but are now forgotten.
+    
+    \item \textbf{Counterfactual Scenario:} If $y_{truth} = \text{None}$, $y_{agent}$ is fully adopted. This embodies the core value of AgentCAT, leveraging the cognitive simulation capabilities of the Examinee Agent to fill the gaps caused by data sparsity and explore unknown knowledge domains.
+\end{itemize}
+
+Through this asymmetric mechanism, the Supervisor constructs a ‘‘ ceiling ’’ to prevent ability inflation and a ‘‘ floor ’’ to prevent unreasonable underestimation, while retaining the flexibility to capture forgetting phenomena.
+
+Upon acquiring the final label $y_t$, we adopt the principles of the 2PL-IRT model to update the estimated ability value $\hat{\theta}^{(t)}$. In traditional CAT research, ability estimation modules typically rely on CDM that have been pre-trained on massive historical interaction datasets~\cite{zhuang2026survey, ma2025diffusion,wang2025explicit}. However, in the full-process simulation scenario of AgentCAT, the Supervisor module cannot rely on pre-learned examinee embedding vectors. Instead, it must initiate from an assessment starting state ($\hat{\theta}^{(0)}$) and achieve rapid convergence of the ability estimation process relying solely on the real-time simulated interaction stream. Therefore, addressing this unique challenge, we propose an Online Robust Gradient Descent Strategy. This strategy models ability assessment as a dynamic parameter tracking process, incorporating physical constraints to accommodate the generative characteristics of LLMs.
+
+
+To achieve rapid convergence and robust estimation of ability values within a single-turn agent interaction stream, we model the ability update as an online gradient descent process characterized by an adaptive step size and gradient clipping. The update formula for the ability value $\hat{\theta}^{(t)}$ at step $t$ is defined as follows:
+\begin{align}
+    \hat{\theta}^{(t)} = \hat{\theta}^{(t-1)} + \eta_{eff} \cdot \Psi(\nabla_{total}),
+\end{align}
+where the total gradient $\nabla_{total}$ is a linear combination of the data likelihood gradient $\nabla_{data}$ and the prior regularization gradient $\nabla_{reg}$:
+
+\begin{align}
+    \nabla_{total} = \underbrace{a_t (y_t -P(\hat{\theta}^{(t-1)})}_{\nabla_{data}}) + \underbrace{-\lambda_{reg} (\hat{\theta}^{(t-1)} - \hat{\theta}^{(0)})}_{\nabla_{reg}}.
+\end{align}
+
+$a_t$ denotes the discrimination parameter of the current question $q_t$, and $\eta_{eff}$ is the effective learning rate, controlling the magnitude of the single-step update. $\Psi(\cdot)$ represents the saturation damping function, designed to suppress gradient explosion. $P(\hat{\theta}^{(t-1)})$ is the predicted probability of a correct response. $\lambda_{reg}$ is the regularization intensity coefficient, preventing the estimated value from deviating excessively from the initial estimate under data sparsity. Specifically, $\nabla_{data}$ is derived from the log-likelihood derivative of the 2PL-IRT model, reflecting the direct corrective power of the current response $y_t$ on the ability estimate: when a examinee answers correctly despite a low predicted probability, a positive gradient is generated to push $\hat{\theta}^{(t)}$ upward, and vice versa. Meanwhile, $\nabla_{reg}$ originates from a Gaussian prior constraint, acting as an elastic restoring force pointing towards the initial ability $\hat{\theta}^{(0)}$. This prevents drastic, non-physical parameter drift caused by data sparsity or noise interference during the early stages of simulation. To address the issues of overconfidence and information fluctuation in generated data\cite{yao2024adard}, we introduce robust control mechanisms based on the gradients described above:
+
+(1) Saturation Damping ($\Psi$). This mechanism applies to the total gradient and is designed to mitigate the gradient explosion problem caused by the Agent's hallucinated certainty\cite{kim2025splitnet,yazdani2023robust}. In traditional SGD, consecutive correct responses lead to the continuous accumulation of positive gradients. However, in simulation, the Examinee Agent might continue to output correct labels even when the concept is already fully mastered (i.e., predicted probability $P(\hat{\theta}^{(t-1)}) \to 1$). At this stage, the marginal information gain diminishes. We define a damping function $\Psi(g)$ to forcibly attenuate the gradient magnitude when the model enters a saturation zone of extremely high predictive probability:
+\begin{equation}
+    \Psi(g) = 
+    \begin{cases} 
+    \gamma \cdot g, & \begin{aligned} 
+                        \text{if } & (y_t=1 \land P(\hat{\theta}^{(t-1)}) > \tau_{sat}) 
+                                   & \lor (y_t=0 \land P(\hat{\theta}^{(t-1)}) < 1 - \tau_{sat}) 
+                      \end{aligned} \\
+    g, & \text{otherwise}
+    \end{cases}
+\end{equation}
+where $\gamma \in (0, 1)$ is the damping coefficient, and $\tau_{sat}$ is the saturation threshold used to delineate low-information regions. When the model's predicted probability $P(\hat{\theta}^{(t-1)})$ falls outside the interval $[1 - \tau_{sat}, \tau_{sat}]$, it indicates that the current question is too extreme  relative to the examinee's ability, or that the Examinee Agent is exhibiting overconfidence. In such cases, the system determines that it has entered a saturation state and triggers gradient damping to prevent parameter drift. This simulates the plateau effect in learning curves, effectively preventing the artificial inflation of ability values.
+
+(2) Fisher Information-based Adaptive Learning Rate ($\eta_{eff}$). This mechanism operates on the update step size, dynamically adjusting the magnitude of updates based on question quality. We utilize Fisher Information to quantify the contribution of the current question $q_t$ to the precision of ability estimation. Specifically, defining $I(\theta)$ as the Fisher information of the current question at ability level $\theta$, we dynamically scale the base learning rate $\eta_{base}$ as follows:
+\begin{align}
+    \eta_{eff} = \eta_{base} \cdot \left( \beta + (1-\beta) \cdot \frac{I(\theta)}{I_{max}} \right),
+\end{align}
+where $I(\theta)$ represents the instantaneous Fisher information provided by question $q_t$ at the previous ability estimate $\hat{\theta}^{(t-1)}$. $I_{max}$ denotes the Global Maximum Information Constant (i.e., the theoretical maximum information yieldable by any question in the bank), serving to normalize $I(\theta)$ into the $[0, 1]$ interval. $\beta \in (0, 1)$ is the base retention coefficient, ensuring that the system maintains a minimum update step size even in low-information regions. This mechanism endows the system with a weighted update capability: when encountering high-efficacy questions (characterized by high discrimination and moderate difficulty, where $I(\theta)$ approaches $I_{max}$), the system deems the current gradient direction highly reliable, thereby amplifying $\eta_{eff}$ to accelerate convergence. Conversely, when facing ineffective questions with low discrimination or extreme difficulty, the system automatically attenuates the update magnitude to suppress noise interference.
+

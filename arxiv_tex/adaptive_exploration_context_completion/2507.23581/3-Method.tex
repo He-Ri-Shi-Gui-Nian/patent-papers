@@ -1,0 +1,136 @@
+\section{Method}
+In this section, we present our proposed method. First, we introduce the \rlname~algorithm. Second, we detail the designs of \rewardname~, which includes PRA and CAF, together with the phase-dependent training strategy. 
+Finally, we present our hybrid graph-textual retrieval design. %
+An overall framework of our method is shown in Figure~\ref{fig:framework}.
+
+\begin{figure*}
+  \includegraphics[width=\textwidth,page=1]{Figures/framework.pdf}
+  \vspace{-0.7cm}
+  \caption{An overview of \methodname~: (a) the \rlname~as the training strategy of LLM, (b) \rewardname~designs, containing PRA and CAF rewards and the phase-dependent training strategy, (c) the hybrid graph-textual retrieval, which is more informative than text fragments. }
+ \Description{This figure presents a comprehensive architectural overview of the proposed GraphRAG-R1 framework, illustrating its three core, interconnected components:
+(a) Rollout Retrieval Enhanced GRPO as the LLM Training Strategy: This component depicts the reinforcement learning (RL) training paradigm, specifically a modified Group Relative Policy Optimization (GRPO) algorithm. It visually represents how the LLM policy is trained via process-constrained outcome-based RL, enabling the model to autonomously invoke retrieval tools during its reasoning "rollout" or thought process.
+(b) Process-Constrained Reward Designs: This section details the design of the reward functions that guide and constrain the model's behavior during RL training. It highlights the two novel rewards and illustrates the phase-dependent training strategy that applies them sequentially (cold start, behavior shaping, smartness optimization) to effectively shape the model's reasoning and retrieval patterns.
+(c) Hybrid Graph-Textual Retrieval Module: This part contrasts the proposed retrieval mechanism with traditional text-only retrieval. It visually demonstrates how combining structured graph triplets (capturing precise entity relationships) with unstructured text snippets (preserving rich semantic context) provides more comprehensive and integrated knowledge, thereby supplying higher-quality information for the LLM's complex reasoning tasks.
+}
+  \label{fig:framework}
+  \vspace{-0.3cm}
+\end{figure*}
+
+\subsection{\RLName}
+In this subsection, we introduce the details of our training method, which is a modified version of GRPO that supports the roll-out-with-thinking capability~\cite{song2025r1searcher}.
+
+Our goal is to optimize the LLM using RL to generate high-quality outputs augmented by an external retrieval tool $\mathcal{R}$ that assists the reasoning generation process. Specifically, denote the policy of RL as $\pi_{\theta}(\cdot)$ parametrized by $\theta$. Let $q$ represent input queries drawn from the training dataset $\mathcal{D}$, $o$ represent the generated outputs, and $r(\cdot)$ be the reward function. We formalize the objective as follows:
+\begin{equation}
+\begin{aligned}
+&\max_{\pi_{\theta}} \mathbb{E}_{q \sim \mathcal{D}, o \sim \pi_{\theta}(\cdot \mid q;\mathcal{R})} 
+\big[ r(q,o) - 
+\beta \cdot \mathbb{D}_{\text{KL}}(\pi_\theta  \|  \pi_{\text{ref}}) 
+\big] ,
+\end{aligned}
+\end{equation}
+where $\pi_{\text{ref}}(\cdot)$ is the reference LLM, $\mathbb{D}_{\text{KL}}(\cdot)$ is the KL-divergence measure, and $\beta$ is a hyperparameter that controls the strength of the KL-divergence regularization. More specifically, our method builds on the GRPO algorithm~\cite{guo2025deepseek}, which uses the average reward of multiple sampled outputs as a baseline. During training, for each input query $q$, GRPO samples a group of $G$ responses ${o_1, o_2,..., o_G}$ using the old policy $\pi_{\theta_{\text{old}}}$. The policy model is then optimized by maximizing the following objective function:
+\begin{equation}\label{eq:GRPO}
+\begin{aligned}
+&\mathcal{J}_{\text{GRPO}}(\theta) = \mathbb{E}_{\substack{q \sim D \\ \{o_i\}_{i=1}^G \sim \pi_{\theta_{\text{old}}}} }
+\bigg[ 
+ \frac{1}{G} \sum_{i=1}^{G} \min \bigg( 
+\frac{\pi_\theta(o_{i}\mid q)}{\pi_{\theta_{\text{old}}}(o_{i} \mid q)} \cdot A_{i}, \\
+& \text{clip}\left( \frac{\pi_\theta(o_{i} \mid q)}{\pi_{\theta_{\text{old}}}(o_{i} \mid q )}, 1-\epsilon, 1+\epsilon \right) \cdot A_{i} 
+\bigg) 
+ - \beta \cdot \mathbb{D}_{\text{KL}}( \pi_\theta  \|  \pi_{\text{ref}} )
+\bigg],
+\end{aligned}
+\end{equation}
+where the group size $G$ determines the number of responses generated per query, $\theta_{\text{old}}$ denotes the previous policy parameters, $\epsilon$ is the clipping range hyperparameter to constrain policy updates, and $A_{i}$ represents the advantage, computed based on the relative rewards of outputs within each group as follows:
+\begin{equation}\label{eq:advantage}
+A_{i} = \frac{r_i - \mu_r}{\sigma_r},   
+\end{equation}
+where $r_i$ is the reward for individual output, $\mu_r$ means the average reward of all $G$ outputs for the same query $q$, and $\sigma_r$ is the group reward standard deviation. %
+
+To better adapt GRPO to our GraphRAG scenario, we adopt two key modifications proposed by R1-Searcher~\cite{song2025r1searcher}: Rollout-with-Thinking and Retrieval-Masked Loss. The core objective is to enable the model to autonomously leverage external retrieval tools on demand during inference and receive rewards for generating correct answers. %
+
+\subsubsection{Rollout-with-Thinking} 
+The model is guided to utilize the external retrieval tool during generation by using two special tokens \texttt{<|begin\_of\_query|>...<|end\_of\_query|>} to indicate the call to the search tool. 
+When \texttt{<|end\_of\_query|>} appears, it signifies that the retrieval query has been fully generated. 
+At this point, model generation is paused, the external retrieval tool is called, and the retrieved content is marked with \texttt{<|begin\_of\_documents|> ... <|end\_of\_documents|>}. 
+This content then guides the model's next step of reasoning. 
+This method ensures retrieval is seamlessly integrated into the reasoning process.
+
+\subsubsection{Retrieval-Masked Loss}
+In the original GRPO, token-level loss is computed throughout the rollout sequence. In the GraphRAG scenario, the rollout sequence consists of tokens generated by the LLM and tokens retrieved from external channels. 
+Applying the same optimization to retrieved tokens and LLM-generated tokens may negatively impact the training process. Therefore, we utilize special tokens \texttt{<|begin\_of\_documents|>} and \texttt{<|end\_of\_documents|>} and their enclosed content is masked during training, ensuring the policy gradient objective is calculated only on LLM-generated tokens. 
+
+\subsection{\RewardName~Design}
+In this subsection, we introduce our reward functions to constrain the retrieval process, enabling effective and efficient reasoning. 
+
+RL methods have recently attracted considerable attention to improve the reasoning abilities of LLMs. However, if simple reward functions are employed, such as relying solely on final answer correctness, existing methods easily face a technical problem known as ``Reward Hacking''~\cite{gao2023scaling}, i.e., the model exploits certain loopholes in the reward to gain high scores rather than genuinely improving reasoning capabilities. %
+To address this potential issue, our reward design injects controlled human prior knowledge while preserving the fundamental reward framework. Concretely, we introduce the following three rewards: format reward, PRA, and CAF, as follows. %
+
+\subsubsection{Format reward}
+
+This reward function is designed to steer the model toward strictly adhering to the specified output format, ensuring that it learns to correctly invoke external retrieval and generate the final answer. The model should place the final response entirely within the \texttt{<answer>...</answer>} tags and ensure that the entire output is fully readable and free of uninterpretable artifacts. When invoking retrieval, the model should encapsulate retrieval queries within the \texttt{<|begin\_of\_query|>...<|end\_of\_query|>} tags with retrieved information contained within \texttt{<|begin\_of\_documents|> ... <|end\_of\_documents|>}. The model should explicitly invoke the retrieval mechanism through this query process rather than directly generating content without retrieval. 
+
+The format reward is defined as follows:
+\begin{equation}\label{eq:formatreward}
+  R_{\text{format}} = 
+  \begin{cases} 
+  0.5, & \text{correct} \\
+  0,   & \text{incorrect}.
+  \end{cases}
+  \end{equation}
+
+\subsubsection{Progressive Retrieval Attenuation (PRA)}
+The most straightforward design to encourage GraphRAG models to invoke retrieval calls is to adopt a single retrieval reward. However, this strategy tends to cause the model to invoke the external retrieval only once and cause the \textit{shallow retrieve} problem, as some complex multi-hop problems require multiple retrieval calls. On the other hand, one can sum up rewards for multiple retrieves, but it may trigger unnecessary retrieval calls. To circumvent these issues, we propose Progressive Retrieval Attenuation (PRA), specifically designed to provide tailored rewards for each invocation while incorporating a decay factor. With each additional retrieval call, the reward undergoes exponential decay relative to the base reward, concurrently accumulating rewards from the preceding invocations. Formally, the retrieval reward is defined as follows:
+\begin{equation}\label{eq:PRA}
+   R_n = 
+   \begin{cases}
+      R_{0}, & n=1 \\
+      R_{n-1} + R_{0} \times k^{n-1}, & n>1 
+   \end{cases},
+   \end{equation}
+where $R_0$ is the base reward, $n$ is the number of retrieval calls, and $0 < k < 1$ is the decay factor. 
+Through this dynamically adjusted reward weighting, the retrieval frequency of the model can be precisely controlled within the desired threshold ranges. Using the properties of geometric series, it is easy to see that:
+\begin{equation}
+    R_0 \leq R_n < \frac{1}{1-k} R_0, \; \forall n.
+\end{equation}
+When $k=0$, PRA degenerates into a single retrieval reward. When $k=1$, it degenerates into the sum of rewards. The final reward is $R_{\text{retrieval}} = R_N$, where $N$ is the actual number of retrieval calls. 
+
+Through this reward function, we can effectively restrict the number of retrieval calls, effectively preventing shallow retrieval. For different data characteristics, the hyperparameter $k$ can be flexibly adjusted to better steer the model's learning process.
+
+\subsubsection{Cost-Aware F1 (CAF)}\label{sec:CAF}
+Although the PRA reward can regulate the retrieval frequency of the model within a reasonable range, this mechanism alone still relies on prior knowledge and could not fully activate the reasoning capabilities of LLMs. For example, the LLM may adopt unnecessarily numerous retrievals, leading to the ``over-thinking'' problem and greatly waste the computational resources.   
+An ideal GraphRAG model should deliver high-quality responses with precisely needed retrieval operations, which requires three core competencies: accurately assessing the problem difficulty, intelligently decomposing complex queries, and dynamically optimizing retrieval strategies.  
+
+To this end, we design the CAF reward, which achieves the above objective through another decay coefficient. Formally, the CAF reward is defined as:
+\begin{equation}\label{eq:CAF}
+   R_{\text{CAF}}= F1 \times a \times  e^{-b \times N} ,
+\end{equation} 
+where $F1$ is the F1 score of the generated answers, $a$ and $b$ are hyperparameters to control the coefficients in the regulatory function, and $N$ denotes the total number of retrieval operations. The CAF reward ensures that responses achieving identical F1 score receive higher rewards when using fewer retrievals, thereby incentivizing the model to proactively recognize problem complexity and refine retrieval decisions. 
+Consequently, CAF reward establishes a balance among reasoning depth, retrieval cost, and generation quality, effectively mitigating suboptimal behaviors of over-thinking.
+
+
+\subsubsection{Phase-Dependent Training Strategy}
+Despite the effectiveness of these reward functions, simultaneously optimizing them induces technical challenges. %
+To address this challenge, we propose a phase-dependent training strategy to avoid the potential conflicts between objectives. Concretely, we split the training into three sequential stages, detailed as follows.
+
+
+Specifically, in the first stage, we utilize another LLM to generate data following our desired format. Then, we utilize supervised fine-tuning (SFT) to train the LLM with the generated data. This training process can enable the model to follow our desired format by addressing the cold start problem and stabilizing the training process, laying the foundation for the following training process.
+
+In the second stage, we aim to shape the behavior of the model, synergistically combining the format reward and the PRA reward. This design recognizes standardized tool-calling protocols and retrieval behavior as essential prerequisites for high-quality reasoning. By learning with two objectives, the model can efficiently learn how and when to invoke the retrieval tools with structured output patterns. The decay mechanism of PRA dynamically regulates retrieval behavior through a high initial reward, driving essential information retrieval, while its exponential decay characteristic suppresses redundant operations. 
+
+In the last stage, we further optimize the overall smartness of the model, adopting CAF as the primary reward objective while retaining format rewards to prevent forgetting issues. As discussed in Section~\ref{sec:CAF}, CAF establishes a trade-off between maximizing answer correctness and constraining retrieval counts. This incentivizes models to adaptively adjust retrieval depth based on query complexity, suppressing non-essential retrievals for simple queries while expanding information acquisition for complex multi-hop problems, leading to effective and efficient reasoning. 
+
+In summary, our phase-dependent training strategy resolves potential gradient conflicts, %
+improving training stability and significantly boosting model performance. 
+
+\subsection{Hybrid Graph-Textual Retrieval}
+Compared to conventional RAG, GraphRAG exhibits superior relational modeling capabilities using graph structure. %
+We integrate this advantage into both the training and generation phases of our framework. %
+Specifically, we retrieve both structured triplets and relevant texts, replacing text fragments as commonly retrieved in existing RAGs and GraphRAGs with hybrid graph-textual retrieval.
+
+By employing hybrid retrieval, our method has several advantages. 
+Compared to lengthy text fragments, the compact nature of graph can drastically reduce token consumption, improving processing efficiency. 
+This structured representation
+allows the model to focus directly on essential entity-relationships while inherently filtering out the redundant noise. 
+Therefore, the integration of structured knowledge significantly enhances the quality and efficiency of generated answers, as reasoning operates on a cleaner and more relevant information foundation. We empirically verify the hybrid graph-textual retrieval in Section~\ref{sec:exp:hybrid}.
+

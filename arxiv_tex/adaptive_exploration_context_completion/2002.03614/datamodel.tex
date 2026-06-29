@@ -1,0 +1,202 @@
+%!TEX root = main.tex
+
+This section presents an overview of the \rdfframes API. \rdfframes provides the user with a set of operators, where each operator is implemented as a function in a programming language. %(e.g., Python).
+Currently, this API is implemented in Python, but we describe the \rdfframes operators in generic terms since they
+%, noting that the operators
+can be implemented %as functions
+in any programming language.
+The goal of \rdfframes is to build a table (the dataframe) from a subset of information extracted from a knowledge graph. We start by describing the data model for a table constructed by \rdfframes, and then present an overview of 
+the API operators.
+
+\subsection{Data Model}
+\label{subsec:data-model}
+
+%From the user's perspective,
+The main tabular data structure in \rdfframes
+is called an \emph{\rdfframe}. 
+This is the data structure constructed by API calls (\rdfframes operators). 
+\rdfframes provides initialization operators that a user calls to initialize an \rdfframe and
+other operators that extend or modify it.
+Thus, an \rdfframe represents the data described by 
+%results of 
+a sequence of one or more \rdfframes operators.
+Since \rdfframes operators are not executed on relational tables but are mapped to \sparql graph patterns,
+an \rdfframe is not represented as an actual
+% relational 
+table in memory but rather as an abstract description of a table. %an operator's 
+A formal definition of a knowledge graph and an 
+%the 
+\rdfframe 
+%data structure 
+is as follows:
+
+\begin{definition}[Knowledge Graph]
+	A knowledge graph $G : (V, E)$ is a directed labeled RDF graph where the set of nodes $V \in I\cup L \cup B$ is a set of RDF URIs $I$, literals $L$, and blank nodes $B$ existing in $G$, and the set of labeled edges $E$ is a set of ordered pairs of elements of $V$ having labels from $I$.
+	Two nodes connected by a labeled edge form a {\em triple} denoting the relationship between the two nodes. The knowledge graph is represented in \rdfframes by a %the \textit{sparql\_endpoint\_uri} of the RDF engine where the graph is stored and the 
+	\textit{graph\_uri}.
+\end{definition}
+
+\begin{definition}[\rdfframe]
+	Let $\mathbb{R}$ be the set of real numbers, $N$ be an infinite set of strings, and $V$ be the set of RDF URIs and literals.
+	An \rdfframe $D$ is a pair $(\mathcal{C}, \mathcal{R})$, where $\mathcal{C} \subseteq N$ is an ordered set of column names of size $m$ and $\mathcal{R}$ is a bag of $m$-sized tuples with values from $V \cup \mathbb{R}$ denoting the rows. The size of
+	% RDFFrame 
+	$D$ is equal to the size of $\mathcal{R}$.
+\end{definition}	
+
+Intuitively, an \rdfframe is a subset of information extracted from one or more knowledge graphs. 
+The rows of an \rdfframe should contain values that are either (a)~URIs or literals in a knowledge graph, or (b)~aggregated values on data extracted from a graph. 
+Due to the bag semantics, an \rdfframe may contain duplicate rows,
+which is good in machine learning because it preserves the data distribution and 
+is compatible with the bag semantics of \sparql.
+
+
+\subsection{API Operators}
+\label{subsec:operators}
+
+
+\rdfframes provides the user with two 
+types of operators: (a)~exploration and navigational operators, which operate on a knowledge graph, and (b)~relational operators, which operate on an \rdfframe (or two in case of joins).
+% We describe the main operators here.
+% The full list can be found in~\cite{rdfframes-arxiv-blind}.
+The full list of operators, and also other \rdfframes functions (e.g., for client-server communication), can be found with the source code.\footnote{\url{https://github.com/qcri/rdfframes}}
+
+
+The \rdfframes exploration operators are needed to deal with one of the challenges of real-world knowledge graphs:
+knowledge graphs in RDF are typically multi-topic, heterogeneous, incomplete, and sparse, and the data distributions can be highly skewed.
+Identifying a relatively small, topic-focused dataset from such a knowledge graph
+to extract into an \rdfframe is not a simple task, since it requires knowing the structure and schema of the dataset. \rdfframes provides data exploration operators to help with this task.
+For example, \rdfframes includes operators to identify the RDF classes representing entity types
+in a knowledge graph,
+and to compute the data distributions of these classes.
+
+Guided by the initial exploration of the graph, the user can gradually build an \rdfframe representing the
+%refined subset of 
+information to be extracted.
+The first step
+%in constructing this RDFFrame
+is always a call to 
+the $seed$ operator (described below)
+%one of the exploration operations
+that initializes the \rdfframe with columns from the knowledge graph.
+%by one or two columns. 
+The rest of the \rdfframe is built through a sequence of calls to the \rdfframes navigational and relational operators.
+Each of these operators outputs an \rdfframe.
+The inputs to an operator can be a knowledge graph, one or more {\rdfframe}s, and/or other information such as predicates or column names.
+
+The \rdfframes navigational operators are used to extract information from a knowledge graph into a tabular form using a navigational, procedural interface.
+\rdfframes also provides relational operators that
+apply operations on an \rdfframe such as filtering,
+%projection,
+grouping, aggregation, filtering based on aggregate values, sorting, and join.
+%choosing the columns to be projected in the final \rdfframe.
+These operators do not access the knowledge graph, and one could argue that they are not necessary in \rdfframes since they are already provided by machine learning tools that work on dataframes such as pandas.
+However, 
+we opt to provide these operators
+%our design decision
+in \rdfframes 
+%is to provide these operators 
+so that they can be pushed into the RDF engine, which results in substantial performance gains as we will see in Section~\ref{sec:performance}.
+
+In the following, we describe the syntax and semantics of the main operators of both types.
+% navigational and relational. 
+Without loss of generality, let $G=(V, E)$ be the input knowledge graph and $D=(\mathcal{C}, \mathcal{R})$ be the input \rdfframe of size $n$.
+% to the following operators.
+Let $D'=(\mathcal{C'}, \mathcal{R'})$ be the output \rdfframe.
+In addition, let $\Join$, $\leftouterjoin$, $\rightouterjoin$, $\fullouterjoin$, $\sigma$, $\pi$, $\rho$, and $\gamma$ be the inner join, left outer join, right outer join, full outer join, selection, projection, renaming, and grouping-with-aggregation relational operators, respectively, defined using bag semantics as in typical relational databases~\cite{dbcomplete}.
+
+\noindent{\textbf{Exploration and Navigational Operators.}}
+These operators traverse a knowledge graph to extract information from it to either construct a new \rdfframe or expand an existing one. 
+They bridge the gap between the RDF data model and the tabular format by allowing the user to extract tabular data through graph navigation.
+They take as input either a knowledge graph $G$, or a knowledge graph $G$ and an \rdfframe $D$, and output an \rdfframe $D'$. 
+%\begin{packed_enum}
+\squishlist
+\begin{sloppypar}
+    \item $G.seed(col_1, col_2, col_3)$ where $col_1, col_2, col_3$ are in $N \cup V$: This operator is the starting point for constructing any \rdfframe. 
+    Let $t = (col_1, col_2, col_3)$ be a \sparql triple pattern, then this operator creates an initial \rdfframe by converting the evaluation of the  triple pattern $t$ on graph $G$ to an \rdfframe. The returned \rdfframe has a column for every variable in the pattern $t$.
+    Formally, let $D_t$ be the \rdfframe equivalent to the evaluation of the triple pattern $t$ on graph $G$. We formally define this notion of equivalence in Section~\ref{sec:correctness}.
+    %,\footnote{We formally define such equivalence in Section~\ref{sec:correctness}.} %according to Definition~\ref{def:equivalence}, 
+	 The returned \rdfframe is defined as $D' = \pi_{N \cap \{col_1, col_2, col_3\}}(D_t)$.
+	 As an example, the $seed$ operator can be used to retrieve all instances of class type $T$
+	 % each class 
+	 in graph $G$ by calling $G.seed(instance, \text{\textit{rdf:type}}, T)$. 
+	 %This would return an \rdfframe of two columns: $instance$ and $class$ mapping each entity in the graph to its class.
+	 For convenience, \rdfframes provides implementations for 
+   %some of 
+   the most common variants of this operator.
+	 % to explore the knowledge graphs.
+	 For example, the \texttt{feature\_domain\_range} operator in Listing~\ref{lst:motivating_code} initializes the \rdfframe with all pairs of entities in DBpedia connected by the predicate \texttt{dbpp:starring},
+   which are movies and
+	 the
+	 actors starring in them.
+
+  \item $(G, D).expand(col, pred, new\_col, dir, is\_opt)$, where $col \in \mathcal{C}$, $pred \in V$, $new\_col \in N$, $dir \in \{in, out\}$, and $is\_opt \in \{true, false\}$: 
+	This is the main navigational operator in \rdfframes. It expands an \rdfframe by navigating from $col$ following the edge $pred$ to $new\_col$ in direction $dir$. 
+	Depending on the direction of navigation, either the starting column for navigation $col$ is the subject of the triple and the ending column $new\_col$ is the object, or vice versa.
+	$is\_opt$ determines whether null values are allowed. If $is\_opt$ is false, $expand$ filters out the rows in $D$ that have a null value in $new\_col$. Formally, if $t$ is a \sparql pattern representing the navigation step,
+	then $t = (col, pred, new\_col)$ if direction is $out$ or $t = (new\_col, pred, col)$ if direction is $in$. 
+	Let $D_{t}$ be the \rdfframe 
+  corresponding to the evaluation of the triple pattern $t$ on graph G. $D_{t}$ will contain one column $new\_col$ and the rows are the objects of $t$ if the direction is $in$ or the subjects if the direction is $out$. 
+  Then $D' = D \Join D_{t}$ if $is\_opt$ is false or $D' = D \leftouterjoin D_{t}$ if $is\_opt$ is true.
+  For example, in Listing~\ref{lst:motivating_code}, \texttt{expand} is used twice,
+  once to add the \texttt{country} attribute of the actor to the \rdfframe and once to find the movies and (if available) Academy Awards for prolific American actors.
+\end{sloppypar}
+  
+
+%\end{packed_enum}
+\squishend
+
+
+
+\noindent{\textbf{Relational Operators.}} These operators are used to clean and further process {\rdfframe}s.
+%process, clean and expand \rdfframes.
+They have the same semantics as in relational databases.
+They take as input one or two {\rdfframe}s and output an \rdfframe.
+
+\squishlist
+	\item $D.filter(conds = [cond_1 \land cond_2 \land \ldots \land cond_k])$, where $conds$ is a list of expressions of the form $(col$ $\{<, >, =, \ldots\}$ $val)$ or one of the pre-defined boolean functions found in \sparql like $isURI(col)$ or $isLiteral(col)$: This operator filters out rows from an \rdfframe that do not conform to $conds$.
+	Formally, let $\varphi = [cond_1 \land cond_2 \land \ldots \land cond_k$] be a propositional formula where $cond_i$ is an expression. 
+%	This includes simple arithmetic and logical comparison operators. 
+	Then $D' = \sigma_{\varphi}(D)$.
+	In Listing~\ref{lst:motivating_code}, \texttt{filter} is used two times, once to restrict the extracted data to American actors and once to restrict the results of a group by in order to identify prolific actors
+  (defined as having 50 or more movies).
+  %prolific actors (defined as having 20 or more movies).
+  The latter \texttt{filter} operator is applied
+  after \texttt{group\_by} and the aggregation function \texttt{count}, which corresponds to a very different \sparql pattern compared to the first usage. However, this is handled internally by \rdfframes and is transparent to the user.
+
+	\item $D.select\_cols(cols)$, where $cols \subseteq \mathcal{C}$: Similar to the relational projection operation, it keeps only the columns $cols$ and removes the rest. Formally, $D' = \pi_{cols}(D)$.
+
+\begin{sloppypar}
+	\item $D.join(D_2, col, col_2, jtype, new\_col)$, where $D_2 = (\mathcal{C}_2, \mathcal{R}_2)$ is another \rdfframe, $col \in \mathcal{C}$, $col_2 \in \mathcal{C}_2$, and $jtype \in \{\Join, \leftouterjoin, \rightouterjoin, \fullouterjoin\}$:
+	This operator joins two \rdfframe tables on their columns $col$ and $col_2$ using the join type $jtype$. $new\_col$ is the desired name of the new joined column.
+	Formally, $D' = \rho_{new\_col/col} (D)\ jtype\ \rho_{new\_col/col_2}(D_2)$.
+
+  %For example, the last step in 
+  %Listing~\ref{lst:motivating_code} is a \texttt{join}
+  %(specifically, a full outer join) that combines
+  %two {\rdfframe}s. Note that this \texttt{join} call has only three arguments and the other two arguments take default values.
+
+	\item $D.group\_by(group\_cols).aggregation(fn, col, new\_col)$, where $group\_cols \subseteq \mathcal{C}$, $fn \in \{max, min, average, sum, count, sample\}$, $col \in \mathcal{C} $ and $new\_col \in N$: This operator groups the rows of $D$ according to their values in one or more columns $group\_cols$. As in the relational grouping and aggregation operation, it partitions the rows of an \rdfframe into 
+  groups
+  %``groups''
+  and then applies the aggregation function on the values of column $col$ within each group. It returns a new \rdfframe which contains the grouping columns and the result of the aggregation on each group, i.e., $\mathcal{C'} = group\_cols \cup \{new\_col\}$. The combinations of values of the grouping columns in $D'$ are unique. Formally,
+	$D' = \gamma_{group\_cols, fn(col) \mapsto new\_col}(D)$.
+	% \aisha{No need to discuss grouped RDFFrames here because they don't restrict the user at all. RDFFrames handles it internally.}
+	Note that query generation has special handling for {\rdfframe}s output by the $group\_by$ operator (termed \texttt{grouped {\rdfframe}s}).
+	This special handling is internal to  \rdfframes and transparent to the user.
+  In Listing~\ref{lst:motivating_code}, \texttt{group\_by} is used with the \texttt{count} function to find the number of movies in which each actor appears.% and the number of actors in each movie.
+	\item $D.aggregate(fn, col, new\_col)$, where $col\in\mathcal{C}$ and $fn\in\{max, min, average, sum, count, distinct\_count\}$: This operator aggregates values of the column $col$ and returns an \rdfframe that has one column and one row containing the aggregated value. It has the same formal semantics
+  %defined for 
+  as the $D.group\_by().aggregation()$ operator except that $group\_cols = \emptyset$, so the whole \rdfframe is assumed to be one group.
+	No further processing can be done on the \rdfframe after this operator.
+\end{sloppypar}
+
+	%\item $D.sort(cols, order)$, where $cols, order$ 
+  \item $D.sort(cols\_order)$, where $cols\_order$  
+  is a set of pairs $(col, order)$ with $col \in \mathcal{C}$ and $order \in \{asc, desc\}$: This operator sorts the rows of the \rdfframe according to their values in the given columns and their sorting order and returns
+  % an ordered 
+  a sorted \rdfframe.
+
+	\item $D.head(k, i)$, where $k \leq n$: Returns the first $k$ rows of the \rdfframe starting from row $i$ (by default $i=0$).
+	No further processing can be done on the \rdfframe after this operator.
+
+\squishend

@@ -1,0 +1,69 @@
+
+\NAME{} operates over multiple optimization generations. Each generation $g$ consists of a self-play tournament, context evolution (Sec.~\ref{sec:prompt_optimization}), insight extraction from trajectories (Sec.~\ref{sec:memory}), and state selection for replay (Sec.~\ref{sec:replay}). Fig.~\ref{fig:methodology} provides an overview and Appx.~\ref{appendix:ablation} details hyperparameter tuning.
+
+
+
+\subsection{Tournament-Based Context Optimization}\label{sec:prompt_optimization}
+
+% This section describes the \emph{exploration} component of \NAME{}, which searches over candidate contexts to discover effective policies. 
+
+\paragraph{Context selection via game outcomes.}
+ \NAME{} maintains a population of $N$ candidate contexts, each defining a different prompt and set of priors for the agent. The core idea is to evaluate each of these candidate context by its game performance so that contexts which lead to wins are retained for the next generation, while those which result in losses are discarded. Let $\mathcal{C}_g$ denote the \emph{context population} at optimization generation $g$. Each context $c\in\mathcal{C}_g$ is evaluated via multi-agent self-play in games against a baseline agent, the same base model using only a default prompt; see Appx.~\ref{appendix: basepromptexample}. For asymmetric games, each round consists of two games with roles swapped to remove first-move bias. These matches produce win/loss outcomes for each context, but raw win counts are unreliable when games are limited. A context that wins 3 out of 3 games may simply be lucky rather than genuinely strong. To address this, we use \textsc{TrueSkill}~\citep{herbrich2006trueskill}, a Bayesian skill rating that models each context's skill as a Gaussian with mean $\mu_c$ and uncertainty $\sigma_c$. We select contexts using a conservative lower-confidence bound: \begin{equation} \label{equation:TrueSKill} S(c)=\mu_c-\kappa\,\sigma_c, \end{equation} where $\kappa$ is a penalty coefficient (see Sec.~\ref{sec:hyperparamselection}). This penalizes contexts with high uncertainty, favoring those that win reliably across multiple observations.
+
+
+\paragraph{Context generation for the next generation.}
+% After selection, low-scoring contexts are discarded, leaving the population incomplete. To restore the population to size $N$ for the next generation, we generate new candidate contexts. Across optimization generations, we maintain a \emph{persistent candidate pool} $\mathcal{P}$ that stores the best contexts observed so far. After evaluating the current population $\mathcal{C}_g$, we update $\mathcal{P}$ by retaining only the top-scoring candidates from $\mathcal{P}\cup\mathcal{C}_g$. We then form the next generation's population $\mathcal{C}_{g+1}$ using two proposal operators, where a fraction of new candidates are generated via random proposals and the remainder via memory-augmented updates (see Sec.~\ref{sec:hyperparamselection} for the specific ratio):
+
+After selection, low-scoring contexts are discarded, leaving the population incomplete. To restore the population to size $N$ for the next generation, we generate new candidate contexts. Across optimization generations, we maintain a \emph{persistent candidate pool} $\mathcal{P}$ that stores the best contexts observed so far. After evaluating the current population $\mathcal{C}_g$, we update $\mathcal{P}$ by retaining only the top-scoring candidates from $\mathcal{P}\cup\mathcal{C}_g$. We then form the next generation's population $\mathcal{C}_{g+1}$ using two proposal operators, where a fraction of new candidates are generated via \textit{random proposals} and the remainder via \textit{memory-augmented updates}; see Sec.~\ref{sec:hyperparamselection} for the specific ratio.
+
+% At each generation \(g\), we fetch the scores from \( \mathcal{C}_g \) and update the persistent pool \( \mathcal{CP} \) by retaining the top performers from \( \mathcal{CP} \cup \mathcal{C}_g \). The next population \( \mathcal{C}_{g+1} \) is then formed from the updated \( \mathcal{CP} \) using three proposal operators:
+
+\begin{enumerate}[leftmargin=1.5em, labelindent=0pt, labelsep=0.5em,topsep=1pt, itemsep=1pt] \item \textbf{Random proposals.} Introduce novel variations to encourage exploration by sampling a playstyle from a fixed catalog and applying small, length-bounded edits to the base context to instantiate that style while preserving legality and interface constraints (Appx.~\ref{appendix:prompt-ops-random}). \item \textbf{Memory-augmented updates.} Incorporate insights extracted from trajectory reflections (Sec.~\ref{sec:memory}) into targeted prompt edits. \end{enumerate} Note that in the first generation ($g=0$), the memory bank is empty, so all initial contexts are generated via random proposals. 
+
+After the final optimization generation, \NAME{} outputs the highest-scoring context in \(\mathcal{P}\): \[ C^\star = \arg\max_{C\in\mathcal{P}} S(C). \]
+
+
+
+
+
+\subsection{Trajectory Reflection and Memory Bank}
+\label{sec:memory}
+
+This section describes the \emph{retention} component of \NAME{}, which preserves and combines insights across optimization generations. Multi-turn games make post-hoc attribution easier than online decision making because a completed trajectory reveals which choices led to the observed outcome, relating to hindsight-style analysis~\citep{andrychowicz2017hindsight}. \NAME{} exploits this by extracting structured insights from completed self-play trajectories and storing them in a persistent memory bank.
+
+\paragraph{Trajectory reflection.}
+% After each optimization generation, we sample a fixed number of completed self-play trajectories and prompt the model to extract a small set of typed insights, such as rule clarifications, legality constraints, and strategy priors. 
+After each optimization generation, we sample a fixed number of completed self-play trajectories and prompt the model to extract a small set of typed insights, e.g., rule clarifications, legality constraints, and strategy priors. 
+For each sampled trajectory, the model reviews the sequence of states, actions, and final outcome, then produces one or more candidate insights that summarize lessons learned. 
+These insights capture what worked, what failed, and why, providing structured feedback that can inform future play. 
+The reflection prompt template is provided in Appx.~\ref{appendix:reflection-prompt}.
+
+
+\paragraph{Memory bank.}
+\NAME{} maintains a shared memory bank \(\mathcal{B}_{\text{mem}}\) that persists across optimization generations.
+For each generation with $N$ evaluated trajectories, the reflection step produces up to $N$ candidate insights that must be reconciled with the existing memory bank.
+Following database-style operations~\citep{Martin1983ManagingDBEnv}, we merge new insights into \(\mathcal{B}_{\text{mem}}\) using three operations.
+\begin{enumerate}[leftmargin=1.5em, labelindent=0pt, labelsep=0.5em,topsep=1pt, itemsep=1pt]
+\item \textbf{Add.} If a new insight is not similar to any existing insight in the memory bank, it is added directly.
+\item \textbf{Remove.} If a new insight conflicts with an existing insight, meaning they suggest contradictory strategies or conclusions, both the new and existing insights are removed to avoid misleading the agent.
+\item \textbf{Edit.} If a new insight is similar to an existing one, the two are merged by enhancing, generalizing, or improving the existing insight to be more actionable.
+\end{enumerate}
+The agent compares each candidate insight against the current memory bank and applies the appropriate operation. This merge procedure allows the memory bank to grow, refine, and self-correct over time. The memory operation prompt is provided in Appx.~\ref{appendix:memory-operation-prompt}.
+
+In the next optimization generation, we sample a compact subset \(M \subseteq \mathcal{B}_{\text{mem}}\) and append it to the context of a fraction $\pi$ of the candidate population during self-play, where $\pi$ controls what proportion of agents receive memory-based initialization. This provides reusable, game-specific priors at inference time; see Sec.~\ref{sec:hyperparamselection} for specific values. 
+The same memory bank also conditions the memory-augmented proposal operator, enabling targeted prompt edits that reuse aggregated lessons rather than relying only on the most recent tournament.
+
+
+\subsection{Prioritized Replay}
+\label{sec:replay}
+Trajectory reflection improves retention, but exploration alone does not guarantee that rare or decisive states will be revisited. To improve trajectory coverage, \NAME{} maintains a replay buffer $\mathcal{B}_{\text{rep}}$ that stores trajectory prefixes together with the environment seed needed to reproduce them. Because storage occurs at each turn within an episode, replayed trajectories need not cover a full game. Invalid moves are retained to preserve the \textit{unaltered course of play}, ensuring that replays faithfully reflect the original gameplay dynamics. To avoid dominance by common action patterns, the buffer \textit{biases sampling toward infrequently encountered trajectories}, encouraging a more diverse and balanced pool of prompt-level insights. We prioritize rare prefixes using an inverse-frequency score, defined for a stored prefix $\tau$ as $\mathrm{priority}(\tau)=\tfrac{1}{\mathrm{count}(\tau)}$. During sampling, the probability $p_i$ of selecting trajectory $\tau_i$ is obtained by raising its priority to a power $\alpha>0$ and normalizing over the buffer,
+$p_i = \tfrac{\mathrm{priority}(\tau_i)^{\alpha}}
+            {\sum_{j=1}^{|\mathcal{B}_{\text{rep}}|}
+             \mathrm{priority}(\tau_j)^{\alpha}}$,
+where $|\mathcal{B}_{\text{rep}}|$ denotes the current number of stored trajectories.
+
+The buffer is first populated during generation~0 and becomes available from generation~1 onward.
+A gating parameter~$\beta$, the replay probability, determines how often games are initialized from the replay buffer rather than played afresh. 
+When replay is chosen, the stored trajectory prefix, that is, the sequence of past player actions, corresponding game states, and the associated game's random seed, is injected into the environment, ensuring faithful reproductions of past episodes while balancing new exploration. Specific values for $\alpha$, $\beta$, and buffer capacity $B$ are provided in Sec.~\ref{sec:hyperparamselection}.
+
+

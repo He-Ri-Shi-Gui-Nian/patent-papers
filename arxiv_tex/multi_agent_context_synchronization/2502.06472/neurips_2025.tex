@@ -1,0 +1,1308 @@
+\documentclass{article}
+
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2025
+
+
+% ready for submission
+\usepackage[final]{neurips_2025}
+
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+%     \usepackage[preprint]{neurips_2025}
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2025}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+% \usepackage[nonatbib]{neurips_2025}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{graphicx}
+\usepackage{multicol}
+\usepackage{multirow}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage[table]{xcolor}
+\usepackage{caption}
+\usepackage{tcolorbox}
+\usepackage{amsmath}
+\usepackage[capitalize,noabbrev]{cleveref}
+\usepackage[noend]{algpseudocode}
+\usepackage{url}
+\usepackage[mathscr]{euscript}
+\usepackage{amsfonts}
+\usepackage{graphicx}
+\usepackage{amssymb}
+\usepackage[table,xcdraw]{xcolor}
+\usepackage{siunitx}
+\usepackage{enumitem}
+
+
+\title{KARMA: Leveraging Multi-Agent LLMs for Automated Knowledge Graph Enrichment}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{
+Yuxing Lu$^{1,2}$, 
+Wei Wu$^{1}$, 
+Xukai Zhao$^{3}$, 
+Rui Peng$^{1}$, 
+Jinzhuo Wang$^{1\dagger}$\\[6pt]
+\small $^{1}$ Department of Big Data and Biomedical AI, Peking University, Beijing, China\\
+\small $^{2}$ Wallace H. Coulter Department of Biomedical Engineering, Georgia Institute of Technology, Atlanta, USA\\
+\small $^{3}$ School of Architecture, Tsinghua University, Beijing, China\\[4pt] 
+$\dagger$ Corresponding author: \texttt{wangjinzhuo@pku.edu.cn}
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+Maintaining comprehensive and up-to-date knowledge graphs (KGs) is critical for modern AI systems, but manual curation struggles to scale with the rapid growth of scientific literature. This paper presents KARMA, a novel framework employing multi-agent large language models (LLMs) to automate KG enrichment through structured analysis of unstructured text. Our approach employs nine collaborative agents, spanning entity discovery, relation extraction, schema alignment, and conflict resolution that iteratively parse documents, verify extracted knowledge, and integrate it into existing graph structures while adhering to domain-specific schema. Experiments on 1,200 PubMed articles from three different domains demonstrate the effectiveness of KARMA in knowledge graph enrichment, with the identification of up to 38,230 new entities while achieving 83.1\% LLM-verified correctness and reducing conflict edges by 18.6\% through multi-layer assessments.
+\end{abstract}
+
+
+\section{Introduction}
+Knowledge graphs (KGs) are essential for structuring and reasoning over complex information across diverse fields \cite{hogan2021knowledge, ji2021survey, lu2025biomedical,lu2025knowledge}. By encoding entities and their relationships in machine-readable formats, widely adopted KGs such as Wikidata \cite{vrandevcic2014wikidata} and DBpedia \cite{lehmann2015contentious} have become foundational to both industry and academic research. Yet, the exponential growth of scientific literature, with over 7 million articles published annually \cite{bornmann2021growth}, exposes a significant bottleneck: the widening gap between unstructured knowledge in texts and its structured representation in KGs.
+
+The challenge of enriching KGs becomes even more apparent in fields with complex and specialized terminology, such as healthcare, finance, or autonomous systems. Traditional approaches to KG enrichment, such as manual curation, are reliable but unsustainable at scale. Automated methods based on conventional natural language processing (NLP) techniques often struggle to handle domain-specific terminology and context-dependent relationships found in scientific and technical texts \cite{nasar2018information}. Moreover, extracting and integrating knowledge into existing KGs requires robust mechanisms for schema alignment, consistency, and conflict resolution \cite{euzenat2007ontology}. In high-stakes applications, the costs of inaccuracies in these systems can be severe.
+
+Recent advances in large language models (LLMs) \cite{glm2024chatglm, achiam2023gpt, liu2024deepseek} have demonstrated remarkable improvements in contextual understanding and reasoning \cite{wu2023autogen}. Building on these advances, the research community has increasingly explored multi-agent systems, where several specialized agents work in concert to tackle complex tasks \cite{guo2024large}. These systems harness the strengths of individual agents, each optimized for a particular subtask, and enable cross-agent verification and iterative refinement of outputs. Such multi-agent frameworks have shown promise in areas ranging from decision-making to structured data extraction \cite{fourney2024magentic,lu2024clinicalrag}, offering robustness through redundancy and collaboration. However, directly applying these systems to KG enrichment remains challenging due to issues like domain adaptation, systematic verification requirements \cite{irving2018ai}, and the complexity of integrating outputs into heterogeneous knowledge structures.
+
+In this paper, we propose KARMA, a novel multi-agent framework that harnesses LLMs through a collaborative system of specialized agents (Figure \ref{fig:fig1}). Each agent focuses on distinct tasks in the KG enrichment pipeline. Our framework offers three key innovations. First, the multi-agent architecture enables cross-agent verification, enhancing the reliability of extracted knowledge. For instance, \emph{Relationship Extraction Agents} validate candidate entities against \emph{Schema Alignment} outputs, while \emph{Conflict Resolution Agents} resolve contradictions through LLM-based debate mechanisms. Second, domain-adaptive prompting strategies allow the system to handle specialized contexts while preserving accuracy. Third, the modular design ensures extensibility and supports dynamic updates as new entities or relationships emerge. Through proof-of-concept experiments on datasets from three distinct domains, we demonstrate that KARMA can efficiently extract high-quality knowledge from unstructured texts, substantially enriching existing knowledge graphs with both precision and scalability.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.8\linewidth]{Karma_Fig1.pdf}
+% [BLANK FOR FIGURE: System Overview of the Multi-Agent Architecture]
+\caption{Multi-agent LLM can parse articles into new knowledge, and integrate to existing knowledge graphs through filtering.}
+\vspace{-10pt}
+\label{fig:fig1}
+
+\end{figure}
+
+\section{Related Work}
+\subsection{Knowledge Graph Construction}
+The quest to transform unstructured text into structured knowledge has evolved through three generations of technical paradigms. \emph{First-generation systems (1990s-2010s)} like WordNet \cite{miller1995wordnet} and ConceptNet \cite{liu2004conceptnet} relied on hand-crafted rules and shallow linguistic patterns, achieving high precision at the cost of limited recall and domain specificity. \emph{The neural revolution (2010s-2022)} introduced learned representations through architectures like BioBERT \cite{lee2020biobert} and SapBERT \cite{liu2021self}, which achieved improvements on biomedical NER through domain-adaptive pretraining. However, these methods require expensive supervised tuning (3-5k labeled examples per relation type \cite{zhang2023biokg}) and fail to generalize beyond predefined schema, which is a critical limitation when processing novel scientific discoveries. The \emph{current LLM-powered generation (2022-present)} attempts to overcome schema rigidity through instruction tuning \cite{pan2024unifying,zhu2024llms}. This progression reveals an unresolved tension: neural methods scale better than rules but require supervision, while LLMs enable open schema learning at the cost of verification mechanisms. LLMs have shown promise in open-domain KG construction through their inherent reasoning capabilities. However, these approaches exhibit critical limitations: (1) Hallucination during extracting complex relationships \cite{manakul2023selfcheckgpt}, (2) Inability to maintain schema consistency across documents \cite{zeng2023consistent}, and (3) Quadratic computational costs when processing full-text articles \cite{ouyang2022training}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{Karma_Fig2.pdf}
+% [BLANK FOR FIGURE: System Overview of the Multi-Agent Architecture]
+\caption{System overview of the KARMA multi-agent architecture. Each agent is an LLM-driven module tasked with specific roles such as ingestion, summarization, entity recognition, relationship extraction, conflict resolution, and final evaluation.}
+\label{fig:fig2}
+\end{figure*}
+
+\subsection{Multi-Agent Systems}
+Early multi-agent systems focused on distributing subtasks across specialized modules, such as separate agents for named entity recognition and relation extraction \cite{carvalho1998multi}. These systems relied on predefined pipelines and handcrafted coordination rules, limiting adaptability to new domains. Recent advances in LLMs have enabled more dynamic architectures and rediscovered multi-agent collaboration as a mechanism for enhancing LLM reliability \cite{talebirad2023multi,lu2024clinicalrag}. Building on classic blackboard architectures, contemporary systems like AutoGen \cite{wu2023autogen} show that task decomposition with specialized agents reduces hallucination compared to monolithic models. For knowledge graph construction, \cite{liang2023encouraging} demonstrated that task decomposition across specialized agents (e.g., entity linker, relation validator) improves schema alignment on Wikidata benchmarks. maintaining linear time complexity relative to input text length.
+
+KARMA synthesizes insights from these research threads while introducing key innovations: (1) a modular, multi-agent architecture that allows for specialized handling of complex tasks in knowledge graph enrichment, (2) domain-adaptive prompting strategies that enable more accurate extraction across diverse scientific fields, (3) LLM-based verification mechanisms that mitigate issues such as hallucination and schema inconsistency. 
+
+\section{Methodology}
+
+In this section, we introduce KARMA, a hierarchical multi-agent system (see Figure~\ref{fig:fig2}) that leverages specialized LLMs to perform end-to-end KG enrichment. Our approach decomposes the overall task into modular sub-tasks, ranging from document ingestion to final KG integration, each handled by an independent LLM-based agent. We first present a formal problem formulation and then detail the design and mathematical foundations of each agent within the pipeline.
+
+\subsection{Problem Formulation}
+Let $\mathcal{G} = (V, E)$ denote an existing KG, where $V$ is the set of entities (e.g., genes, diseases, drugs) and $E$ the set of directed edges representing relationships. Each relationship is defined as a triplet $t = (e_h, r, e_t)$ with $e_h, e_t \in V$ and $r$ specifying the relation type (e.g., \texttt{treats}, \texttt{causes}). We are provided with a corpus of unstructured publications $\mathcal{P} = {p_1, \ldots, p_n}$. The objective is to automatically extract novel triplets $t \notin E$ from each document $p_i$ and integrate them into $\mathcal{G}$ to form an augmented graph $\mathcal{G}_{\text{new}}$.
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+\mathcal{G}_{\text{new}} \;=\; \mathcal{G} \;\cup\; \bigcup_{i=1}^{n} \mathcal{K}_i,
+\text{where }
+\mathcal{K}_i \;=\; \mathrm{Extract}(p_i),
+\end{equation}
+where $\mathrm{Extract}(p_i)$ is the set of valid triplets obtained from publication $p_i$. To maintain consistency and accuracy, each candidate triplet is evaluated by an LLM-based verifier prior to integration.
+
+\subsection{System Overview}
+
+KARMA comprises multiple LLM-based agents operating in parallel under the orchestration of a Central Controller. Each agent uses specialized prompts, hyper-parameters, and domain knowledge to optimize its performance. In KARMA, we define a set of agents (\ref{sec:appendix-prompts}):
+\begin{itemize}[leftmargin=0em, labelsep=0.5em]
+    % \vspace{-5pt}
+    \item \textbf{Ingestion Agents (IA)}: Retrieve and normalize input documents (\ref{appendix:ia_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Reader Agents (RA)}: Parse and segment relevant text sections (\ref{appendix:ra_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Summarizer Agents (SA)}: Condense relevant sections into shorter domain-specific summaries (\ref{appendix:sa_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Entity Extraction Agents (EEA)}: Identify and normalize topic-related entities (\ref{appendix:eea_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Relationship Extraction Agents (REA)}: Infer relationships between entities (\ref{appendix:rea_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Schema Alignment Agents (SAA)}: Align entities and relations to KG schemas (\ref{appendix:saa_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Conflict Resolution Agents (CRA)}: Detect and resolve logical inconsistencies with existing knowledge (\ref{appendix:cra_prompt}).
+    % \vspace{-5pt}
+    \item \textbf{Evaluator Agents (EA)}: Aggregate multiple verification signals and decide on final integration (\ref{appendix:ea_prompt_confidence},\ref{appendix:ea_prompt_clarity},\ref{appendix:ea_prompt_relevance}).
+    % \vspace{-5pt}
+\end{itemize}
+
+
+\subsection{Ingestion Agents (IA)}
+
+The Ingestion Agents are LLM-based modules specialized in document retrieval, format normalization, and metadata extraction. Let $p_i$ be a raw publication. IA includes:
+\begin{equation}
+\fontsize{9pt}{9pt}\selectfont
+\mathrm{IA}(p_i) 
+\;=\; 
+\Bigl(\mathrm{normalize}(p_i),\, \mathrm{metadata}(p_i)\Bigr),
+\end{equation}
+where $\mathrm{normalize}(p_i)$ uses an LLM prompt $P_{\mathrm{ingest}}$ to handle complexities like OCR errors, or structural inconsistencies. The output is a standardized textual representation plus key metadata (\textit{journal}, \textit{date}, \textit{authors}, etc.). This representation is then placed into a data queue for \emph{Reader Agents}.
+
+\subsection{Reader Agents (RA)}
+
+Reader Agents parse normalized text into coherent segments (abstract, methods, results, ect.) and filter out irrelevant content. Let $p_i'$ be the normalized document. RA splits $p_i'$ into $\{s_1, s_2, \ldots, s_{m_i}\}$. Each segment $s_j$ is assigned a relevance score $R(s_j)$ by:
+\begin{equation}
+\fontsize{9pt}{5pt}\selectfont
+R(s_j) \;=\; \mathrm{LLM}_{\mathrm{reader}}\bigl(s_j, \mathcal{G} \bigr),
+\label{eq:ra_scoring}
+\end{equation}
+where $\mathrm{LLM}_{\mathrm{reader}}$ is prompted with domain-specific instructions to assess the segment’s biomedical significance relative to the current KG $\mathcal{G}$. RA discards segments if $R(s_j) < \delta$, where $\delta$ is a domain-calibrated threshold. Surviving segments are passed along to Summarizer Agents.
+
+
+\subsection{Summarizer Agents (SA)}
+
+To reduce computational overhead, each RA segment $s_j$ is condensed by Summarizer Agents into a concise representation $u_j$. Formally, we define:
+\begin{equation}
+\fontsize{9pt}{5pt}\selectfont
+u_j 
+= \mathrm{LLM}_{\mathrm{summ}}\bigl(s_j, P_{\mathrm{summ}}\bigr),
+\end{equation}
+where $P_{\mathrm{summ}}$ is a prompt for LLM to retain critical entities, relations, and domain-specific terms. This summarization ensures \emph{Entity Extraction Agents} and \emph{Relationship Extraction Agents} receive textual inputs that are both high-signal and low-noise.
+
+\subsection{Entity Extraction Agents (EEA)}
+
+\paragraph{LLM-Based NER.}
+Each summary $u_j$ is routed to an LLM-based NER pipeline that identifies mentions of topic-related entities. Define:
+\begin{equation}
+\fontsize{9pt}{5pt}\selectfont
+E(u_j) 
+= \mathrm{LLM}_{E}\bigl(u_j, P_{E}\bigr)
+\;\;\odot\;\; D_E,
+\label{eq:extraction_eea}
+\end{equation}
+where $\mathrm{LLM}_{E}$ is an specialized entity-extraction LLM with prompt $P_E$, and $\odot \, D_E$ indicates a dictionary/ontology-based filtering. This step filters out false positives and normalizes entity mentions to canonical forms (e.g., mapping ``acetylsalicylic acid'' to ``Aspirin'').
+
+\paragraph{Entity Normalization.}
+Let $e$ be a raw entity mentioned from $E(u_j)$. We map $e$ to a normalized entity $\hat{e}\in V$ by minimizing a distance function in a joint embedding space:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+\hat{e}
+= \operatorname*{arg\,min}_{v \in V} \; d\bigl(\phi(e), \psi(v)\bigr),
+\label{eq:ent_normalization}
+\end{equation}
+where $\phi$ maps textual mentions to embeddings (using, e.g., a BERT-based model), and $\psi$ maps known KG entities to the same embedding space. The distance metric $d(\cdot,\cdot)$ can be cosine distance or a domain-specific measure. Any entity with $\min_{v \in V} d(\phi(e), \psi(v)) > \rho$ is flagged as new and added to the set of candidate vertices $V^{+}$.
+
+\subsection{Relationship Extraction Agents (REA)}
+
+After entity normalization, each pair $(\hat{e}_i, \hat{e}_j)$ within summary $u_j$ is fed to an LLM-based classifier:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+p(r \mid \hat{e}_i, \hat{e}_j, u_j)
+= \mathrm{LLM}_{R}\bigl( \hat{e}_i, \hat{e}_j, u_j, P_R \bigr),
+\label{eq:rel_classification}
+\end{equation}
+where $p(r|\cdot)$ is the probability distribution over possible relationships $r \in \{r_1,\dots,r_K\}$. The prompt $P_R$ instructs the LLM to focus on domain relationship candidates. We select any relationship $r$ for which $p(r|\hat{e}_i,\hat{e}_j) \ge \theta_r$ and form a triplet $(\hat{e}_i, r, \hat{e}_j)$. In certain passages, more than one relationship can be implied. We allow multi-label predictions by setting an indicator variable:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+I(r) 
+= \mathbb{I}\{p(r \mid \hat{e}_i, \hat{e}_j) \,\ge\, \theta_r\},
+\end{equation}
+Hence, $\mathcal{R}(u_j)$ is the set of triplets $(\hat{e}_i, r, \hat{e}_j)$ such that $I(r)=1$.
+
+\subsection{Schema Alignment Agents (SAA)}
+
+If a new entity $v \in V^{+}$ or a new relation $r$ does not match existing KG types, the Schema Alignment Agent performs a domain-specific classification. For entities, the SAA solves:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+\tau^{*}
+= \operatorname*{arg\,max}_{\tau \in \mathcal{T}} 
+\;\mathrm{LLM}_{\mathrm{SAA}}\bigl(v, \tau, P_{\mathrm{align}}\bigr),
+\end{equation}
+where $\mathcal{T}$ is the set of valid entity types (\texttt{Disease}, \texttt{Drug}, \texttt{Gene}, etc.), and $\mathrm{LLM}_{\mathrm{SAA}}$ estimates the probability that $v$ belongs to type $\tau$. A similar approach is used for mapping new relation $r$ to known KG relation types. If no suitable match exists, the SAA flags $v$ or $r$ as candidate additions for review.
+
+\subsection{Conflict Resolution Agents (CRA)}
+
+New triplets can contradict previously established relationships. Let $t = (\hat{e}_h, r, \hat{e}_t)$ be a newly extracted triplet, and let $t'=(\hat{e}_h, r', \hat{e}_t)$ be a conflicting triplet in $\mathcal{G}$ if $r$ is logically incompatible with $r'$. We define:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+\mathrm{conflict}(t,\mathcal{G}) 
+=\;
+\begin{cases}
+1, & \text{if } \exists\, t' \text{ that contradicts } t, \\
+0, & \text{otherwise}.
+\end{cases}
+\end{equation}
+The CRA uses an LLM-based debate prompt:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+\mathrm{LLM}_{\mathrm{CRA}} \bigl( t, t' \bigr) \;\to\; 
+\{\texttt{Agree}, \texttt{Contradict}\},
+\end{equation}
+If $\mathrm{LLM}_{\mathrm{CRA}}$ yields \texttt{Contradict}, $t$ is then discarded or queued for manual expert review, depending on the system’s confidence.
+
+\subsection{Evaluator Agents (EA)}
+
+Finally, the Evaluator Agents aggregate multiple verification signals and compute global confidence $C(t)$, clarity $Cl(t)$, and relevance $R(t)$ for each triplet $t$.
+{\fontsize{9pt}{7pt}\selectfont
+\begin{align}
+    \text{Confidence:}\quad C(t) &= \sigma\Bigl(\textstyle\sum \alpha_i v_i(t)\Bigr), \\
+    \text{Clarity:}\quad Cl(t) &= \sigma\Bigl(\textstyle\sum \beta_j c_j(t)\Bigr), \\
+    \text{Relevance:}\quad R(t) &= \sigma\Bigl(\textstyle\sum \gamma_k r_k(t)\Bigr),
+\end{align}}
+where \( \sigma(x) = \frac{1}{1+e^{-x}} \) and \(\{\alpha_i, \beta_j, \gamma_k\}\) reflect the trustworthiness of each verification source, and \( v_i, c_j, r_k \) are verification signals for confidence, clarity, and relevance respectively. We finalize $t$ for integration using the mean score:
+\begin{equation}
+\fontsize{9pt}{7pt}\selectfont
+    \mathrm{integrate}(t) = 
+    \begin{cases}
+        1, & \text{if } \frac{C(t) + Cl(t) + R(t)}{3} \geq \Theta \ \\
+        0, & \text{otherwise}.
+    \end{cases}
+\end{equation}
+
+Altogether, this multi-agent pipeline, fully powered by specialized LLMs in each stage, enables robust, scalable, and accurate enrichment of large-scale KG. Future extensions can easily incorporate new domain ontologies, additional specialized agents, or updated LLM prompts as tasks continues to evolve.
+
+\section{Experimental Setup}
+This section presents a comprehensive proof-of-concept evaluation settings of the proposed KARMA framework. Unlike conventional NLP tasks that rely on a gold-standard dataset of biomedical entities and relationships, our evaluation adopts a multi-faceted approach. We integrate LLM-based verification with specialized graph-level metrics to assess the quality of the generated knowledge graph. The evaluation spans genomics, proteomics, and metabolomics, showcasing KARMA’s adaptability across diverse biomedical domains.
+
+\subsection{Data Collection}
+We curate scientific publications from PubMed \cite{white2020pubmed} across three primary domains: the \emph{Genomics Corpus}, which includes 720 papers focused on gene variants, regulatory elements, and sequencing studies; the \emph{Proteomics Corpus}, comprising 360 papers related to protein structures, functions, and protein-interaction networks; and the \emph{Metabolomics Corpus}, containing 120 papers discussing metabolic pathways, metabolite profiling, and clinical applications. All articles are stored in PDF format and processed by the \emph{Ingestion Agent} within KARMA.
+
+\subsection{LLM Backbones}
+We evaluate three general-purpose LLMs as the backbone for KARMA’s multi-agent knowledge graph enrichment pipeline using their APIs.
+
+\textbf{\emph{GLM-4}} \cite{glm2024chatglm}: An open-source 9B-parameter model, achieving 72.4 on the MMLU NLP benchmark.
+
+\textbf{\emph{GPT-4o}} \cite{achiam2023gpt}: A proprietary multimodal model optimized through RLHF. It has demonstrated strong adaptability in scientific knowledge extraction and concept grounding \cite{dagdelen2024structured}.
+
+\textbf{\emph{DeepSeek-v3}} \cite{liu2024deepseek}: An open-source 37-billion-activated-parameter mixture-of-experts (MoE) model with strong focus on STEM domains.
+
+Each KARMA agent (e.g., \emph{Reader, Summarizer, Extractor}) shares the same LLM backbone per experiment. All LLM-based evaluations employ DeepSeek-v3. Prompting strategies, detailed in Appendix~\ref{sec:appendix-prompts}, are minimally modified to ensure comparability across LLMs and domains. We analyze variations in the final constructed knowledge graph based on different LLM backbones.
+
+\begin{table*}[t]
+\caption{KARMA evaluation metrics across domains and models. $M_{Con}^\uparrow$: Average confidence score, $M_{Cla}^\uparrow$: Average clarity score, $M_{Rel}^\uparrow$: Average relevance score, $\Delta_{Cov}^\uparrow$: Coverage gain, $\Delta_{Con}^\uparrow$: Connectivity gain, $R_{CR}^\downarrow$: Conflict ratio, $R_{LC}^\uparrow$: LLM-based correctness score, $C_{QA}^\uparrow$: QA coherence score, $R_{HE}^\uparrow$: Human evaluation score. Best performance in each domain highlighted.}
+\label{tab:eval_metrics}
+\centering
+\sisetup{
+  table-format=1.3,
+}
+\setlength{\tabcolsep}{0.36em}
+\renewcommand\arraystretch{1.1}
+\begin{tabular}{@{}ll *{3}{S} S[table-format=4.0] *{2}{S[table-format=1.3]} *{4}{S}@{}}
+\toprule
+\rowcolor{yellow!20}
+\multirow{2.4}{*}{\textbf{Domain}} & \multirow{2.4}{*}{\textbf{Model}} & 
+\multicolumn{3}{c}{\textbf{Core Metrics}} & 
+\multicolumn{2}{c}{\textbf{Graph Stats.}} & 
+\multicolumn{4}{c}{\textbf{Quality Indicators}} \\
+\cmidrule(lr){3-5} \cmidrule(lr){6-7} \cmidrule(lr){8-11}
+& & {$M_{\text{Con}}^\uparrow$} & {$M_{\text{Cla}}^\uparrow$} & {$M_{\text{Rel}}^\uparrow$} & 
+{$\Delta_{\text{Cov}}^\uparrow$} & {$\Delta_{\text{Con}}^\downarrow$} & 
+{$R_{\text{CR}}^\uparrow$} &
+{$R_{\text{LC}}^\uparrow$} & {$C_{\text{QA}}^\uparrow$} & {$R_{\text{HE}}^\uparrow$} \\
+\midrule
+
+\multirow{4}{*}{\textbf{Genomics}}
+& \cellcolor{gray!10} Single-Agent      & {NA} & {NA} & {NA} &  4384 & 1.083 & {NA} & 0.493 & 0.472 & 0.320 \\
+& \cellcolor{gray!10} GLM-4      & 0.729 & 0.804 &  \cellcolor{green!20} \textbf{0.716} &  4969 & 1.131 & 0.238 & 0.623 & 0.589 & 0.445 \\
+& \cellcolor{gray!10} GPT-4o      & 0.843 & 0.744 & 0.640 &  9795 & 1.265 & \cellcolor{green!20} \textbf{0.148} & \cellcolor{green!20} \textbf{0.880} & 0.569 & 0.510 \\
+& \cellcolor{gray!10} DeepSeek-v3 & \cellcolor{green!20} \textbf{0.846} & \cellcolor{green!20} \textbf{0.754} & 0.667 & \cellcolor{green!20} \textbf{38230} & \cellcolor{green!20} \textbf{1.765} & 0.186 & 0.831 & \cellcolor{green!20} \textbf{0.612} & \cellcolor{green!20} \textbf{0.625} \\ 
+
+\midrule
+
+\multirow{4}{*}{\textbf{Proteomics}}   
+& \cellcolor{gray!10} Single-Agent     & {NA} & {NA} & {NA} &  5002 & 1.150 & {NA} & 0.638 & 0.572 & 0.415 \\
+& \cellcolor{gray!10} GLM-4       & 0.731 & 0.752 & 0.609 &  6832 & 1.173 & 0.214 & 0.720 & \cellcolor{green!20} \textbf{0.617} & 0.500 \\
+& \cellcolor{gray!10} GPT-4o      & 0.823 & 0.797 & 0.613 &  7008 & 1.191 & 0.160 & 0.740 & 0.612 & 0.550 \\
+& \cellcolor{gray!10} DeepSeek-v3 & \cellcolor{green!20} \textbf{0.845} & \cellcolor{green!20} \textbf{0.825} & \cellcolor{green!20} \textbf{0.682} & \cellcolor{green!20} \textbf{11936} & \cellcolor{green!20} \textbf{1.468} & \cellcolor{green!20} \textbf{0.151} & \cellcolor{green!20} \textbf{0.772} & 0.613 & \cellcolor{green!20} \textbf{0.575} \\ 
+
+\midrule
+
+\multirow{4}{*}{\textbf{Metabolomics}} 
+& \cellcolor{gray!10} Single-Agent      & {NA} & {NA} & {NA} &  485 & 1.077 & {NA} & 0.527 & 0.450 & 0.455 \\
+& \cellcolor{gray!10} GLM-4     & 0.701 & \cellcolor{green!20} \textbf{0.790} & 0.762 &   703 & 1.159 & 0.188 & 0.617 & 0.449 & 0.485 \\
+& \cellcolor{gray!10} GPT-4o      & \cellcolor{green!20} \textbf{0.802} & 0.730 & 0.726 &   773 & 1.143 & 0.147 & \cellcolor{green!20} \textbf{0.683} & 0.482 & 0.535 \\
+& \cellcolor{gray!10} DeepSeek-v3 & 0.790 & 0.746 & \cellcolor{green!20} \textbf{0.767} & \cellcolor{green!20} \textbf{1752} & \cellcolor{green!20} \textbf{1.811} & \cellcolor{green!20} \textbf{0.132} & 0.668 & \cellcolor{green!20} \textbf{0.493} & \cellcolor{green!20} \textbf{0.580} \\
+
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+
+\subsection{Metrics}
+
+To evaluate the enriched knowledge graph (KG) in the absence of a gold-standard reference, we employ a multi-faceted evaluation framework that assesses structural integrity, correctness, and practical utility. This framework comprises three categories of metrics: core metrics, graph statistics, and quality indicators. Together, these metrics provide comprehensive insights into the quality and usability of newly added triples and the overall augmented KG.
+
+\noindent\textbf{Core Metrics} focus on the properties of newly added triples using structural and LLM-based indicators. The \emph{Average Confidence} ($M_{Con}^\uparrow$) measures the mean confidence scores across all new triples, reflecting their reliability. The \emph{Average Clarity} ($M_{Cla}^\uparrow$) computes the mean clarity scores, indicating how unambiguous or direct each relation is. The \emph{Average Relevance} ($M_{Rel}^\uparrow$) captures the mean relevance scores, assessing the domain significance of the triples. These metrics collectively evaluate the intrinsic quality of the added knowledge.
+
+\noindent\textbf{Graph Statistics} quantify the structural properties of the augmented KG. The \emph{Coverage Gain} ($\Delta_{Cov}^\uparrow$) measures the number of newly introduced entities not previously in the KG, reflecting its expanded scope. The \emph{Connectivity Gain} ($\Delta_{Con}^\uparrow$) calculates the net increase in node degrees (summed over existing entities), indicating enhanced interconnectedness.
+
+\noindent\textbf{Quality Indicators} assess reliability and usability through multiple lenses. The \emph{Conflict Ratio} ($R_{CR}^\downarrow$) represents the fraction of newly extracted edges removed by the \emph{ConflictResolutionAgent} due to internal or external contradictions. The \emph{LLM-based Correctness} ($R_{LC}^\uparrow$) is determined by a hold-out LLM judging each new triple ((head, r, tail)) as likely correct, uncertain, or likely incorrect, with $R_{LC} = \frac{\#(\text{likely correct})}{\#(\text{all new triples})}$. The Question-Answer Coherence ($C_{QA}^\uparrow$) evaluates the fraction of plausible KG-derived answers for a curated set of domain-specific questions answerable via KG traversal. Finally, the \emph{Human Evaluation Score} ($R_{HE}^\uparrow$) scaled from 0 to 1, gauges the quality of triple extractions based on assessments by two human experts, offering a comprehensive measure of the knowledge graph’s accuracy and utility.
+
+These complementary metrics provide insights into the structural integrity, internal consistency, correctness, and practical utility of the enriched knowledge graph.
+
+\section{Results}
+
+\subsection{Overall Evaluation}
+Our comprehensive evaluation (Table~\ref{tab:eval_metrics}, with examples in Appendix \ref{subsec:kg-genomics},\ref{subsec:kg-proteomics},\ref{subsec:kg-metabolomics}) demonstrates that KARMA significantly extends domain-specific knowledge graphs through its multi-agent architecture. Four key findings emerge: (1) The framework demonstrates superior performance compared to the GLM-4-based single-agent approach, which extracts all triples in a single generation, (2) The framework exhibits varying performance across distinct domains; it identifies the most entities in prevalent fields such as genomics ($53.1$/article), achieving $3.6$× higher coverage gain ($\Delta_{Cov}$) per article than metabolomics ($14.6$/article); (3) LLM backbone selection substantially impacts KG quality, with DeepSeek-v3 achieving superior performance on $17/24$ ($71\%$) metrics across domains; (4) Evaluating knowledge and resolving conflicts automatically can enhance the quality of the extracted knowledge graph, improving LLM-based accuracy by $4.6\%$–$14.4\%$.
+
+\subsection{Domain-Level Observations.}
+\textbf{Genomics: Scale Meets Precision (\ref{subsec:kg-genomics})} 
+\noindent The genomics domain ($720$ papers) exhibits the most pronounced model differentiation. DeepSeek-v3 achieves $\Delta_{Cov}=38,230$ while maintaining a competitive correctness score $R_{LC}=0.831$, only $5.6\%$ below GPT-4o's peak. This suggests that MoE architectures can balance recall and precision in large-scale extraction.
+
+\noindent \textbf{Proteomics: Balanced Optimization (\ref{subsec:kg-proteomics})} 
+\noindent With $360$ papers, proteomics reveals balanced gains: DeepSeek-v3 leads in both core metrics ($M_{Con}=0.845$) and structural gains ($\Delta_{Con}=1.468$), while GLM-4 achieves peak QA coherence ($C_{QA}=0.617$). The $19.1\%$ higher $\Delta_{Cov}$ for DeepSeek-v3 versus GPT-4o indicates greater sensitivity to protein interaction nuances.
+
+\noindent \textbf{Metabolomics: Specialization Pays Off (\ref{subsec:kg-metabolomics})}
+\noindent Despite the smallest corpus ($120$ papers), GLM-4 delivers superior clarity ($M_{cla}=0.790$) and GPT-4o excels in correctness ($R_{LC}=0.683$). However, DeepSeek-v3's $\Delta_{Con}=1,752$ is $127\%$ higher than GPT-4o, demonstrates unique capability to extrapolate metabolic pathways from limited data.
+
+\subsection{Analysis of LLM Backbones}
+Our comparison reveals strengths of different backbones: DeepSeek-v3 drives unparalleled coverage gains, outpacing GPT-4o by $3.9\times$ in genomics and $2.3\times$ in metabolomics while maintaining competitive correctness ($R_{LC}=0.831$ vs GPT-4o’s $0.880$ in genomics). This contrasts with GPT-4o’s precision-first profile, where it achieves peak $R_{LC}$ scores ($0.880$ genomics, $0.740$ proteomics) but yields $41\%$ lower connectivity gains than DeepSeek-v3, reflecting underutilized implicit relationships. GLM-4, though smaller (10B parameters), demonstrates domain-specific prowess: its biomedical tuning delivers best-in-class metabolomics clarity ($M_{Cla}=0.762$) and proteomics QA coherence ($C_{QA}=0.617$), while its conflict ratio ($R_{CR}=0.188$) remains competitive despite lower parameter count. The tradeoffs (DeepSeek-v3's coverage balance for correctness, GPT-4o's precision sacrifice for completeness, GLM-4's niche adaptation) underscore why \textit{KARMA}’s multi-agent framework strategically decouples extraction, validation, and can utilize the strengths of each backbone. Different backbones also lead to variations in the distribution of key evaluation metrics (Figure \ref{subsec:kg-genomics},\ref{subsec:kg-proteomics},\ref{subsec:kg-metabolomics}).
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.8\linewidth]{cost_comparison.pdf}
+    \caption{Comparison of prompt tokens, completion tokens, and processing time across domains.}
+    \label{fig:cost_analysis}
+    \vspace{-10pt}
+\end{figure}
+
+\subsection{Cost Analysis}
+The evaluation of computational costs (Figure \ref{fig:cost_analysis}) demonstrates distinct trade-offs in token usage and processing time across different domains. The variations in article lengths and information density naturally lead to differences in token consumption and processing times. Notably, genomics shows higher completion token distributions (mean = $550.64$, std = $232.92$), explaining KARMA's higher $\Delta_{Cov}$ in this domain. Meanwhile, proteomics exhibits broader processing time distributions (mean = $96.58$, std = $46.90$), which correlates with its stronger performance in knowledge quality metrics ($R_{LC}$ and $C_{QA}$), suggesting that longer processing times contribute to more thorough relationship analysis and validation.
+
+\subsection{Ablation Study}
+To better quantify the contributions of each specialized agent in KARMA, we conduct an ablation study (Table \ref{tab:ablation_study}) by systematically removing or replacing selected agents and measure the resulting performance across the three domains. Specifically, we evaluate:
+
+\begin{table*}[t]
+\caption{Ablation study results for KARMA, evaluating the impact of different agents (Summarizer, Conflict Resolution, Evaluator).}
+\label{tab:ablation_study}
+\centering
+\sisetup{
+  table-format=1.3,
+}
+\setlength{\tabcolsep}{1em}
+\renewcommand\arraystretch{1}
+\begin{tabular}{ll *{4}{S}}
+\toprule
+\rowcolor{yellow!20}
+\multirow{2.4}{*}{\textbf{Domain}} & \multirow{2.4}{*}{\textbf{Configuration}} & 
+\multicolumn{4}{c}{\textbf{Quality Indicators}} \\
+\cmidrule(lr){3-6}
+& & {$R_{\text{CR}}^\uparrow$} & {$R_{\text{LC}}^\uparrow$} & {$C_{\text{QA}}^\uparrow$} & {$R_{\text{HE}}^\uparrow$} \\
+\midrule
+
+\multirow{4}{*}{\textbf{Genomics}}
+& \cellcolor{gray!10} w/o Summarizer Agent      & 0.758 & 0.788 & 0.472 & 0.600 \\
+& \cellcolor{gray!10} w/o Conflict Resolution Agent & 0.790 & 0.733 & 0.554 & 0.485 \\
+& \cellcolor{gray!10} w/o Evaluator Agent      & 0.793 & 0.752 & 0.561 & 0.515 \\
+& \cellcolor{gray!10} KARMA-Full & \cellcolor{green!20} \textbf{0.831} & \cellcolor{green!20} \textbf{0.831} & \cellcolor{green!20} \textbf{0.612} & \cellcolor{green!20} \textbf{0.625} \\ 
+
+\midrule
+
+\multirow{4}{*}{\textbf{Proteomics}}   
+& \cellcolor{gray!10} w/o Summarizer Agent      & 0.632 & 0.759 & 0.547 & 0.610 \\
+& \cellcolor{gray!10} w/o Conflict Resolution Agent & 0.661 & 0.742 & 0.583 & 0.525 \\
+& \cellcolor{gray!10} w/o Evaluator Agent      & 0.696 & 0.755 & 0.605 & 0.580 \\
+& \cellcolor{gray!10} KARMA-Full & \cellcolor{green!20} \textbf{0.772} & \cellcolor{green!20} \textbf{0.772} & \cellcolor{green!20} \textbf{0.613} & \cellcolor{green!20} \textbf{0.625} \\ 
+
+\midrule
+
+\multirow{4}{*}{\textbf{Metabolomics}} 
+& \cellcolor{gray!10} w/o Summarizer Agent      & 0.577 & 0.592 & \cellcolor{green!20} \textbf{0.537} & 0.555 \\
+& \cellcolor{gray!10} w/o Conflict Resolution Agent & 0.629 & 0.551 & 0.471 & 0.545 \\
+& \cellcolor{gray!10} w/o Evaluator Agent      & 0.603 & 0.572 & 0.480 & 0.550 \\
+& \cellcolor{gray!10} KARMA-Full & \cellcolor{green!20} \textbf{0.668} & \cellcolor{green!20} \textbf{0.608} & 0.493 & \cellcolor{green!20} \textbf{0.580} \\
+
+\bottomrule
+\end{tabular}
+\vspace{-10pt}
+\end{table*}
+
+\begin{itemize}[leftmargin=0em, labelsep=0.5em]
+    % \vspace{-10pt}
+    \item \textbf{KARMA-Full:} All agents active, including Summarizer, Conflict Resolution, and Evaluator modules.
+    % \vspace{-5pt}
+    \item \textbf{w/o Summarizer}: Bypasses the Summarizer Agents, passing all text directly from Reader Agents to Entity and Relationship Extraction.
+    % \vspace{-15pt}
+    \item \textbf{w/o Conflict Resolution}: Disables the Conflict Resolution Agent, allowing potentially contradictory edges into the final graph.
+    % \vspace{-5pt}
+    \item \textbf{w/o Evaluator}: Omits the final confidence, clarity, and relevance evaluation and aggregation, integrating relationships without filtering.
+    % \vspace{-15pt}
+\end{itemize}
+
+We conduct these ablations using the same LLM backbone (DeepSeek-v3 in our experiments) for consistency. Table~\ref{tab:ablation_study} summarizes the impact on evaluation metrics ($R_{LC}$, $C_{QA}$) for each domain. The ablation study highlights the importance of each agent in KARMA’s performance. Removing the \emph{Summarizer Agent} produce much more entities and triples, but reduces accuracy ($C_{QA}$ drop $22.9\%$ ($0.612$ → $0.472$) in genomics) and coherence ($R_{LC}$ drop $18.2\%$ ($0.772$ → $0.632$) in proteomics), as unfiltered text introduces noise. Disabling the \emph{Conflict Resolution Agent} significantly lowers correctness ($C_{QA}$ drop $4.9\%$ ($0.831$ → $0.790$) in genomics), especially in resolving contradictions like conflicting gene-disease associations. Omitting the \emph{Evaluator Agents} has the most impact on usability, as unfiltered, low-confidence edges degrade answer quality ($R_{LC}$ drop $9.7\%$ ($0.668$ → $0.603$) in metabolomics). Across all domains, conflict resolution proves critical for maintaining logical consistency, while summarization and evaluation ensure focused extraction and high-quality integration. This demonstrates that KARMA’s multi-agent design is essential for balancing accuracy, consistency, and usability in KG enrichment.
+
+\section{Conclusion}
+We introduce KARMA, a multi-agent LLM framework designed to tackle the challenge of scalable knowledge graph enrichment from scientific literature. By decomposing the extraction process into specialized agents for entity discovery, relationship validation, and conflict resolution, KARMA ensures adaptive and accurate knowledge integration. Its modular design reduces the impact of conflicting edges through multi-layered assessments and cross-agent verification. Experimental results across genomics, proteomics, and metabolomics demonstrate that multi-agent collaboration can overcome the limitations of single-agent approaches, particularly in domains that require complex semantic understanding and adherence to structured schemas.
+
+\section*{Acknowledge}
+This research was supported by National Key Research and Development Program of China
+(2024YFF0507400) and National Natural Science Foundation of China (6220071694).
+
+% \section*{Ethical Impact}
+% KARMA holds significant potential for automating the enrichment of knowledge graphs, particularly in complex fields like healthcare and biomedical research. However, as with any automated system, there are ethical concerns, particularly regarding bias in LLMs. Since LLMs are trained on vast and diverse datasets, they may inadvertently reflect outdated or biased information, leading to incorrect associations in the knowledge graph. Although KARMA incorporates mechanisms for verification and conflict resolution, human oversight remains essential to ensure the accuracy of critical knowledge. Additionally, considerations around data privacy are important, especially when dealing with sensitive research data. Going forward, balancing automation with human judgment will be crucial to ensuring the system operates responsibly and adheres to ethical standards. With careful attention to these challenges, KARMA has the potential to be a transformative tool for advancing knowledge while minimizing unintended consequences.
+
+
+% Bibliography entries for the entire Anthology, followed by custom entries
+%\bibliography{anthology,custom}
+% Custom bibliography entries only
+\bibliographystyle{plain}
+\bibliography{acl_latex}
+\clearpage
+
+\section*{Appendix}
+\section{Limitations}
+Despite the promising performance of KARMA, several limitations remain. First, our evaluation relies primarily on LLM-based metrics rather than direct human expert validation. While we employ multi-faceted metrics (e.g., QA coherence, conflict resolution) to assess the quality of the extracted knowledge, we recognize that domain experts must ultimately verify critical biomedical claims before applying them in clinical settings. Furthermore, performance varies across domains; for instance, metabolomics shows 12.4\% and 11.9\% lower QA coherence than proteomics and genomics, respectively, indicating challenges in modeling sparse and rare relationships in this field. These limitations highlight opportunities for future improvements, such as integrating hybrid neuro-symbolic approaches and optimizing agent coordination protocols.
+
+\section{Detailed propmts for KARMA agents}
+\label{sec:appendix-prompts}
+
+This appendix provides example prompts for each agent in the KARMA framework. All agents operate via LLMs with specialized prompt templates. We emphasize confidence, clarity, and domain relevance. Where applicable, we include sample inputs, outputs, and negative examples to illustrate how each agent handles complexities in the context.
+
+\subsection{Function summaries of different agents}
+\label{sec:appendix-agent-introduction}
+The KARMA framework comprises nine specialized LLM-powered agents, each handling distinct stages of the knowledge extraction and integration task. Below are their core functions:
+
+\begin{itemize}
+\item \textbf{Ingestion Agents (IA)}: Retrieve raw documents (PDF/HTML), normalize text (handling OCR errors, tables), and extract metadata (authors, journal, publication date).
+\item \textbf{Reader Agents (RA)}: Split documents into sections, score segment relevance using KG context, and filter non-revelant content (e.g., acknowledgments).
+\item \textbf{Summarizer Agents (SA)}: Condense text segments into concise summaries while preserving entity relationships (e.g., "Drug X inhibits Protein Y, reducing Disease Z symptoms" → "X inhibits Y; Y linked to Z").
+\item \textbf{Entity Extraction Agents (EEA)}: Identify entities via few-shot LLM prompts, then normalize them to KG canonical forms using ontology-guided embedding alignment.
+\item \textbf{Relationship Extraction Agents (REA)}: Detect relationships (e.g., \texttt{treats}, \texttt{causes}) between entity pairs using multi-label classification, allowing overlapping relations (e.g., "Drug A both \texttt{inhibits} Protein B and \texttt{triggers} Side Effect C").
+\item \textbf{Schema Alignment Agents (SAA)}: Map novel entities/relations to KG schema types (e.g., classifying "CRISPR-Cas9" as \texttt{Gene-Editing Tool}) or flag them for ontology expansion.
+\item \textbf{Conflict Resolution Agents (CRA)}: Resolve contradictions (e.g., new triplet "Drug D \texttt{treats} Disease E" vs. existing "Drug D \texttt{exacerbates} Disease E") via LLM debate and evidence aggregation.
+\item \textbf{Evaluator Agents (EA)}: Compute integration confidence using weighted signals (confidence, relevance, clarity) and apply threshold-based final approval.
+\end{itemize}
+
+\subsection{Additional Notes on Prompt Engineering}
+
+\noindent
+\textbf{1. Example-based prompting (few-shot).}  
+
+In practice, each agent’s prompt can be extended with short examples of input-output pairs to provide the LLM with more context, thereby improving the accuracy and consistency of its responses. For instance, the EEA prompt might include examples of drug-disease pairs, while the CRA prompt might illustrate how to handle partial contradictions vs. direct contradictions.
+
+\vspace{1mm}
+\noindent
+\textbf{2. Negative Examples and Error Correction.}  
+
+To increase robustness, each agent can be provided with negative examples or clarifications on error-prone cases. For example, the Summarizer Agent might be shown how not to remove important numerical dosage information; the EEA might have a demonstration of ignoring location references that are not topic-related entities (e.g., “Paris” is not a \texttt{Disease}).
+
+\vspace{1mm}
+\noindent
+\textbf{3. Incremental Fine-Tuning and Updates.}  
+
+As knowledge evolves, so do the vocabularies and relationship types. Agents can be periodically re-trained or their prompts updated to handle newly emerging entities (e.g., novel viruses, new drug classes) and complex multi-modal relationships. The modular structure of the prompts eases integration of these updates without redesigning the entire pipeline.
+
+Collectively, these prompts enable KARMA to harness LLMs at every stage of the knowledge extraction and integration process, resulting in a dynamic, scalable, and accurate knowledge enrichment.
+\newpage
+
+\clearpage
+\onecolumn
+\subsection{Ingestion Agent (IA) Prompt}
+\label{appendix:ia_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{IA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are a clinical expert. Your responsibility is to:
+1. Retrieve raw publications from designated sources (e.g., PubMed, internal repositories).
+2. Convert various file formats (PDF, HTML, XML) into a consistent normalized text format.
+3. Extract metadata such as the title, authors, journal/conference name, publication date, and unique identifiers (DOI, PubMed ID).
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} Raw document payload or a path/URL to the document, plus minimal metadata (if available).
+    \item \textbf{Output:} A JSON structure with two main fields:
+          \begin{enumerate}
+            \item \texttt{"metadata"}: \{title, authors, journal, pub\_date, doi, pmid, etc.\}
+            \item \texttt{"content"}: A single string or a structured array containing the full text, preserving headings or major sections if possible.
+          \end{enumerate}
+    \item \textbf{Key Requirements:}
+        \begin{itemize}
+          \item Handle OCR artifacts if the PDF is scanned (e.g., correct typical OCR errors where possible).
+          \item Normalize non-ASCII characters (greek letters, special symbols) to ASCII or minimal LaTeX markup when relevant (e.g., \verb|\alpha|).
+          \item If certain fields cannot be extracted, leave them as empty or \texttt{"N/A"} but do not remove the key from the JSON.
+        \end{itemize}
+    \item \textbf{Error Handling:}
+        \begin{itemize}
+          \item In case of partial or unreadable text, mark the corrupted portions with placeholders (e.g., ``[UNREADABLE]'').
+          \item If the document is locked or inaccessible, set an error flag in the output JSON.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: IngestionAgent]\\
+You will receive a raw publication in PDF or HTML format.\\
+1. Extract all available metadata: Title, Authors, Date, Journal/Source, PMID, DOI.\\
+2. Convert the text to ASCII or minimal LaTeX.\\
+3. Provide a JSON output with keys: \{"metadata": \{...\}, "content": "..." \}.\\
+4. If any portion of the text is unreadable, replace it with "[UNREADABLE]".\\
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\texttt{
+pdf\_document: "Binary PDF data...", doi: "10.1000/j.jmb.2022.07.123"\\
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{\\
+\quad \texttt{"metadata": \{"title": "Novel Anti-viral Therapy", "authors": ["Jane Doe"],}\\
+\quad \texttt{"content": "Introduction\\n Recent advances in... Methods\\n We tested..."}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Reader Agent (RA) Prompt}
+\label{appendix:ra_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{RA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Reader Agent}. Your goal is to parse the normalized text from the IA and generate \emph{logical segments} (e.g., paragraph-level chunks) that are likely to contain relevant knowledge. Each segment must be accompanied by a numeric \emph{Relevance Score} indicating its importance for downstream extraction tasks.
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} JSON output from IA with \texttt{"metadata"} and \texttt{"content"} fields.
+    \item \textbf{Output:} A JSON array \texttt{"segments"}, where each element is \{"text": "...", "score": 0.xxx\}. 
+    \item \textbf{Scoring Heuristics:}
+        \begin{itemize}
+          \item Use domain knowledge (e.g., presence of known keywords, synonyms, or known entity patterns) to increase the score.
+          \item Use structural cues (e.g., headings like ``Results'', ``Discussion'' might have higher relevance for new discoveries).
+          \item If a segment is purely methodological (e.g., protocols or references to equipment) with no new knowledge, assign a lower score.
+        \end{itemize}
+    \item \textbf{Edge Cases:}
+        \begin{itemize}
+          \item Very short segments (\textless{}30 characters) or references sections might be assigned a minimal score.
+          \item If certain sections are incomplete or corrupted,  still generate a segment but label it with \texttt{"score": 0.0}.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: ReaderAgent]\\
+Given the JSON with metadata and a large text string under "content", split the text into smaller segments (e.g., paragraphs).\\
+For each segment, estimate a Relevance Score (0 to 1) that indicates the likelihood of containing novel  relationships or key findings.\\
+Output a JSON array "segments": [\{"text":"...", "score": 0.XX\}, ...].
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"metadata": \{"title": "Antimicrobial Study"...\},}\\
+  \texttt{"content": "Abstract\\n We tested new...\\n Methods\\n The protocol was...\\n"}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"segments": [}\\
+  \quad \texttt{\{"text": "Abstract We tested new...", "score": 0.85\},}\\
+  \quad \texttt{\{"text": "Methods The protocol was...", "score": 0.30\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+
+\subsection{Summarizer Agent (SA) Prompt}
+\label{appendix:sa_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{SA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Summarizer Agent}. Your task is to convert high-relevance segments into concise summaries while retaining technical detail such as gene symbols, chemical names, or numeric data that may be crucial for entity/relationship extraction.
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A set of segments, each with a relevance score (e.g., from the RA).
+    \item \textbf{Output:} A JSON array \texttt{"summaries"}, each entry with:
+          \begin{enumerate}
+              \item \texttt{"original\_text"}: the original segment
+              \item \texttt{"summary"}: a concise, domain-specific summary (2--4 sentences recommended)
+              \item \texttt{"score"}: the inherited or slightly adjusted relevance score
+          \end{enumerate}
+    \item \textbf{Summarization Rules:}
+        \begin{itemize}
+          \item Avoid discarding domain-specific terms that could indicate potential relationships. For example, retain ``IL-6'' or ``p53'' references precisely.
+          \item If numeric data is relevant (e.g., concentrations, p-values), incorporate them verbatim if possible.
+          \item Keep the summary length under 100 words to reduce computational overhead for downstream agents.
+        \end{itemize}
+    \item \textbf{Handling Irrelevant Segments:}
+        \begin{itemize}
+          \item If the Relevance Score is below a threshold (e.g., 0.2), you may skip or heavily compress the summary.
+          \item Mark extremely low relevance segments with \texttt{"summary": "[OMITTED]"} if not summarizable.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: SummarizerAgent]\\
+For each segment with (text, score), produce a summary capturing key biomedical elements (drugs, diseases, molecular targets).\\
+Preserve numeric data or specific chemical/gene names. Output a JSON list: \\
+\{"summaries": [\{"original\_text": "...", "summary": "...", "score": 0.xx\}, ...]\}.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"segments": [}\\
+  \quad \texttt{\{"text": "In this study, IL-6 blockade ...", "score": 0.90\},}\\
+  \quad \texttt{\{"text": "The control group had p=0.01...", "score": 0.75\}]}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"summaries": [}\\
+  \quad \texttt{\{"original\_text":"In this study, IL-6 blockade...",}\\
+  \quad \quad \texttt{"summary":"This segment describes the use of IL-6 inhibition in ...", "score": 0.90\},}\\
+  \quad \texttt{\{"original\_text":"The control group had p=0.01...",}\\
+  \quad \quad \texttt{"summary":"Researchers observed a statistically significant difference (p=0.01) between ...", "score": 0.75\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Entity Extraction Agent (EEA) Prompt}
+\label{appendix:eea_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{EEA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Entity Extraction Agent}. Based on summarized text, your objective is to:
+1. Identify biomedical entities (Disease, Drug, Gene, Protein, Chemical, etc.).
+2. Link each mention to a canonical ontology reference (e.g., UMLS, MeSH, SNOMED CT).
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A summarized text from the SA outputs.
+    \item \textbf{Output:} JSON \texttt{"entities"} array, where each element includes:
+          \begin{enumerate}
+              \item \texttt{"mention"}: the exact substring from the text
+              \item \texttt{"type"}: e.g., \texttt{"Drug"}, \texttt{"Disease"}, \texttt{"Gene"}, etc.
+              \item \texttt{"normalized\_id"}: references such as \texttt{"UMLS:C0004238"} or \texttt{"MESH:D001943"}
+          \end{enumerate}
+    \item \textbf{LLM-driven NER:}
+        \begin{itemize}
+          \item Use domain-specific knowledge to identify synonyms (``acetylsalicylic acid'' $\to$ Aspirin).
+          \item Include multi-word expressions (``breast cancer'' as a single mention).
+        \end{itemize}
+    \item \textbf{Handling Ambiguity:}
+        \begin{itemize}
+          \item If multiple ontology matches are possible, list the top candidate plus a short reason or partial mention of the second-best match.
+          \item If no suitable ontology reference is found, set \texttt{"normalized\_id": "N/A"} and keep the raw mention.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: EntityExtractorAgent]\\
+Identify all biomedical entities from the text snippet. Output array "entities": [\{"mention":"...", "type":"...", "normalized\_id":"..."\}, ...].\\
+Use domain ontologies (UMLS, MeSH, SNOMED) to map the mention to a canonical identifier if possible.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"summary": "We tested Aspirin for headache relief at a dosage of 100 mg."}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"entities": [}\\
+  \quad \texttt{\{"mention": "Aspirin", "type": "Drug", "normalized\_id": "MESH:D001241"\},}\\
+  \quad \texttt{\{"mention": "headache", "type": "Disease", "normalized\_id": "UMLS:C0018681"\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Relationship Extraction Agent (REA) Prompt}
+\label{appendix:rea_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{REA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Relationship Extraction Agent}. Given a text snippet plus a set of recognized entities, your mission is to detect possible relationships (e.g., \texttt{treats}, \texttt{causes}, \texttt{interactsWith}, \texttt{inhibits}).  
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A summary $u_j$ and a list of entity with normalized IDs from the EEA. 
+    \item \textbf{Output:} A JSON array \texttt{"relationships"} where each element is:
+          \begin{enumerate}
+              \item \texttt{"head"}: the head entity
+              \item \texttt{"relation"}: the relationship type (string)
+              \item \texttt{"tail"}: the tail entity
+          \end{enumerate}
+    \item \textbf{LLM-based Relation Classification:}
+        \begin{itemize}
+          \item Consider grammar structures (e.g., “X was observed to inhibit Y”) and domain patterns (``X reduces expression of Y'').
+          \item Allow multiple relationship candidates if the text is ambiguous or suggests multiple interactions.
+        \end{itemize}
+    \item \textbf{Negative Relation Handling:}
+        \begin{itemize}
+          \item If the text says “Aspirin \emph{does not} treat migraine,”  the relationship \texttt{(Aspirin, treats, migraine)} is negative. Output either no relationship or a negative-labeled relationship (implementation-specific).
+          \item Recognize negation cues (“no effect”, “absence of association”).
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: RelationshipExtractorAgent]\\
+You will receive text along with extracted entities. Determine if any pair of entities has a meaningful relationship. Use domain knowledge to find patterns like "X treats Y", "X inhibits Y", etc.\\
+Output each discovered relationship with "head", "relation", "tail", and "confidence".
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"summary": "Aspirin was shown to reduce headaches by inhibiting prostaglandin...",}\\
+  \texttt{"entities": [\{"mention": "Aspirin", "normalized\_id": "MESH:D001241"\}, \\ \{"mention": "headaches", "normalized\_id": "UMLS:C0018681"\},}\\
+  \texttt{\{"mention": "prostaglandin", "normalized\_id": "MESH:D011441"\}]}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"relationships": [}\\
+  \quad \texttt{\{"head": "MESH:D001241", "relation": "treats", "tail": "UMLS:C0018681"\},}\\
+  \quad \texttt{\{"head": "MESH:D001241", "relation": "inhibits", "tail": "MESH:D011441"\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Schema Alignment Agent (SAA) Prompt}
+\label{appendix:saa_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{SAA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Schema Alignment Agent}. Newly extracted entities or relationships may not match existing KG classes or relation types. Your job is to determine how they should map onto the existing ontology or schema.
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A list of new entities or relations that appear in the extraction but are not recognized in the current KG schema.
+    \item \textbf{Output:} An array \texttt{"alignments"} with objects \{"id":..., "type":..., "status":...\}, possibly plus a \texttt{"new\_types"} array for unrecognized patterns.
+    \item \textbf{Ontology Reference:}
+        \begin{itemize}
+          \item For each unknown entity, propose a parent type from \{\texttt{Drug}, \texttt{Disease}, \texttt{Gene}, \texttt{Chemical}, ...\} if not in the KG.
+          \item For each unknown relation, map it to an existing relation if semantically close. Otherwise, propose a new label.
+        \end{itemize}
+    \item \textbf{Confidence Computation:}
+        \begin{itemize}
+          \item Consider lexical similarity, embedding distance, or domain rules (e.g., if an entity ends with ``-in'' or ``-ase'', it might be a protein or enzyme).
+          \item Provide a final numeric score for how certain you are of the proposed alignment.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: SchemaAlignmentAgent]\\
+You will receive a list of new entities/relations that are not in the KG. Try mapping them to existing node/edge types.\\
+Output JSON: \{"alignments":[\{"id":"...", "proposed\_type":"...", \\ "status":"mapped"/"new"\},...]\}.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"unknown\_entities": ["TNF-alpha", "miR-21"],}\\
+  \texttt{"unknown\_relations": ["overexpresses"]}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"alignments": [}\\
+  \quad \texttt{\{"id":"TNF-alpha", "proposed\_type":"Protein", "status":"mapped"\},}\\
+  \quad \texttt{\{"id":"miR-21", "proposed\_type":"RNA", "status":"new"\}],}\\
+  \texttt{"new\_relations":[\\ \{"relation":"overexpresses", "closest\_match":"upregulates","status":"new"\}]}
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Conflict Resolution Agent (CRA) Prompt}
+\label{appendix:cra_prompt}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{CRA\_Prompt}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Conflict Resolution Agent}. Sometimes new triplets are detected that contradict existing knowledge (e.g., \texttt{(DrugX, causes, DiseaseY)} vs. \texttt{(DrugX, treats, DiseaseY)}). Your role is to classify these into \texttt{Contradict}, \texttt{Agree}, or \texttt{Ambiguous}, and decide whether the new triplet should be discarded, flagged for expert review, or integrated with caution.
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A new candidate triplet $t$ and a potentially conflicting triplet $t'$ already in the KG.
+    \item \textbf{Output:} A JSON object with:
+          \begin{enumerate}
+            \item \texttt{"decision"}: \texttt{"Contradict"}, \texttt{"Agree"}, or \texttt{"Ambiguous"}
+            \item \texttt{"resolution"}: \{"action": \texttt{"discard"/"review"/"integrate"}, "rationale": "..."\}
+          \end{enumerate}
+    \item \textbf{LLM-based Debate}: 
+        \begin{itemize}
+          \item Use domain knowledge to see if relationships can coexist (e.g., \texttt{inhibits} vs. \texttt{activates} are typically contradictory for the same target).
+          \item Consider partial contexts, e.g., different dosages or subpopulations.
+        \end{itemize}
+    \item \textbf{Escalation Criteria}:
+        \begin{itemize}
+          \item If the new triplet has high confidence but conflicts with old data that has lower confidence, consider overriding or \texttt{review}.
+          \item If both are high confidence, label \texttt{Contradict}, prompt manual verification.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: ConflictResolutionAgent]\\
+You have two triplets t\_new and t\_existing that appear to conflict. Determine if they truly contradict or if they could be contextually compatible.\\
+Output \{"decision":"Contradict" / "Agree" 
+/ "Ambiguous",\\ "resolution":\{"action":"discard" / "review" / 
+"integrate",\\ "rationale":"..."\}\}.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"t\_new": \{"head":"DrugX",\\
+  "relation":"treats", "tail":"DiseaseY"\},}\\
+  \texttt{"t\_existing": \{"head":"DrugX", "relation":"causes", "tail":"DiseaseY"\}}
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"decision":"Contradict",}\\
+  \texttt{"resolution": \{"action":"review", "rationale":"Both have high confidence; manual verification required."\}}
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Evaluator Agent (EA) Prompt for Confidence}
+\label{appendix:ea_prompt_confidence}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{EA\_Prompt\_confidence}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Evaluator Agent}. After the extraction, alignment, and conflict resolution phases, each candidate triplet has multiple verification scores from external databases, additional LLM-based checks, or domain-specific classifiers. Your duty is to aggregate these signals into a final confidence score $C(t)$ and decide whether to integrate each triplet into the KG.
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A list of triplets, each with:
+          \begin{enumerate}
+              \item Partial confidence scores (e.g., $v_1, v_2, ..., v_N$).
+              \item Conflict resolution status (\texttt{"Contradict"}, \texttt{"Agree"}, or \texttt{"Ambiguous"}).
+          \end{enumerate}
+    \item \textbf{Output:} A JSON array \texttt{"final\_triplets"} with:
+          \begin{enumerate}
+              \item \texttt{"head", "relation", "tail"}: identifiers for the triplet
+              \item \texttt{"final\_confidence"}: combined confidence score $C(t)$
+          \end{enumerate}
+    \item \textbf{Aggregation Formula:}
+        \begin{itemize}
+          \item You must also factor in conflict resolution outcomes: if \texttt{Contradict}, $C(t)$ is penalized or forced to 0 unless manual override occurs.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: EvaluatorAgent]\\
+Given an array of triplets with partial scores [v1, v2, ...], conflict status, etc., compute a final confidence using logistic weighting.\\
+Output as \{"final\_triplets": [\{"head":..., "relation":..., "tail":..., "final\_confidence":...\}, ...]\}.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"candidates": [}\\
+  \quad \texttt{\{"head":"MESH:D001241","relation":"treats",
+  "tail":"UMLS:C0018681",}\\
+  \quad \quad \texttt{"scores": [0.90, 0.85], "conflict":"Agree"\}},\\
+  \quad \texttt{\{"head":"DrugX","relation":"causes",
+  "tail":"DiseaseY",}\\
+  \quad \quad \texttt{"scores": [0.70, 0.60], "conflict":"Contradict"\}]}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"final\_triplets": [}\\
+  \quad \texttt{\{"head":"MESH:D001241","relation":"treats",
+  "tail":"UMLS:C0018681",}\\
+  \quad \quad \texttt{"final\_confidence":0.87\},}\\
+  \quad \texttt{\{"head":"DrugX","relation":"causes",
+  "tail":"DiseaseY",}\\
+  \quad \quad \texttt{"final\_confidence":0.65\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Evaluator Agent (EA) Prompt for Clarity}
+\label{appendix:ea_prompt_clarity}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{EA\_Prompt\_clarity}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Evaluator Agent} responsible for assessing the \textbf{clarity} of each candidate triplet. After the initial extraction, some triplets may contain ambiguous terminology or uncertain references. Your job is to assign a clarity score $Cl(t)$ to each triplet and decide whether it is sufficiently clear to be integrated into the Knowledge Graph (KG).
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A list of triplets, each with:
+          \begin{enumerate}
+              \item Partial clarity metrics (e.g., $c_1, c_2, ..., c_N$) obtained from lexical or semantic checks.
+              \item A note on whether the triplet’s terms or relation are ambiguous, e.g., \texttt{"AmbiguousTerm"}, \texttt{"ClearTerm"}, etc.
+          \end{enumerate}
+    \item \textbf{Output:} A JSON array \texttt{"final\_triplets"} with:
+          \begin{enumerate}
+              \item \texttt{"head", "relation", "tail"}: identifiers for the triplet.
+              \item \texttt{"final\_clarity"}: the combined clarity score $Cl(t)$.
+          \end{enumerate}
+    \item \textbf{Aggregation Formula:}
+        \begin{itemize}
+          \item You may apply a weighted averaging or logistic function over $c_1, c_2, ..., c_N$.
+          \item Downweight or penalize triplets tagged as having ambiguous or unclear terms.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: EvaluatorAgent]\\
+Given an array of triplets with partial clarity metrics [c1, c2, ...] and any notes on ambiguity, compute a final clarity score.\\
+Output as \{"final\_triplets": [\{"head":..., "relation":..., "tail":..., "final\_clarity":...\}, ...]\}.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"candidates": [}\\
+  \quad \texttt{\{"head":"DrugA","relation":"may\_treat",
+  "tail":"ConditionB",}\\
+  \quad \quad \texttt{"clarity\_metrics": [0.80, 0.85], "ambiguous":"False"\}},\\
+  \quad \texttt{\{"head":"EntityX","relation":"unknownRel",
+  "tail":"EntityY",}\\
+  \quad \quad \texttt{"clarity\_metrics": [0.40], "ambiguous":"True"\}]}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"final\_triplets": [}\\
+  \quad \texttt{\{"head":"DrugA","relation":"may\_treat",
+  "tail":"ConditionB",}\\
+  \quad \quad \texttt{"final\_clarity":0.82\},}\\
+  \quad \texttt{\{"head":"EntityX","relation":"unknownRel",
+  "tail":"EntityY",}\\
+  \quad \quad \texttt{"final\_clarity":0.40\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\subsection{Evaluator Agent (EA) Prompt for Relevance}
+\label{appendix:ea_prompt_relevance}
+
+\begin{tcolorbox}[colframe=black!25, colback=black!5, boxrule=0.5pt, arc=2pt]
+% \small
+\textbf{Title:} \textit{EA\_Prompt\_relevance}
+
+\noindent
+\textbf{Role Description:}  
+You are the \textbf{Evaluator Agent} focusing on the \textbf{relevance} of each triplet to the target Knowledge Graph (KG). Some triplets may be factually correct but not pertinent to the KG’s domain or scope. Your duty is to compute a relevance score $R(t)$ for each triplet and decide if it should be included in the KG.
+
+\vspace{1mm}
+\noindent
+\textbf{System Instruction:}
+\begin{itemize}
+    \item \textbf{Input:} A list of triplets, each with:
+          \begin{enumerate}
+              \item Partial relevance scores (e.g., $r_1, r_2, ..., r_N$) based on domain-specific criteria (e.g., "medical relevance" or "chemical relevance").
+              \item Metadata or tags indicating alignment with the KG’s domain (e.g., \texttt{"domainMatch"} or \texttt{"domainMismatch"}).
+          \end{enumerate}
+    \item \textbf{Output:} A JSON array \texttt{"final\_triplets"} with:
+          \begin{enumerate}
+              \item \texttt{"head", "relation", "tail"}.
+              \item \texttt{"final\_relevance"}: the combined relevance score $R(t)$.
+          \end{enumerate}
+    \item \textbf{Aggregation Formula:}
+        \begin{itemize}
+          \item Combine the partial relevance scores via an average or logistic function.
+          \item Penalize triplets flagged as outside of the domain or referencing unknown entities.
+        \end{itemize}
+\end{itemize}
+
+\vspace{1mm}
+\noindent
+\textbf{LLM Prompt Template (Illustrative Example):}\\
+\texttt{
+[System Role: EvaluatorAgent]\\
+Given an array of triplets with partial relevance scores [r1, r2, ...] and domain tags, compute a final relevance score.\\
+Output as \{"final\_triplets": [\{"head":..., "relation":..., "tail":..., "final\_relevance":...\}, ...]\}.
+}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Input:}\\
+\{
+  \texttt{"candidates": [}\\
+  \quad \texttt{\{"head":"DrugA","relation":"used\_for",
+  "tail":"DiseaseB",}\\
+  \quad \quad \texttt{"relevance\_scores": [0.90, 0.88], "domainMatch":true\}},\\
+    \quad \texttt{\{"head":"HistoricalFigure","relation":"lived\_in",
+  "tail":"AncientPlace",}\\
+  \quad \quad \texttt{"relevance\_scores": [0.50], "domainMatch":false\}]}\\
+\}
+
+\vspace{1mm}
+\noindent
+\textbf{Sample Output:}\\
+\{
+  \texttt{"final\_triplets": [}\\
+  \quad \texttt{\{"head":"DrugA","relation":"used\_for",
+  "tail":"DiseaseB",}\\
+  \quad \quad \texttt{"final\_relevance":0.89\},}\\
+    \quad \texttt{\{"head":"HistoricalFigure","relation":"lived\_in",
+  "tail":"AncientPlace",}\\
+  \quad \quad \texttt{"final\_relevance":0.50\}]}\\
+\}
+\end{tcolorbox}
+\newpage
+
+\section{Examples of extracted knowledge graphs}
+\subsection{Knowledge graph from Genomics articles (Generate using GPT-4o, Examples)}
+\label{subsec:kg-genomics}
+\vspace{2mm}
+\begin{tcolorbox}[
+    colframe=black!25,
+    colback=black!5,
+    boxrule=0.5pt,
+    arc=2pt,
+    title=Genomics Knowledge Graph Triples,
+    fonttitle=\bfseries,
+    coltitle=black,
+    ]
+\small
+\textbf{Key:} Conf = Confidence, Rel = Relevance, Clr = Clarity\\
+\begin{itemize}
+    \item \textbf{EGFR} $\xrightarrow{\text{causes}}$ \textbf{lung adenocarcinoma} (Conf: 0.75, Rel: 0.40, Clr: 0.60)
+    \item \textbf{EGFR} $\xrightarrow{\text{causes}}$ \textbf{non - small cell lung cancer} (Conf: 0.85, Rel: 0.30, Clr: 0.70)
+    \item \textbf{T790M} $\xrightarrow{\text{causes}}$ \textbf{lung adenocarcinoma} (Conf: 0.98, Rel: 0.20, Clr: 0.70)
+    \item \textbf{T790M} $\xrightarrow{\text{causes}}$ \textbf{non - small cell lung cancer} (Conf: 0.95, Rel: 0.20, Clr: 0.80)
+    \item \textbf{EGFR} $\xrightarrow{\text{activates}}$ \textbf{EG} (Conf: 0.75, Rel: 0.20, Clr: 0.99)
+    \item \textbf{EGFR} $\xrightarrow{\text{causes}}$ \textbf{proliferation} (Conf: 0.85, Rel: 0.50, Clr: 0.60)
+    \item \textbf{MTX - 531} $\xrightarrow{\text{treats}}$ \textbf{HNSCC} (Conf: 0.99, Rel: 0.80, Clr: 0.50)
+    \item \textbf{MTX - 531} $\xrightarrow{\text{used\_in}}$ \textbf{PDX} (Conf: 0.75, Rel: 0.80, Clr: 0.50)
+    \item \textbf{PIK3CA mutations} $\xrightarrow{\text{associated\_with}}$ \textbf{HNSCC} (Conf: 0.85, Rel: 0.70, Clr: 0.99)
+    \item \textbf{MTX - 531} $\xrightarrow{\text{treats}}$ \textbf{PIK3CA mutations} (Conf: 0.65, Rel: 0.40, Clr: 0.99)
+    \item \textbf{MCLA - 158} $\xrightarrow{\text{targets}}$ \textbf{EGFR} (Conf: 0.75, Rel: 0.30, Clr: 0.99)
+    \item \textbf{EGFR} $\xrightarrow{\text{interacts\_with}}$ \textbf{MCLA - 158} (Conf: 0.75, Rel: 0.20, Clr: 0.80)
+    \item \textbf{PDOs} $\xrightarrow{\text{used\_in}}$ \textbf{biobank} (Conf: 0.75, Rel: 0.50, Clr: 0.50)
+    \item \textbf{Retinoic acid} $\xrightarrow{\text{disrupts}}$ \textbf{autocrine growth pathway} (Conf: 0.75, Rel: 0.80, Clr: 0.60)
+    \item \textbf{Retinoic acid} $\xrightarrow{\text{interacts\_with}}$ \textbf{nuclear retinoic acid receptors} (Conf: 0.95, Rel: 0.80, Clr: 0.99)
+    \item \textbf{nuclear retinoic acid receptors} $\xrightarrow{\text{regulate}}$ \textbf{gene transcription} (Conf: 0.95, Rel: 0.70, Clr: 0.50)
+    \item \textbf{EGFR} $\xrightarrow{\text{interacts\_with}}$ \textbf{Cys797} (Conf: 0.95, Rel: 0.80, Clr: 0.99)
+\end{itemize}
+\end{tcolorbox}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.97\linewidth]{gene_gpt_distribution.pdf}
+    \caption{Distribution of confidence, relevance, and clarity scores of extracted genomics knowledge graph triples from KARMA.}
+    \label{fig:gene-distribution}
+\end{figure}
+
+\newpage
+
+\subsection{Knowledge graph from Proteomics articles (Generate using DeepSeek-V3, Examples)}
+\label{subsec:kg-proteomics}
+\vspace{2mm}
+\begin{tcolorbox}[
+    colframe=black!25,
+    colback=black!5,
+    boxrule=0.5pt,
+    arc=2pt,
+    title=Proteomics Knowledge Graph Triples,
+    fonttitle=\bfseries,
+    coltitle=black,
+    ]
+\small
+\textbf{Key:} Conf = Confidence, Rel = Relevance, Clr = Clarity\\
+
+\begin{itemize}
+    \item \textbf{p53} $\xrightarrow{\text{induces}}$ \textbf{cell-cycle arrest} (Conf: 0.95, Rel: 0.70, Clr: 0.85)
+    \item \textbf{p53} $\xrightarrow{\text{induces}}$ \textbf{apoptosis} (Conf: 0.95, Rel: 0.70, Clr: 0.85)
+    \item \textbf{mutant p53} $\xrightarrow{\text{causes}}$ \textbf{chemotherapy resistance} (Conf: 0.85, Rel: 0.85, Clr: 0.85)
+    \item \textbf{MDM2} $\xrightarrow{\text{interacts\_with}}$ \textbf{p53} (Conf: 0.95, Rel: 0.20, Clr: 0.90)
+    \item \textbf{PRIMA-1} $\xrightarrow{\text{induces}}$ \textbf{apoptosis} (Conf: 0.85, Rel: 0.70, Clr: 0.85)
+    \item \textbf{NOS2} $\xrightarrow{\text{associated\_with}}$ \textbf{cancers} (Conf: 0.85, Rel: 0.70, Clr: 0.60)
+    \item \textbf{NOS2 inhibitors} $\xrightarrow{\text{inhibits}}$ \textbf{NOS2} (Conf: 0.95, Rel: 0.80, Clr: 0.90)
+    \item \textbf{NOS2 inhibitors} $\xrightarrow{\text{reduces}}$ \textbf{tumor growth} (Conf: 0.85, Rel: 0.75, Clr: 0.85)
+    \item \textbf{NO} $\xrightarrow{\text{induces}}$ \textbf{VEGF} (Conf: 0.78, Rel: 0.70, Clr: 0.70)
+    \item \textbf{NO} $\xrightarrow{\text{induces}}$ \textbf{neovascularization} (Conf: 0.45, Rel: 0.70, Clr: 0.75)
+    \item \textbf{NOS2 inhibitors} $\xrightarrow{\text{has\_therapeutic\_potential}}$ \textbf{p53-mutant cancers} (Conf: 0.78, Rel: 0.75, Clr: 0.85)
+    \item \textbf{tumor progression} $\xrightarrow{\text{dependent\_on}}$ \textbf{p53} (Conf: 0.85, Rel: 0.70, Clr: 0.85)
+    \item \textbf{NOS2} $\xrightarrow{\text{promotes}}$ \textbf{tumor growth} (Conf: 0.85, Rel: 0.85, Clr: 0.75)
+    \item \textbf{NOS2} $\xrightarrow{\text{produces}}$ \textbf{nitric oxide (NO)} (Conf: 0.95, Rel: 0.90, Clr: 0.90)
+    \item \textbf{hypoxia} $\xrightarrow{\text{regulates}}$ \textbf{iNOS expression} (Conf: 0.85, Rel: 0.70, Clr: 0.85)
+    \item \textbf{iNOS expression} $\xrightarrow{\text{influences}}$ \textbf{endothelial integrity} (Conf: 0.85, Rel: 0.70, Clr: 0.75)
+    \item \textbf{sulindac sulfide} $\xrightarrow{\text{treats}}$ \textbf{cancers} (Conf: 0.78, Rel: 0.70, Clr: 0.75)
+\end{itemize}
+\end{tcolorbox}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.97\linewidth]{protein_deepseek_distribution.pdf}
+    \caption{Distribution of confidence, relevance, and clarity scores of extracted proteomics knowledge graph triples from KARMA.}
+    \label{fig:protein-distribution}
+\end{figure}
+
+
+\newpage
+
+\subsection{Knowledge graph from Metabolomics articles (Generate using GLM-4, Examples)}
+\vspace{2mm}
+\label{subsec:kg-metabolomics}
+\begin{tcolorbox}[
+    colframe=black!25,
+    colback=black!5,
+    boxrule=0.5pt,
+    arc=2pt,
+    title=Metabolomics Knowledge Graph Triples,
+    fonttitle=\bfseries,
+    coltitle=black,
+    ]
+\small
+\textbf{Key:} Conf = Confidence, Rel = Relevance, Clr = Clarity\\
+\begin{itemize}
+    \item \textbf{G6PD} $\xrightarrow{\text{activates}}$ \textbf{NADPH} (Conf: 0.75, Rel: 0.80, Clr: 0.50)
+    \item \textbf{BAG3} $\xrightarrow{\text{interacts\_with}}$ \textbf{phosphorylation} (Conf: 0.75, Rel: 0.50, Clr: 0.99)
+    \item \textbf{Mitotic NADPH surge} $\xrightarrow{\text{prevents}}$ \textbf{chromosome missegregation} (Conf: 0.75, Rel: 0.80, Clr: 0.80)
+    \item \textbf{High BAG3 phosphorylation} $\xrightarrow{\text{associated\_with}}$ \textbf{poor prognosis} (Conf: 0.75, Rel: 0.80, Clr: 0.99)
+    \item \textbf{G6PD} $\xrightarrow{\text{crucial in}}$ \textbf{pentose phosphate pathway} (Conf: 0.85, Rel: 0.90, Clr: 0.80)
+    \item \textbf{Acetylation at lysine residue K89} $\xrightarrow{\text{activates}}$ \textbf{G6PD} (Conf: 0.75, Rel: 0.80, Clr: 0.99)
+    \item \textbf{Acetylation at lysine residue K403} $\xrightarrow{\text{inhibits}}$ \textbf{G6PD} (Conf: 0.75, Rel: 0.80, Clr: 0.80)
+    \item \textbf{astrocyte-to-neuron H2O2 signaling} $\xrightarrow{\text{activates}}$ \textbf{long-term memory formation} (Conf: 0.75, Rel: 0.80, Clr: 0.80)
+    \item \textbf{astrocytes} $\xrightarrow{\text{generates}}$ \textbf{extracellular ROS} (Conf: 0.75, Rel: 0.80, Clr: 0.80)
+    \item \textbf{extracellular ROS} $\xrightarrow{\text{imported by}}$ \textbf{neurons} (Conf: 0.45, Rel: 0.80, Clr: 0.80)
+    \item \textbf{Alzheimer's disease model} $\xrightarrow{\text{impairs}}$ \textbf{astrocyte-to-neuron H2O2 signaling} (Conf: 0.75, Rel: 0.80, Clr: 0.80)
+    \item \textbf{Alzheimer's disease model} $\xrightarrow{\text{impairs}}$ \textbf{memory formation} (Conf: 0.85, Rel: 0.80, Clr: 0.80)
+    \item \textbf{ROS signaling} $\xrightarrow{\text{important for}}$ \textbf{memory} (Conf: 0.75, Rel: 0.70, Clr: 0.60)
+    \item \textbf{astrocyte function} $\xrightarrow{\text{important for}}$ \textbf{memory} (Conf: 0.75, Rel: 0.80, Clr: 0.60)
+    \item \textbf{Alzheimer's disease} $\xrightarrow{\text{involves}}$ \textbf{astrocyte function} (Conf: 0.75, Rel: 0.70, Clr: 0.50)
+    \item \textbf{Alzheimer's disease} $\xrightarrow{\text{involves}}$ \textbf{ROS signaling} (Conf: 0.75, Rel: 0.80, Clr: 0.80)
+\end{itemize}
+\end{tcolorbox}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.97\linewidth]{metabolomics_glm_distribution.pdf}
+    \caption{Distribution of confidence, relevance, and clarity scores of extracted metabolomics knowledge graph triples from KARMA.}
+    \label{fig:metabolomics_glm_distribution}
+\end{figure}
+
+\noindent
+\textbf{Key observations:} High-clarity relationships (\textit{clr} $\geq$ 0.8) typically involve well-characterized biochemical processes, while lower confidence scores often reflect novel or context-dependent findings requiring expert validation.
+
+\end{document}

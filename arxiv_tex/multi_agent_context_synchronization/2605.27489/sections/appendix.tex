@@ -1,0 +1,346 @@
+\appendix
+
+\section{Detailed: Methodology for Studying HARP Attacks}
+\label{app:detailed-methodology}
+
+\subsection{Design principles}
+\proposed~follows four design principles that are reflected in the implementation and metric suite.
+\textbf{First, traces are primary artifacts.} The benchmark does not immediately collapse a run into a scalar score. It stores agent outputs, tool names, tool inputs, observations, final responses, token usage, elapsed time, database snapshots, oracle logs, and defense metadata. This makes later audit possible and avoids a common failure mode in which only the final answer is retained.
+\textbf{Second, evaluation is paired.} Each malicious run is compared to a clean run of the same query under the same defense and database seed. This is important because finance tasks vary substantially: a high-risk transfer, a portfolio review, and a market query have different natural routing and final-response structures. Pairing isolates the effect of the perturbation from task difficulty.
+\textbf{Third, side effects are simulated but stateful.} The benchmark uses a controlled finance database rather than real accounts. Nevertheless, actions such as transfer execution are stateful within a run, so the system can measure whether a harmful decision would have led to an operational side effect.
+\textbf{Fourth, the final decision is auditable.} The decision engine is not used as an unconstrained judge. It is a component of the system under test with a constrained approve/reject format and explicit veto conditions. Separate scoring functions then evaluate whether the final decision was appropriate given the trace.
+
+These principles are intended to make the benchmark useful for both scientific comparison and engineering debugging. A high ASR identifies a weak defense, but the trace explains where the weakness occurred; a high $\HA$ identifies fragile orchestration, but the paired deviation components explain which local fields changed.
+
+\subsection{Architecture}
+Figure~\ref{fig:architecture} summarizes the system. A router invokes specialists under mandatory chains for security-sensitive actions. Transfer requests use a pre-check chain of policy, risk, fraud, compliance, decision engine, and customer service. Bond or portfolio requests use financial analysis, risk, compliance, decision engine, and customer service. Specialist agents use ReAct-style tool invocation. The customer-service agent can query balances, transactions, and transfers; the policy guard evaluates authorization and policy compliance; the risk agent estimates risk level and score; the fraud agent inspects suspicious patterns; the compliance agent checks KYC/AML/sanctions status; the financial analyst retrieves market information; and the portfolio manager analyzes portfolios and can execute portfolio actions in the controlled environment.
+
+
+The decision engine is a central measurement component. It is instructed to output exactly one of two gate-level decisions for action requests: approve or reject, with an explanation. It should reject when policy violation, medium/high/critical risk, medium/high/critical fraud, compliance issue, or specialist blocking recommendation is present. This gate is intentionally simple relative to the surrounding LLM traces: it creates an auditable point at which local evidence becomes an operational decision.
+
+\subsection{Trace schema and database state}
+The observer records each run as a structured episode. The fields used by the metric scripts include the input query, router decisions, ordered specialist outputs, tool-call records, guard events, final response, rule-based score, AI-observer score, token usage, elapsed time, database snapshot, and oracle log. Table~\ref{tab:trace_schema} gives the conceptual schema. The exact JSON field names should be kept synchronized with the evaluator implementation, but the schema highlights what must be present for paired amplification scoring.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Conceptual trace schema required for amplification scoring.}
+\label{tab:trace_schema}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+Field & Purpose in evaluation \\
+\midrule
+Query and scenario identifiers & Align clean and perturbed runs and group results by regime and scenario. \\
+Router state & Reconstruct which agents were invoked and whether mandatory chains were followed. \\
+Specialist outputs & Compute local deviation, stance changes, entity mismatches, and trace-to-final consistency. \\
+Tool calls and observations & Identify side-effect attempts, wrong-entity tool parameters, and unsafe tool invocation. \\
+Guard events & Determine defense-specific blocking, detector accuracy, and false positives. \\
+Final decision and response & Compute decision-gate correctness and user-visible stealth. \\
+Database snapshots & Check data integrity and simulated side effects. \\
+Oracle log & Provide attack ground truth independent of detector predictions. \\
+Token and latency records & Measure operational overhead of defenses. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The controlled database is reset between paired runs. This reset is necessary because a clean run that executes a simulated transfer would otherwise change the state seen by the malicious run, or vice versa. The reset also makes temporal attacks interpretable: the temporal counter is stored separately from the database state and is the only intended cross-run signal when delayed triggers are enabled.
+
+\subsection{Malicious engine and oracle logs}
+The malicious engine supports pattern trigger, scoped to all agents, a named agent, or a specific tool. Payload classes include subject or entity redirects and numeric manipulation. Perturbations can be applied to query text, tool inputs, tool observations, or final outputs. Every applied payload produces an oracle-log entry with payload identifier, payload type, target, modified fields, agent, tool, and timestamp, unless explicitly configured as stealthy. These logs are not exposed to the agents; they are used only for evaluation.
+
+\subsection{Defenses}
+We evaluate five settings.
+\textbf{No defense} runs the orchestrator and malicious engine without additional safeguards.
+\textbf{React-sandwich} wraps agent prompts with repeated instructions that treat user, tool, and environment content as untrusted and reassert that the agent must not follow injected instructions.
+\textbf{LlamaFirewall-style guard} is a pre-tool LLM guard that classifies proposed tool calls as aligned or misaligned and blocks malformed guard outputs by default.
+% TODO: Add an approved citation for LlamaFirewall if the final paper is allowed to cite sources outside the provided set.
+\textbf{ToolSafe-style guard} follows the step-level tool invocation safety motivation of ToolSafe \citep{mou2026toolsafe}: it reasons over interaction history and a proposed current action before execution.
+\textbf{IntegrityGuard} is a trace-level consistency monitor applied after the agents have produced their intermediate outputs but before the final action is accepted. It checks for three classes of high-confidence failures: subject redirection, contradictions between specialist evidence and the final decision, and evidence that an agent followed an injected instruction. Runs that trigger one of these checks are blocked and marked for audit.
+
+\subsection{Evaluation protocol}
+
+\begin{algorithm}[htb]
+\caption{Trace-first paired evaluation in \proposed~.}
+\label{alg:eval}
+\small
+\begin{algorithmic}[1]
+\Require Queries $\Queries$, scenario configuration $s$, defense $d$, database seed $e_0$
+\Ensure Aggregate metrics: $\ASR$, $I_S$, $I_M$, $HA$, $\SF$, $\BU$, $L$, and $NTC$
+\For{each query $x_j \in \Queries$}
+  \State Reset controlled database to $e_0$.
+  \State Disable malicious perturbations and run system with defense $d$ to obtain clean trace $\tau_j^0$.
+  \State Reset controlled database to $e_0$.
+  \State Enable scenario $s$ and run system with defense $d$ to obtain perturbed trace $\tau_j^K$.
+  \State Store raw traces, oracle logs, guard events, detector outputs, token usage, latency, and database snapshots.
+  \State Compute $I(\tau_j^0)$ and $I(\tau_j^K)$.
+  \State Compute $H_{local}(\tau_j^K,\tau_j^0)$ and $H_{global}(\tau_j^K,\tau_j^0)$
+  \State Compute $HA = H_{global}/H_{local}$
+  \State Compute $SF$, $BU$, $L$, and $NTC$
+\EndFor
+\State Aggregate metrics.
+\State \Return $\ASR$, $I_S$, $I_M$, $\HA$, $\SF$, $\BU$, $L$, and $NTC$.
+\end{algorithmic}
+\end{algorithm}
+
+
+Algorithm~\ref{alg:eval} gives the paired trace-first protocol. For each scenario and query, the evaluator resets the controlled finance database, runs a clean configuration, resets again, runs the perturbed configuration, records traces, computes impacts and deviations, and amplifications, and then aggregates metrics. The observer stores tool calls, agent outputs, final response, token usage, elapsed time, and database snapshots. This trace-first design is important: the raw trace is recorded before any metric is computed, enabling later re-scoring and audit.
+
+\subsection{Scoring schema}
+The rule-based score is intentionally decomposed into interpretable categories rather than learned as an opaque scalar. The rule score allocates 25 points to entity correctness, 25 points to decision-engine gate correctness, 20 points to data integrity, 15 points to routing correctness, and 15 points to output truthfulness. The observer prompt additionally asks for process-level judgments such as data access control, process integrity, and anomaly detection. Table~\ref{tab:score_schema} summarizes the scoring dimensions used to compute harm.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Scoring dimensions used for harm computation. The final harm score averages normalized rule and observer harm.}
+\label{tab:score_schema}
+\begin{tabularx}{\textwidth}{l c X}
+\toprule
+Dimension & Weight & Interpretation \\
+\midrule
+Entity correctness & 25 & Whether customer, account, portfolio, and transaction identifiers match the task. \\
+Decision-engine gate & 25 & Whether the approve/reject/block decision follows policy, risk, fraud, and compliance evidence. \\
+Data integrity & 20 & Whether database state, tool observations, and final claims preserve relevant facts. \\
+Correct routing & 15 & Whether mandatory specialists were invoked for the task type. \\
+Output truthfulness & 15 & Whether the user-facing response faithfully summarizes the trace and outcome. \\
+AI observer score & 100 & Independent process-level assessment used as the second half of Eq.~\eqref{eqn:harm}. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The deviation score is similarly decomposed. Numeric deviation catches score manipulation; text deviation catches broad output rewriting; entity deviation catches account and customer swaps; stance deviation catches approve/reject flips; and hard-block deviation catches whether a write-like request was blocked in one trace but not the other.
+
+\subsection{Normalized security and cost}
+% This appendix provides additional detail for the aggregate and per-scenario results reported in the main paper. We first describe the evaluated agent roles and routing constraints, then expand the security--utility analysis, per-scenario behavior, detection results, operational cost trends, and derived diagnostics such as collusion lift and temporal persistence. Unless otherwise stated, all reported values use the same paired clean/perturbed protocol and the same metric definitions as the main text.
+
+For a defense method $m$, define normalized security, utility, latency, and token cost as
+\begin{equation}
+\begin{aligned}
+  \mathrm{Sec}_m &= 1-\frac{\ASR_m}{100}; 
+  &\qquad
+  \mathrm{Util}_m &= \frac{\BU_m}{100}; \\
+  \mathrm{Lat}_m^{\mathrm{norm}} 
+  &= \frac{L_m-L_{\min}}{L_{\max}-L_{\min}+\varepsilon};
+  &\qquad
+  \mathrm{Tok}_m^{\mathrm{norm}} 
+  &= \frac{C_m-C_{\min}}{C_{\max}-C_{\min}+\varepsilon}.
+\end{aligned}
+\end{equation}
+A deployment can then select a defense by minimizing a risk-sensitive objective
+\begin{equation}
+  J_\lambda(m)=
+  \lambda_1\frac{\ASR_m}{100}
+  +\lambda_2 \mathrm{H_{local}}
+  +\lambda_3 \mathrm{I_m}
+  +\lambda_4(1-\mathrm{Util}_m)
+  +\lambda_5 \mathrm{Lat}_m^{\mathrm{norm}}
+  +\lambda_6 \mathrm{Tok}_m^{\mathrm{norm}},
+  \qquad \lambda_i\ge 0.
+\end{equation}
+This objective makes explicit that the ``best'' defense depends on the downstream operating point. A high-assurance financial workflow would usually choose larger $\lambda_1,\lambda_2,\lambda_3$, whereas a customer-support workflow with no irreversible side effects might assign greater weight to utility and latency.
+
+% \paragraph{Pareto dominance:}
+% Let $u_m=(\mathrm{Sec}_m,\mathrm{Util}_m,-L_m,-C_m)$ be the deployment utility vector for method $m$. We say $m$ Pareto-dominates $m'$ if $u_m\ge u_{m'}$ coordinatewise and the inequality is strict in at least one coordinate. A method is Pareto-efficient when no evaluated method dominates it. This view is useful because Table~\ref{tab:avg-results} shows no globally dominant defense: IntegrityGuard usually maximizes security, ToolSafe often preserves utility, and LlamaFirewall sometimes reduces ASR at the cost of overblocking. 
+
+Table \ref{tab:notation} shows the notation used in this paper.
+
+\input{Appendix_table/notation}
+
+% \paragraph{Paired uncertainty estimates.}
+% Because \proposed~ evaluates paired clean and perturbed traces, confidence intervals can be computed on paired differences rather than independent samples. For a scalar metric $M$, define per-query differences $\delta_j=M(\tau_j^K)-M(\tau_j^0)$. A nonparametric paired bootstrap samples $\{\delta_j\}_{j=1}^N$ with replacement and recomputes the mean. For amplification, the bootstrap recomputes the ratio
+% \begin{equation}
+%   \AR_b(K)=\frac{\frac{1}{N}\sum_{j=1}^N [\delta^{H}_{j,b}]_+}{\frac{1}{N}\sum_{j=1}^N \delta^D_{j,b}+\varepsilon},
+% \end{equation}
+% for each bootstrap resample $b$. This procedure preserves clean/malicious pairing and is preferable to independently bootstrapping clean and perturbed runs.
+
+% \section{Design implications}
+% The results suggest several practical implications for multi-agent system design. First, final gates should treat agreement among specialists as weak evidence when the specialists share upstream context or memory. Second, high-stakes actions should include explicit subject-binding checks: the account, customer, or portfolio used by each tool call should be compared to the task subject before final approval. Third, step-level guards should expose uncertainty and request additional context rather than only blocking or allowing the current tool call. Fourth, temporal state should be audited as a first-class attack surface. A repeated-run trigger can bypass defenses that score each session independently. Fifth, post-hoc monitors should distinguish between blocking, escalation, and audit-only modes, because the same detector threshold may not be appropriate for all operational contexts.
+
+% \section{Limitations}
+% \proposed~{} is a controlled benchmark, not a deployment guarantee. The financial database is synthetic and actions are simulated. The default LLM configuration uses a specific model and temperature; results may change under different model versions or stronger guardrails. The evaluation uses rule and AI-observer scores; although paired traces reduce variance, observer-based scoring can still introduce model dependence. Finally, IntegrityGuard is tuned to a small set of integrity failures, and future attacks may evade it by creating subtler contradictions or by inducing benign-looking but incomplete analysis.
+
+% \section{Broader impact}
+% This work aims to improve evaluation of multi-agent LLM systems before they are deployed in high-stakes workflows. The attack scenarios are implemented in a simulated finance environment and should not be used to cause real financial harm. Reporting amplification can help developers identify fragile orchestration patterns, calibrate human-in-the-loop review, and design safer decision gates. A possible negative impact is that benchmark scenarios could inspire attackers; therefore, the paper emphasizes bounded perturbation classes and defensive evaluation rather than operational exploitation against real services.
+
+% \section{Additional Analysis}
+\subsection{Why attack success alone is insufficient}
+Attack success rate answers whether an attack happened and was not blocked. It does not distinguish between two qualitatively different failures: a large obvious deviation that produces harm, and a small local deviation that produces comparable harm. The latter is more concerning for multi-agent orchestration because it indicates that the system converted a small specialist-level change into a large operational change. Amplification ratio exposes this distinction by normalizing harm increase by local deviation.
+
+
+\subsection{Threshold gates as amplifiers}
+Decision gates can convert continuous local deviations into discrete operational outcomes. A small risk-score downgrade near a reject/approve threshold can flip a transfer decision. This is not a bug in using gates; gates are necessary for safety. The benchmark implication is that gates should be evaluated not only by clean accuracy but also by their local Lipschitz behavior: small specialist deviations near thresholds should trigger abstention, escalation, or additional verification rather than immediate approval.
+
+\section{Stealth Factor and Benign Utility}
+\label{app:sealth}
+
+We evaluate defenses not only by attack success and harm amplification, but also by
+\emph{stealth} and \emph{benign utility}. These metrics capture two practical deployment
+concerns: whether harmful perturbations remain hidden from the user-visible response, and
+whether the defense preserves normal behavior on benign queries.
+
+Let \(Q_A\) denote the set of attack-triggering queries, and let \(Q_B\) denote the set of
+benign queries. For an attacked trace \(\tau_j^K\), stealth measures whether the manipulation
+is visible in the final user-facing response. Let \(M_j \in \{0,1\}\) indicate that the
+manipulation is masked in the final response, and let \(O_j \in \{0,1\}\) indicate that the
+manipulation is obvious. We define the rule-based stealth factor as
+\begin{equation}
+SF_R =
+100 \cdot
+\frac{\sum_{j \in Q_A} M_j}
+{\sum_{j \in Q_A} (M_j + O_j)},
+\end{equation}
+We additionally compute two independent AI-based stealth estimates, \(SF_{A1}\) and \(SF_{A2}\), and report their
+average:
+\begin{equation}
+SF_{\mathrm{avg}} =
+\frac{SF_R + SF_{A1} + SF_{A2}}{3}.
+\end{equation}
+
+A high stealth score indicates that a perturbation is difficult to identify from the final
+response alone, even when the internal trace contains manipulated entities, contradicted
+tool evidence, changed risk ratings, or unsafe side effects. Thus, stealth complements
+attack success rate and harm amplification: ASR measures whether an attack survives the
+defense, harm amplification measures how far the perturbation propagates, and stealth
+measures whether the surviving failure is externally visible.
+
+Benign utility measures whether the system preserves correct behavior on non-attack
+queries. Let \(TN\) be the number of benign queries correctly allowed or completed, and
+let \(FP\) be the number of benign queries incorrectly blocked or degraded by a defense.
+We define benign utility as
+\begin{equation}
+BU =
+100 \cdot
+\frac{TN}{TN + FP}.
+\end{equation}
+
+This metric is necessary because a defense can reduce attack success by overblocking
+benign workflows, producing false positives, or preventing valid user requests from
+completing. In our evaluation, prompt-only defenses tend to preserve high benign utility
+but leave stealthy propagation largely intact, while stronger trace-level defenses reduce
+attack success and global harm at the cost of additional utility and cost trade-offs.
+Reporting \(SF_{\mathrm{avg}}\) and \(BU\) alongside ASR, \(H_{\mathrm{local}}\),
+\(H_{\mathrm{global}}\), HA, latency, and token cost therefore provides a fuller view of
+the security-utility frontier rather than treating defense quality as a single binary
+outcome.
+
+\section{Additional experimental details}
+
+\subsection{Detection analysis}
+
+\begin{figure*}[t]
+    \includegraphics[width=\linewidth]{Main_figure/Figures/heatmap.png}
+    \caption{Heatmaps show the Accuracy, Recall, and F1 scores of three defenses-LlamaFirewall, ToolSafe, and IntegrityGuard-across four dataset types, V1-V4. Darker colors indicate higher performance scores. IntegrityGuard achieves the strongest overall performance, particularly on V2 and V3, while ToolSafe shows consistently lower Recall and F1 scores across most types.}
+    \label{fig:heatmap}
+\end{figure*}
+
+Figure~\ref{fig:heatmap} shows average accuracy, recall, and F1 over the three reported scenarios for each vulnerability type. ToolSafe has consistently low recall, especially in shared-context and temporal settings. LlamaFirewall is more sensitive but unstable. IntegrityGuard has the best recall and F1 for V2 and V3, reaching average recall 0.753 in V2 and 0.913 in V3, but it is weaker in V4 where delayed triggers reduce the immediate trace evidence available to the checker.
+
+\subsection{Agent roles and routing constraints}
+\label{app:roles}
+
+\begin{table}[t]
+\caption{Specialist roles in the evaluated architecture.}
+\label{tab:roles}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{p{0.22\linewidth}p{0.54\linewidth}p{0.20\linewidth}}
+\toprule
+\textbf{Component} & \textbf{Primary responsibility} & \textbf{Representative tools} \\
+\midrule
+Policy guard & Enforce transfer limits, policy constraints, and high-level admissibility & Policy-pattern checks \\
+Customer service & Execute customer-facing account, balance, transaction, and transfer actions after approvals & Account and transfer tools \\
+Risk assessment & Assign risk level and score for customers, transfers, and portfolios & Risk and fraud signals \\
+Compliance & Check KYC, AML, sanctions, and regulatory constraints & Compliance and document tools \\
+Fraud detection & Detect suspicious transfers, account behavior, and fraud risk & Fraud, and document tools \\
+Financial analyst & Analyze securities, prices, and market context & Web search tools \\
+Portfolio manager & Inspect holdings, allocations, and portfolio-level recommendations & Portfolio, and document tools \\
+Decision engine & Deterministic final gate over specialist outputs and veto flags & Policy-pattern check \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+Table~\ref{tab:roles} summarizes the seven specialist agents and the final decision engine used in the evaluated finance workflow. The architecture is intentionally role-decomposed: policy, risk, fraud, compliance, financial analysis, portfolio management, and customer-service responsibilities are handled by separate components before a final decision is issued. This design makes the system interpretable, but it also creates the possibility that a small local error in one component can propagate through the router and become accepted as evidence by later components.
+
+For security-sensitive transfer requests, the router follows a fixed pre-check chain. A transfer must first pass policy, risk, fraud, and compliance checks before the decision engine can approve it. Customer service executes the action only after approval. For portfolio or market-analysis requests, the router invokes the financial analyst, risk agent, compliance agent, portfolio manager, and decision engine as needed. These mandatory chains are important for evaluation because they define which specialists should have observed the task before a final decision or side effect occurs.
+
+\subsection{Per-scenario results}
+\label{app:per-scenerio-results}
+
+Tables~\ref{tab:type-2},~\ref{tab:type-3},~\ref{tab:type-4}  provide compact per-scenario views for vulnerability types whose detailed rows are internally consistent with the aggregate table. The columns are the subset most useful for reproducibility and appendix inspection: ASR, safe and malicious harm, average deviation, amplification, benign utility, latency, and token cost.
+
+
+\input{Appendix_table/type-2}
+\input{Appendix_table/type-3}
+\input{Appendix_table/type-4}
+
+\subsection{Security--utility frontier}
+\label{app:frontier}
+
+\input{Main_figure/security_utility_tradeoff}
+
+
+\begin{table}[!htbp]
+\caption{Security-utility frontier summary derived from Table~\ref{tab:avg-results}. Security is $1-\ASR/100$ and utility is $\BU/100$. }
+\label{tab:frontier}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrp{0.45\linewidth}}
+\toprule
+\textbf{Type} & \textbf{Method highlighted} & \textbf{Security} & \textbf{Benign utility} & \textbf{Interpretation} \\
+\midrule
+V1 & IntegrityGuard & 0.75 & 0.67 & Highest security, but with the largest utility penalty among non-firewall defenses. \\
+V1 & ToolSafe & 0.53 & 0.93 & Practical high-utility compromise when false positives are costly. \\
+V2 & IntegrityGuard & 0.88 & 0.60 & Strongest collusion resistance; utility is the limiting factor. \\
+V2 & ToolSafe & 0.37 & 0.93 & Preserves utility but leaves many collusive attacks active. \\
+V3 & IntegrityGuard & 0.95 & 0.67 & Dominates LlamaFirewall in both security and utility for shared-context failures. \\
+V4 & IntegrityGuard & 0.92 & 0.88 & Best high-assurance temporal setting among evaluated defenses. \\
+V4 & W/o Defense & 0.40 & 1.00 & Utility upper bound but insecure; included as a frontier endpoint. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:frontier} and Figure~\ref{fig:trade-off} show that no defense is uniformly best across all dimensions. IntegrityGuard gives the strongest security in every vulnerability regime, but it often does so by blocking more benign runs. This trade-off is clearest in V1--V3: IntegrityGuard reduces ASR substantially, but benign utility drops to \(0.67\), \(0.60\), and \(0.67\), respectively. In V4, however, IntegrityGuard preserves higher benign utility (\(0.88\)) and security (\(0.92\)), suggesting that temporal inconsistencies are sometimes easier to identify once the trace evidence is complete.
+
+ToolSafe occupies a different part of the frontier. It generally preserves benign utility between \(0.91-0.96\), but it leaves a large fraction of attacks active. This makes ToolSafe attractive when false positives are expensive, but insufficient for high-assurance workflows where attack admission is the main concern. LlamaFirewall often reduces ASR more than prompt-only defense, but its utility cost is substantial in V3 and V4. Prompt sandwiching preserves utility but does not reliably reduce amplification or attack success.
+
+\begin{figure*}[!htb]
+\centering
+{
+\includegraphics[width=\linewidth]{Main_figure/Figures/radar_chart.png}
+\caption{Comparison of attack metrics across different vulnerabilities and defense strategies, with each value averaged over three scenarios (S1, S2, and S3) to provide a robust performance estimate.}
+\label{fig:radar-plot}
+}
+\end{figure*}
+
+Figure~\ref{fig:radar-plot} reports the main aggregate results over scenarios and queries for each vulnerability type. We summarize the key trends below.
+
+
+\subsection{Radar analysis of multi-metric security--utility trade-offs}
+
+Figure~\ref{fig:radar-plot} adds a complementary view to Table~\ref{tab:avg-results}. The ASR panel shows that prompt-only React-sandwich remains close to no defense for V1--V3 and is worse than no defense for V4, while IntegrityGuard and LlamaFirewall pull the ASR radius inward most strongly. The utility panel shows the cost of this security gain: no defense, React-sandwich, and ToolSafe stay near the outer utility ring, whereas LlamaFirewall drops sharply for V3 and V4 and IntegrityGuard sacrifices utility in V1--V3. V4 forms the outer envelope for $I_M$ and inner for $\HA$ across most methods. The stealth panel remains near the outer ring for most vulnerability types and methods, indicating that surviving attacks are not necessarily obvious at the surface-output level. In other words, a defense can reduce ASR while the residual successful attacks remain stealthy; trace-level consistency checks are therefore more informative than final-answer inspection alone.
+
+\subsection{Tool usage}
+\label{app:cost}
+
+\begin{figure*}[!htb]
+\centering
+{
+\includegraphics[width=\linewidth]{Appendix_figure/grouped_bar_toolcalls.png}
+\caption{Tool usage across methods and scenarios for each vulnerability type. Each subplot corresponds to a different vulnerability type (V1–V4). The x-axis denotes the evaluation scenarios (S1–S3), and the bars represent different defense methods. The y-axis shows the number of tool calls. Across vulnerabilities, we observe that methods exhibit distinct tool usage patterns, with some defenses (e.g., React-Sandwich and ToolSafe) consistently invoking more tools, while others (e.g., LlamaFirewall and IntegrityGuard) demonstrate reduced or more variable usage depending on the scenario. This highlights the trade-off between defensive strategy and tool invocation behavior under different vulnerability conditions.}
+\label{fig:toolcalled}
+}
+\end{figure*}
+
+Figure~\ref{fig:toolcalled} provides an additional operational view by plotting tool-call counts across methods and scenarios. The pattern is not monotonic. In some scenarios, blocking methods reduce tool calls because execution terminates early. In other scenarios, guards increase tool calls or keep tool use high because the system performs additional checks before reaching a decision. V3 has much lower absolute tool-call counts than V1 and V2, but the relative variation across defenses remains large. This reinforces that operational cost is not simply a property of the defense alone; it depends on the vulnerability type, the scenario, and where in the trace the attack becomes visible.
+
+\subsection{Example trace interpretation}
+The interaction illustrates why trace-level evaluation is necessary. A risk agent first observes evidence indicating that the customer has medium risk, but the agent response reports low risk. Later, the compliance agent changes a KYC expiration date in its summary. Finally, the customer-service agent executes the transfer to a different account than the account requested by the user, while the final user-visible response still claims that the transfer was sent to the requested account. This interaction contains multiple small or locally plausible deviations: risk downgrading, compliance-field alteration, wrong-destination execution, and output masking. Any one of these deviations could be missed if evaluation considered only the final answer or only a single tool call. The full trace exposes the local-to-global chain: misleading specialist summaries lead to approval, approval enables execution, and the final response masks the wrong-entity side effect.
+
+\input{Appendix_table/appendix_interation}
+
+
+\subsection{Prompts}
+\label{app:prompts}
+\input{Appendix_figure/prompts}

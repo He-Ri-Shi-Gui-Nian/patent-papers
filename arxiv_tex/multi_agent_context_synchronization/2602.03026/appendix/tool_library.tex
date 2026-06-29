@@ -1,0 +1,341 @@
+\newpage
+\section{Tool Library and Adaptive Selection}
+\label{appx:tool_library}
+
+This appendix provides implementation details for the tool library $\mathcal{T}$ introduced in Section~\ref{sec:execution_optimization}. We describe the unified invocation interface, fundamental building blocks, task-specific tool architectures, and the adaptive routing mechanism. In particular, we clarify (i) the \emph{candidate chain space} considered by the router, (ii) the \emph{search/selection procedure} at inference, and (iii) the \emph{training objective} used for learning the routing policy, so that the tool-driven execution can be reproduced and audited.
+
+%==============================================================================
+\subsection{Unified Tool Interface}
+\label{appx:unified_interface}
+
+All tools in MAS4TS expose a standardized invocation interface compatible with the routing policy $\pi_{\Theta}$ defined in the main text. 
+%The tool chain is \emph{not} fixed but dynamically composed based on routing confidence:
+% \begin{lstlisting}[language=Python, basicstyle=\small\ttfamily]
+% # Adaptive tool invocation
+% response = tool_router.call(
+%     task="forecasting",
+%     context={
+%         "data": x_enc,           # Input sequence
+%         "priors": priors,        # Structured priors P
+%         "memory": shared_memory  # Shared memory M
+%     }
+%     # Returns: (selected_chain, confidence)
+%     # e.g., ["RevIN", "PatchEmbed", "Transformer", "Head"], 0.82
+% )
+% \end{lstlisting}
+The router evaluates candidate tool chains and returns the highest-confidence selection. For instance, given strong periodicity signals, it may select \texttt{[TimesBlock, FFT]} over \texttt{[PatchEmbed, Transformer]}; given sparse anchors, it may prepend \texttt{[ODE\_Reconstruct]} to the chain.
+
+
+\paragraph{Semantic-Adaptive Routing.}
+The router maintains a learnable policy network $g_{\psi}$ that scores each candidate tool chain based on three inputs: the task type $\tau$, structured priors $\mathcal{P}$ extracted by reasoning agents (e.g., detected trends, anchor density, periodicity strength), and a compressed summary of the shared memory state $\mathbf{M}$. %At inference, the router computes a confidence score for each registered chain and selects the one with maximum confidence. When the top confidence falls below a threshold (empirically 0.6), the system triggers a fallback to a default chain or combines multiple high-scoring chains via ensemble weighting, ensuring robust selection under ambiguous inputs.
+
+\textbf{Candidate chain space.}
+For each task $\tau$, we maintain a registry $\mathcal{C}_\tau=\{\mathsf{Chain}_1,\ldots,\mathsf{Chain}_{|\mathcal{C}_\tau|}\}$ of candidate tool chains.
+Each chain is a short sequence of tool \emph{modules} selected from the task-specific tool set (Sections~\ref{appx:forecasting_tools}--\ref{appx:anomaly_tools}) and a small set of shared preprocess/postprocess operators (e.g., normalization and masking).
+To keep routing efficient and avoid combinatorial explosion, we constrain the chain length to a small integer range:
+\begin{equation}
+K \in [K_{\min}, K_{\max}],
+\end{equation}
+with $K_{\min}=1$ and $K_{\max}=3$ in our experiments.\footnote{The bounds are chosen to cover common patterns such as ``normalize $\rightarrow$ backbone $\rightarrow$ head'' while allowing one or two optional modules (e.g., decomposition, ODE reconstruction).}
+Within a task, we \emph{do not} enumerate all possible compositions; instead, $\mathcal{C}_\tau$ consists of a curated set of valid, numerically stable chains that respect module I/O schemas (Section~\ref{appx:tool_chaining}).
+
+\textbf{Search and selection at inference.}
+Given an input context $(\mathbf{X},\mathcal{P},\mathbf{M})$ and a task $\tau$, the router computes a score vector over candidate chains:
+\begin{equation}
+\mathbf{s} = g_{\psi}\big(\tau,\mathcal{P},\text{Pool}(\mathbf{M})\big)\in\mathbb{R}^{|\mathcal{C}_\tau|},
+\end{equation}
+followed by a softmax to obtain $\pi_{\Theta}(\mathsf{Chain}_i \mid \tau,\mathcal{P},\mathbf{M})$ (consistent with Eq.~(9) in the main text).
+We then select either (i) the top-1 chain (greedy) or (ii) a small top-$k$ set for ensembling:
+\begin{equation}
+\mathcal{I}_k = \text{TopK}(\mathbf{s},k), \qquad k\in\{1,2,3\}.
+\end{equation}
+Unless otherwise stated, we use greedy top-1 selection when the top confidence is above the threshold (0.6) and switch to top-$k$ ensembling when it is below (Appendix~\ref{appx:tool_chaining}).
+
+% \textbf{Routing confidence and fallback.}
+% We define the routing confidence as the maximum softmax probability
+% \begin{equation}
+% c = \max_i \ \pi_{\Theta}(\mathsf{Chain}_i \mid \tau,\mathcal{P},\mathbf{M}).
+% \end{equation}
+% If $c < 0.6$ (empirically), the system triggers a fallback to a default chain (Table~\ref{tab:default_chains}) or combines multiple high-scoring chains via ensemble weighting (Eq.~(22) in the appendix).
+% This mechanism improves robustness under ambiguous inputs and out-of-distribution regimes, while keeping the default path deterministic and efficient.
+
+% \textbf{Training of the routing policy.}
+% The router is trained end-to-end together with other coordination-critical components (Section~\ref{sec:execution_optimization}).
+% We supervise routing \emph{indirectly} via the downstream task loss: for each training sample, we execute the selected chain to obtain $\hat{\mathbf{Y}}$ and backpropagate the task loss through $g_\psi$ and the differentiable tools in the chain.
+% To stabilize routing, we add a light regularization term encouraging confident yet non-degenerate selections:
+% \begin{equation}
+% \mathcal{L}_{\text{route}} = \mathcal{L}_{\text{task}} + \lambda_{\text{ent}}\cdot \mathcal{H}(\pi_{\Theta}) + \lambda_{\text{len}}\cdot K,
+% \end{equation}
+% where $\mathcal{H}(\cdot)$ is the entropy over $\mathcal{C}_\tau$ and $K$ is the selected chain length (penalizing unnecessarily long chains).
+% In practice, $\lambda_{\text{ent}}$ and $\lambda_{\text{len}}$ are small constants.\footnote{We keep the regularization weak so that routing is primarily driven by task performance rather than heuristics.}
+% This objective makes the selection rule explicit and encourages parsimonious tool usage.
+
+% If the above regularization is not used in your actual implementation, please uncomment the following and comment out the paragraph above.
+% \paragraph{Training of the routing policy.}
+% The router is trained end-to-end together with other coordination-critical components (Section~\ref{sec:execution_optimization}).
+% We supervise routing indirectly via the downstream task loss by executing the selected chain and backpropagating through the routing network and differentiable tools.
+% % NOTE: The entropy/length regularization described in earlier drafts is not enabled in our current implementation.
+
+
+%==============================================================================
+\subsection{Fundamental Building Blocks}
+\label{appx:component_taxonomy}
+
+Before describing task-specific tools, we introduce the fundamental components that compose our tool library. These modules are shared across tasks and can be combined in different configurations. Here are some of the key ingredients, not all of them. And we will updated the library in the future.
+
+\subsubsection{Patch Embedding}
+\label{appx:embedding}
+The patch embedding module converts continuous time series into discrete tokens for transformer-based processing:
+\begin{equation}
+    \mathbf{P} = \text{Linear}(\text{Unfold}(\text{Pad}(\mathbf{X}))) + \mathbf{E}_{pos},
+\end{equation}
+where $\text{Unfold}(\cdot)$ extracts overlapping patches with length $p$ and stride $s$, and $\mathbf{E}_{pos}$ denotes learnable positional embeddings. Default hyperparameters are \texttt{patch\_len}$=16$, \texttt{stride}$=8$, and $d=64$. This module captures local semantic patterns that point-wise tokenization cannot represent, significantly improving temporal pattern learning.
+
+\subsubsection{Multi-Head Self-Attention}
+\label{appx:mhsa}
+Our attention mechanism follows the standard transformer formulation:
+\begin{equation}
+    \text{Attention}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \text{softmax}\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d_k}}\right)\mathbf{V},
+\end{equation}
+with multi-head extension that projects queries, keys, and values into $h$ subspaces, enabling the model to attend to information from different representation spaces.
+
+\subsubsection{TimesBlock}
+\label{appx:timesblock}
+For tasks requiring periodic pattern capture (e.g., classification), we employ a specialized block that: (i) detects top-$k$ periods using FFT amplitude analysis, (ii) reshapes the 1D series to 2D representation based on detected periods, (iii) applies 2D Inception-style convolution with multiple kernel sizes, and (iv) aggregates results with learned period weights:
+\begin{equation}
+    \text{Period}(\mathbf{X}) = \text{FFT}^{-1}\left(\text{TopK}\left(|\text{FFT}(\mathbf{X})|, k\right)\right).
+\end{equation}
+
+\subsubsection{Normalization Strategies}
+\label{appx:normalization}
+We provide multiple normalization strategies optimized for non-stationary time series:
+\begin{itemize}[leftmargin=*, itemsep=1pt]
+    \item \textbf{RevIN} (Reversible Instance Normalization): Normalizes each instance independently and maintains statistics for denormalization, critical for preserving the original scale in forecasting.
+    \item \textbf{Channel-Independent Normalization}: Normalizes each feature channel separately to avoid spurious cross-channel correlations.
+    \item \textbf{Robust Normalization}: Uses percentiles instead of mean/std, providing resistance to outliers in anomaly detection.
+\end{itemize}
+
+\subsubsection{Projection Heads}
+\label{appx:projection_heads}
+Task-specific projection heads map latent representations to output space:
+\begin{itemize}[leftmargin=*, itemsep=1pt]
+    \item \textbf{FlattenHead}: Flattens patch features and projects to output dimension, supporting both channel-independent and shared modes.
+    \item \textbf{MLPHead}: Two-layer MLP with configurable activation (ReLU, GELU).
+    \item \textbf{ResidualHead}: Includes skip connections for stable gradient flow.
+\end{itemize}
+
+%==============================================================================
+\subsection{Forecasting Tools}
+\label{appx:forecasting_tools}
+
+Table~\ref{tab:forecasting_tools} summarizes available forecasting tools. The adaptive router selects among these based on data characteristics inferred from priors $\mathcal{P}$.
+
+\begin{table}[h]
+\centering
+\caption{Forecasting Tools Overview}
+\label{tab:forecasting_tools}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llll}
+\toprule
+\textbf{Tool} & \textbf{Architecture} & \textbf{Key Components} & \textbf{Selection Condition} \\
+\midrule
+\texttt{ForecastingTool} & Patch-Transformer & PatchEmbed + Encoder + FlattenHead & Default; general-purpose \\
+\texttt{DecompositionTool} & Trend-Seasonal & MovingAverage + Projection & Strong trend detected \\
+\texttt{NBeatsModel} & Residual Stacks & Basis Expansion + Doubly Residual & Interpretability required \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsubsection{Patch-Transformer Forecasting Tool}
+This is the primary forecasting tool, combining patch embedding with transformer encoding:
+
+\begin{algorithm}[H]
+\caption{Patch-Transformer Forecasting}
+\label{alg:patch_forecast}
+\begin{algorithmic}[1]
+\REQUIRE Input $\mathbf{X} \in \mathbb{R}^{B \times L \times D}$, prediction horizon $H$
+\STATE $\mathbf{X}_{norm}, \mu, \sigma \leftarrow \text{RevIN}(\mathbf{X})$ \COMMENT{Instance normalization}
+\STATE $\mathbf{P} \leftarrow \text{PatchEmbed}(\mathbf{X}_{norm})$ \COMMENT{$\mathbb{R}^{B \cdot D \times N_p \times d}$}
+\STATE $\mathbf{H} \leftarrow \text{TransformerEncoder}(\mathbf{P})$ \COMMENT{Multi-layer attention + FFN}
+\STATE $\mathbf{Y}_{norm} \leftarrow \text{FlattenHead}(\mathbf{H})$ \COMMENT{Channel-independent projection}
+\STATE $\mathbf{Y} \leftarrow \text{RevIN}^{-1}(\mathbf{Y}_{norm}, \mu, \sigma)$ \COMMENT{Denormalize}
+\RETURN $\mathbf{Y} \in \mathbb{R}^{B \times H \times D}$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Channel Independence}: Each feature channel is processed independently, which improves robustness when channels have heterogeneous statistical properties and enables efficient parallel computation.
+
+\subsubsection{Decomposition Tool}
+When strong trend is detected (slope $> 0.01$), the router prepends decomposition:
+\begin{equation}
+    \mathbf{X}_{\text{trend}} = \text{AvgPool}_{k}(\mathbf{X}), \quad \mathbf{X}_{\text{seasonal}} = \mathbf{X} - \mathbf{X}_{\text{trend}},
+\end{equation}
+where $k$ is the moving average kernel size. The seasonal component is then processed by the main forecasting tool.
+
+%==============================================================================
+\subsection{Classification Tools}
+\label{appx:classification_tools}
+
+\begin{table}[h]
+\centering
+\caption{Classification Tools Overview}
+\label{tab:classification_tools}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llll}
+\toprule
+\textbf{Tool} & \textbf{Architecture} & \textbf{Key Components} & \textbf{Selection Condition} \\
+\midrule
+\texttt{ClassificationTool} & TimesBlock-based & 1D Conv + FFT Period + 2D Conv & Default; periodic patterns \\
+\texttt{TemporalConvNet} & Dilated Convolutions & Multi-scale 1D Conv + GlobalPool & Short sequences ($L \leq 32$) \\
+\texttt{InceptionTime} & Multi-branch CNN & Inception Modules + Residual & Multi-scale features needed \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsubsection{TimesBlock Classification Tool}
+The primary classification tool leverages FFT-based period discovery:
+\begin{enumerate}[leftmargin=*, itemsep=1pt]
+    \item \textbf{Data Embedding}: 1D convolution (not linear) to capture local patterns, combined with positional encoding.
+    \item \textbf{TimesBlock Stack}: Multiple blocks that detect periods via FFT, reshape to 2D, apply Inception-style 2D convolution, then reshape back.
+    \item \textbf{Padding Mask}: Critical for variable-length sequences---zeros out padding before flattening.
+    \item \textbf{Full Sequence Projection}: Flattens $[\text{seq\_len} \times d]$ and projects to class logits.
+\end{enumerate}
+
+\subsubsection{Temporal Convolutional Network Tool}
+For short sequences, the router selects TCN with dilated causal convolutions:
+\begin{equation}
+    (\mathbf{X} *_r f)(t) = \sum_{i=0}^{k-1} f(i) \cdot \mathbf{X}_{t - r \cdot i},
+\end{equation}
+where $r$ is the dilation factor that increases exponentially with depth, enabling efficient long-range dependency capture with $O(\log L)$ layers.
+
+%==============================================================================
+\subsection{Imputation Tools}
+\label{appx:imputation_tools}
+
+\begin{table}[h]
+\centering
+\caption{Imputation Tools Overview}
+\label{tab:imputation_tools}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llll}
+\toprule
+\textbf{Tool} & \textbf{Architecture} & \textbf{Key Components} & \textbf{Selection Condition} \\
+\midrule
+\texttt{ImputationTool} & Patch-Transformer & PatchEmbed + Encoder + Reconstruction & Default; general-purpose \\
+\texttt{SAITS} & Self-Attention & Diagonal Masked Attention + ORT & Sparse missing patterns \\
+\texttt{BRITS} & Bidirectional RNN & Forward + Backward GRU + Decay & Sequential missing blocks \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsubsection{Patch-Transformer Imputation Tool}
+Adapts the patch-based architecture for reconstruction:
+
+\begin{algorithm}[H]
+\caption{Patch-Transformer Imputation}
+\label{alg:patch_impute}
+\begin{algorithmic}[1]
+\REQUIRE Input $\mathbf{X}$ with missing values, binary mask $\mathbf{M}$
+\STATE $\mathbf{X}_{masked} \leftarrow \mathbf{X} \odot (1 - \mathbf{M})$ \COMMENT{Zero out missing positions}
+\STATE $\mathbf{X}_{norm}, \mu, \sigma \leftarrow \text{Normalize}(\mathbf{X}_{masked})$
+\STATE $\mathbf{P} \leftarrow \text{PatchEmbed}(\mathbf{X}_{norm})$
+\STATE $\mathbf{H} \leftarrow \text{TransformerEncoder}(\mathbf{P})$
+\STATE $\hat{\mathbf{X}}_{norm} \leftarrow \text{ReconstructionHead}(\mathbf{H})$ \COMMENT{Same length as input}
+\STATE $\hat{\mathbf{X}} \leftarrow \text{Denormalize}(\hat{\mathbf{X}}_{norm}, \mu, \sigma)$
+\STATE $\mathbf{Y} \leftarrow \mathbf{X} \odot (1 - \mathbf{M}) + \hat{\mathbf{X}} \odot \mathbf{M}$ \COMMENT{Preserve known values}
+\RETURN $\mathbf{Y}$
+\end{algorithmic}
+\end{algorithm}
+
+%==============================================================================
+\subsection{Anomaly Detection Tools}
+\label{appx:anomaly_tools}
+
+\begin{table}[h]
+\centering
+\caption{Anomaly Detection Tools Overview}
+\label{tab:anomaly_tools}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llll}
+\toprule
+\textbf{Tool} & \textbf{Architecture} & \textbf{Key Components} & \textbf{Selection Condition} \\
+\midrule
+\texttt{AnomalyDetectionTool} & Multi-scale Patch & Multi-scale PatchEmbed + Reconstruction & Default; general anomalies \\
+\texttt{VAEAnomalyDetector} & VAE & Encoder + Reparameterization + Decoder & Point anomaly focus \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsubsection{Multi-Scale Anomaly Detection Tool}
+The primary anomaly detection tool uses multi-scale reconstruction:
+\begin{enumerate}[leftmargin=*, itemsep=1pt]
+    \item \textbf{Instance Normalization}: Uses learnable affine parameters to preserve relative anomaly magnitude (unlike RevIN which removes it).
+    \item \textbf{Multi-Scale Processing}: Fine scale ($p=4$) for point anomalies; coarse scale ($p=16$) for segment anomalies.
+    \item \textbf{Multi-Scale Fusion}: Concatenates reconstructions from all scales and fuses through MLP.
+\end{enumerate}
+
+The anomaly score combines reconstruction error with attention-based weighting:
+\begin{equation}
+    s_t = \|\mathbf{x}_t - \hat{\mathbf{x}}_t\|_2^2 \cdot \alpha_t,
+\end{equation}
+where $\alpha_t$ is the attention weight highlighting suspicious regions.
+
+\subsubsection{VAE Anomaly Detector}
+Probabilistic detection through reconstruction likelihood:
+\begin{align}
+    \mathbf{z} &\sim q_\phi(\mathbf{z}|\mathbf{x}) = \mathcal{N}(\mu_\phi(\mathbf{x}), \sigma_\phi^2(\mathbf{x})), \\
+    s &= \|\mathbf{x} - \hat{\mathbf{x}}\|_2^2 + \beta \cdot D_{KL}(q_\phi \| p),
+\end{align}
+where the anomaly score combines reconstruction error and KL divergence.
+
+%==============================================================================
+\subsection{Tool Chaining}
+\label{appx:tool_chaining}
+
+As described in Section~\ref{sec:execution_optimization}, MAS4TS composes multiple tools into chains where each tool's output serves as input to the next. A tool chain is formally defined as:
+\begin{equation}
+\hat{\mathbf{Y}} = \mathcal{T}_{m_K} \circ \mathcal{T}_{m_{K-1}} \circ \cdots \circ \mathcal{T}_{m_1}(\mathbf{Z}),
+\end{equation}
+where $\circ$ denotes functional composition and $\{m_1, \ldots, m_K\}$ are tool indices selected by routing policy $\pi_{\Theta}$.
+
+\paragraph{I/O schema and validity.}
+Each tool $\mathcal{T}_m$ exposes (i) an input schema (tensor shape, mask fields, and optional auxiliary context) and (ii) an output schema compatible with the next tool in the chain.
+The tool registry enforces schema consistency at composition time; invalid compositions are excluded from $\mathcal{C}_\tau$ (Section~\ref{appx:unified_interface}).
+This design makes tool chains auditable and prevents silent shape/type mismatches during routing.
+
+\paragraph{Default Chains.}
+Table~\ref{tab:default_chains} shows the default tool chains when routing confidence exceeds 0.6. Brackets indicate conditionally included components based on priors $\mathcal{P}$.
+
+\begin{table}[h]
+\centering
+\caption{Default Tool Chains by Task}
+\label{tab:default_chains}
+\begin{tabular}{ll}
+\toprule
+\textbf{Task} & \textbf{Tool Chain} \\
+\midrule
+Forecasting & RevIN $\rightarrow$ [Decomposition] $\rightarrow$ PatchTransformer $\rightarrow$ RevIN$^{-1}$ \\
+Classification & Normalization $\rightarrow$ TimesBlock $\rightarrow$ GlobalPool $\rightarrow$ ClassificationHead \\
+Imputation & MaskEncode $\rightarrow$ Normalization $\rightarrow$ PatchTransformer $\rightarrow$ Reconstruction \\
+Anomaly Detection & InstanceNorm $\rightarrow$ MultiScaleEncoder $\rightarrow$ Reconstruction $\rightarrow$ ScoreCompute \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Ensemble Chaining.}
+When routing confidence is low ($< 0.6$), multiple tool chains can be ensembled:
+\begin{equation}
+\hat{\mathbf{Y}} = \sum_{i=1}^{K} w_i \cdot \text{Chain}_i(\mathbf{Z}), \quad w_i = \frac{\exp(s_i)}{\sum_j \exp(s_j)},
+\end{equation}
+where $s_i$ is the confidence score computed by $g_{\psi}$ for chain $i$. This provides robustness under ambiguous or out-of-distribution inputs.
+
+\paragraph{Practical note on determinism.}
+To reduce variance during evaluation, we disable stochastic sampling over chains and use deterministic top-1 selection when $c \ge 0.6$, and deterministic top-$k$ ensembling otherwise (Section~\ref{appx:unified_interface}).
+This makes routing behavior stable across runs, given a fixed random seed.
+
+
+\newpage

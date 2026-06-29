@@ -1,0 +1,208 @@
+\appendix
+\section{Appendix}
+\subsection{Evaluation Task Generation}
+To ensure diversity and rigor, we constructed a multi-stage pipeline to generate tasks requiring multi-agent collaboration.
+
+\subsubsection{Stage 1: Single-Agent Question Generation}
+We first generated domain-specific questions tailored to two classes of agents:
+\begin{itemize}
+    \item \textbf{RAG Agents}: Retrieval-augmented models grounded in curated domain datasets (e.g., biology, finance, medicine)~\cite{huggingface}.
+    \item \textbf{Conversational Agents}: Prompt-based agents covering domains such as career guidance, fitness, or literature.
+\end{itemize}
+Each agent was tasked with producing 20--22 realistic questions, paired with a \textit{Model Context Protocol} (MCP) capturing intent, tools, and plausible follow-ups. All outputs were archived in structured JSON format.
+
+\subsubsection{Stage 2: Multi-Agent Task Synthesis}
+Single-agent questions were combined into multi-agent tasks by sampling 4--6 diverse agents and synthesizing 15 composite tasks per batch. Each task was required to:
+\begin{itemize}
+    \item Necessitate distinct, non-redundant contributions from each agent,
+    \item Require multi-layered reasoning (planning, analysis, execution),
+    \item Include a merged MCP integrating the intents, tools, and follow-ups of all contributing agents.
+\end{itemize}
+Examples include generating healthcare policy reports using medical, political, and geographic agents, or constructing recovery plans with biology, fitness, finance, and scheduling agents.
+
+\subsubsection{Stage 3: Iterative Sampling}
+This process was repeated until the pool of questions was exhausted, yielding a benchmark suite explicitly designed to enforce distributed reasoning. Each task was unsolvable by any single agent, thereby ensuring collaborative evaluation.
+
+
+\subsection{Extended Metric Definitions}
+This section provides full definitions of the evaluation metrics summarized in Section~\ref{sec:exp}.
+
+\subsubsection{Performance}
+\begin{itemize}
+    \item \textbf{Task Success Rate:} Percentage of tasks achieving a final answer score $\geq 85$ as judged by an LLM.
+    \item \textbf{Agents Attempted:} Average number of agents invoked before reaching a solution.
+\end{itemize}
+
+\subsubsection{Specialization (H2)}
+\begin{itemize}
+    \item \textbf{Belief Score Evolution:} Temporal trajectories of $b_i$ for domain experts (e.g., Math agent).
+    \item \textbf{Rounds to Expert Selection:} Average delegation steps before the correct expert is chosen for domain-specific tasks, expected to decline as belief updates accumulate.
+\end{itemize}
+
+\subsubsection{Adaptability (H3)}
+\begin{itemize}
+    \item \textbf{Agent Impairment Test:} Across 100 tasks, one agent (e.g., Biology) operates normally for the first 50, then is forced to fail for the next 50.
+    \item \textbf{Belief Score Decline:} Comparison of belief trajectories pre- and post-impairment.
+    \item \textbf{Contribution Frequency:} Task participation counts across both phases.
+    \item \textbf{System Output Score:} Average final answer score across both segments, reflecting resilience to impaired agents.
+\end{itemize}
+
+\subsubsection{Composition Efficiency (H1)}
+\begin{itemize}
+    \item \textbf{Time-to-first-success:} Number of delegation rounds required to produce the first judged-successful candidate.
+    \item \textbf{Marginal contribution efficiency:} Improvement in output score per token consumed by each contributing agent.
+\end{itemize}
+
+ \subsection{Implementation Details}
+
+  \subsubsection{Framework Architecture}
+  The \method\ framework is implemented as a modular pipeline consisting of six core components: \texttt{WorkflowManager}, \texttt{BayesianDelegator}, \texttt{SelfReflectionStep}, \texttt{InfoMergeStep}, \texttt{MemoryUpdateStep}, and \texttt{RecursiveRouting}. The
+  \texttt{WorkflowManager} serves as the main orchestrator, coordinating agent delegation, reflection, memory updates, and recursive re-routing according to Algorithm~\ref{alg:method}.
+
+  \paragraph{Core Classes and Data Structures.}
+  The central \texttt{Task} class maintains task state including query text, agent outputs, reflection scores, memory updates, and completion status. Agent performance is tracked through belief parameters $(\alpha_i, \beta_i)$, cooldown counters, and historical success rates. The
+  framework supports both Bayesian delegation via Thompson sampling and traditional LLM-based ranking through a configurable \texttt{use\_bayesian} parameter.
+
+  \subsubsection{Bayesian Delegation Implementation}
+  Thompson sampling is implemented in the \texttt{BayesianDelegator} class with the following key features:
+  \begin{itemize}[leftmargin=1.4em]
+      \item \textbf{Agent Selection}: For each agent $i$, sample $\hat{\theta}_i \sim \mathrm{Beta}(\alpha_i, \beta_i)$ and select $i^* = \arg\max_i \hat{\theta}_i$ (subject to cooldown constraints).
+      \item \textbf{Binary Updates}: After judging, update $\alpha_{i^*} \leftarrow \alpha_{i^*} + y$ and $\beta_{i^*} \leftarrow \beta_{i^*} + (1-y)$ where $y \in \{0,1\}$ indicates success/failure.
+      \item \textbf{Cooldown Mechanism}: Agents are temporarily excluded for $r$ rounds after selection to encourage exploration. If all agents are cooling, the framework forces exploration by selecting the agent with the smallest remaining cooldown.
+      \item \textbf{Belief Persistence}: Agent beliefs are stored in JSON format and loaded across sessions to maintain long-term memory.
+  \end{itemize}
+
+  \subsubsection{Memory-Aware Prior Initialization}
+  Historical performance data is used to initialize belief priors via similarity-weighted aggregation:
+  Let $s_m = K(\mathrm{embed}(q),\, \mathrm{embed}(q_m)) \cdot \exp(-\lambda \Delta t_m)$. Then:
+  \begin{align}
+  \alpha_i &\leftarrow \alpha_0 + \textstyle\sum_{m \in \mathcal{M}} s_m \cdot y_m, \\
+  \beta_i  &\leftarrow \beta_0  + \textstyle\sum_{m \in \mathcal{M}} s_m \cdot (1 - y_m),
+  \end{align}
+  where $K(\cdot, \cdot)$ is cosine similarity over sentence embeddings, $\Delta t_m$ is task recency, and $\lambda = 0.1$ controls temporal decay. This initialization reduces cold-start inefficiency by biasing selection toward agents with historically strong performance on similar
+  tasks.
+
+  \subsubsection{Multi-Layered Judge System}
+  The \texttt{SelfReflectionStep} implements a four-stage evaluation pipeline:
+  \begin{enumerate}[leftmargin=1.4em]
+      \item \textbf{Agent Output Scoring}: Individual agent responses are scored on a 0-100 scale using task-specific rubrics.
+      \item \textbf{Binary Success Evaluation}: A calibrated LLM judge determines whether the merged output satisfies task requirements, yielding $E \in \{\text{\textsc{success}}, \text{\textsc{failure}}\}$.
+      \item \textbf{Completeness Assessment}: The judge evaluates whether additional agent input would improve the response quality.
+      \item \textbf{Agent Refinement}: Underperforming agent outputs are iteratively improved based on judge critiques.
+  \end{enumerate}
+  Judge calibration is performed on a held-out validation set of 200 labeled examples to estimate false positive/negative rates and set decision thresholds.
+
+  \subsubsection{Agent Zoo Specification}
+  The experimental agent population consists of two classes:
+  \begin{itemize}[leftmargin=1.4em]
+      \item \textbf{RAG Agents}: Domain-specific agents (\texttt{ExpertAgent}) with retrieval augmentation over curated knowledge bases. Domains include mathematics, law, finance, biology, medicine, and electrical engineering. Each agent loads domain-specific datasets and uses
+  specialized prompt templates with retrieval-grounded context.
+      \item \textbf{Conversational Agents}: LLM-based agents (\texttt{ConversationalAgent}) without retrieval, covering fitness, literature, technology, geography, storytelling, politics, academics, career guidance, trivia, and daily planning. Agent configurations are specified in YAML
+   format with domain-specific constraints and prompt templates.
+  \end{itemize}
+  All agents are initialized with uniform priors $\alpha_0 = \beta_0 = 1$ unless memory-aware initialization is enabled.
+
+  \subsubsection{Information Merging and Trust Weighting}
+  The \texttt{InfoMergeStep} aggregates agent responses using trust-weighted selection:
+  \begin{enumerate}[leftmargin=1.4em]
+      \item Compute trust scores $t_i = \alpha_i / (\alpha_i + \beta_i)$ for each contributing agent.
+      \item Filter responses from agents marked as "bad" (belief score below threshold).
+      \item Merge remaining responses using LLM-based synthesis weighted by trust scores.
+      \item Validate merged output through evidence-grounding and consistency checks.
+  \end{enumerate}
+
+  \subsubsection{Experimental Infrastructure}
+  The evaluation framework (\texttt{run\_belief\_experiment.py}) supports:
+  \begin{itemize}[leftmargin=1.4em]
+      \item \textbf{Configurable Agent Selection}: Systematic sampling from the agent zoo with controllable population size.
+      \item \textbf{Question Processing Pipeline}: Batch processing with configurable delays and timeout handling.
+      \item \textbf{Comprehensive Logging}: Results are logged to structured JSON files including initial outputs, recursive delegation traces, final merged responses, and detailed performance metrics.
+      \item \textbf{Statistical Validation}: Built-in A/B testing, bootstrap confidence intervals, and performance benchmarking capabilities.
+  \end{itemize}
+
+  \subsubsection{Evaluation Metrics Implementation}
+  Quality assessment employs a multi-faceted scoring system:
+  \begin{itemize}[leftmargin=1.4em]
+      \item \textbf{Output Quality}: 0-100 scale scoring of initial vs. merged outputs using task-specific rubrics.
+      \item \textbf{Quality Gains}: Absolute improvement (merged - initial) and relative improvement ((merged - initial) / initial).
+      \item \textbf{Agent Contribution Tracking}: Classification of agents as "contributing" (positive impact) vs. "bad" (negative impact) based on comparative evaluation.
+      \item \textbf{Routing Statistics}: Delegation depth, agent selection frequency, and belief evolution trajectories.
+  \end{itemize}
+
+  \subsubsection{Reproducibility and Configuration}
+  All experiments are reproducible through:
+  \begin{itemize}[leftmargin=1.4em]
+      \item \textbf{Deterministic Sampling}: Fixed random seeds for Thompson sampling and LLM generation.
+      \item \textbf{Configuration Management}: YAML-based agent specifications and experimental parameters.
+      \item \textbf{Version Control}: Git-tracked experimental runs with commit hashes logged in results.
+      \item \textbf{Environment Specification}: Docker containers with fixed dependency versions and Azure OpenAI API configurations.
+  \end{itemize}
+
+  \subsubsection{Computational Requirements}
+  Typical experimental runs require:
+  \begin{itemize}[leftmargin=1.4em]
+      \item \textbf{Hardware}: 16GB RAM, 4-core CPU for coordination logic; GPU optional for local LLM inference.
+      \item \textbf{API Costs}: \$0.50-2.00 per task depending on recursion depth and agent complexity.
+      \item \textbf{Runtime}: 2-5 minutes per task with Azure OpenAI; 30-60 seconds with local models.
+      \item \textbf{Storage}: 10-50MB per 100 tasks for complete logs and belief persistence.
+  \end{itemize}
+
+  \subsection{LLM-in-the-Loop Evaluation}
+  Our pipeline uses LLMs for task generation, agent execution, and judging, which raises a potential circularity concern. We mitigate this in three ways:
+  (i)~programmatic metrics (EM, F1, unit-test pass rates) short-circuit the judge for unambiguous cases, grounding a substantial fraction of verdicts in non-LLM signals;
+  (ii)~the judge is calibrated on 200 human-labeled examples with measured FP/FN rates, so its error profile is quantified rather than assumed reliable; and
+  (iii)~agent outputs and judge verdicts are produced by independent LLM calls with no shared state, preventing self-reinforcing feedback loops.
+  The routing controller itself is purely probabilistic (Beta-Bernoulli updates) and contains no learned LLM parameters.
+  While fully human-grounded evaluation remains the gold standard, these safeguards ensure that the LLM-based components are calibrated, partially redundant with programmatic checks, and structurally decoupled.
+
+  \subsection{Proof of Theorem~\ref{thm:noisy-regret}: Regret Under Noisy Judge Feedback}
+  \label{app:noisy-regret-proof}
+
+  \paragraph{Setup.}
+  There are $N$ arms (agents) with true Bernoulli success probabilities
+  $\theta_1,\dots,\theta_N$. The judge observes each outcome through a
+  binary symmetric--like channel with false-positive rate
+  $\varepsilon_{\mathrm{FP}}$ and false-negative rate $\varepsilon_{\mathrm{FN}}$,
+  so the observed success probability of arm $i$ is
+  \[
+    \tilde{\theta}_i
+    \;=\; (1-\varepsilon_{\mathrm{FN}})\,\theta_i + \varepsilon_{\mathrm{FP}}\,(1-\theta_i)
+    \;=\; \delta\,\theta_i + \varepsilon_{\mathrm{FP}},
+  \]
+  where $\delta = 1 - \varepsilon_{\mathrm{FP}} - \varepsilon_{\mathrm{FN}} > 0$.
+
+  \begin{lemma}[Order preservation]\label{lem:order}
+  Since $\delta>0$, the map $\theta_i\mapsto\tilde{\theta}_i$ is strictly
+  increasing. Hence $\theta_{i^*}>\theta_j$ if and only if
+  $\tilde{\theta}_{i^*}>\tilde{\theta}_j$; the optimal arm is unchanged.
+  \end{lemma}
+
+  \begin{lemma}[Gap contraction]\label{lem:gap}
+  For any suboptimal arm $j$, the observed gap satisfies
+  $\tilde{\Delta}_j = \tilde{\theta}_{i^*} - \tilde{\theta}_j = \delta\,\Delta_j$,
+  where $\Delta_j = \theta_{i^*} - \theta_j$.
+  \end{lemma}
+
+  \paragraph{Main argument.}
+  The controller never sees true outcomes; it runs Thompson sampling on the
+  \emph{observed} Bernoulli problem $\{\tilde{\theta}_i\}_{i=1}^N$.
+  By Lemma~\ref{lem:order}, the optimal observed arm coincides with the truly
+  optimal arm $i^*$.
+  Applying the Bayesian regret bound of \citet{AgrawalGoyal13}
+  (Theorem~2 therein) to the observed problem yields
+  \[
+    \widetilde{R}(T)
+    \;=\; \sum_{j\neq i^*} \tilde{\Delta}_j\,\mathbb{E}[n_j(T)]
+    \;=\; O\!\bigl(\sqrt{NT\log T}\bigr).
+  \]
+  The true regret decomposes as
+  \begin{align}
+    R(T)
+    &= \sum_{t=1}^{T}\bigl(\theta_{i^*}-\theta_{I_t}\bigr)
+     = \sum_{j\neq i^*}\Delta_j\,\mathbb{E}[n_j(T)] \notag \\
+    &= \sum_{j\neq i^*}\frac{\tilde{\Delta}_j}{\delta}\,\mathbb{E}[n_j(T)]
+     = \frac{1}{\delta}\,\widetilde{R}(T)
+     = O\!\Bigl(\frac{\sqrt{NT\log T}}{\delta}\Bigr),
+  \end{align}
+  where we used Lemma~\ref{lem:gap} in the penultimate step.
+  This completes the proof.\qed

@@ -1,0 +1,179 @@
+\section{VLM Prompt Templates}
+\label{appx:prompt}
+
+This appendix documents the prompt templates used by the \textbf{Reasoner} agent for visual reasoning, as introduced in Section~\ref{subsec:visual_reasoning}. Each prompt is designed to elicit structured, task-specific outputs from Vision-Language Models that can be directly consumed by downstream numerical reasoning.
+
+\subsection{Prompt Design Principles}
+\label{appx:prompt_philosophy}
+
+Our prompts follow three key principles:
+\begin{enumerate}[leftmargin=*, itemsep=2pt]
+    \item \textbf{Structured Output}: All prompts request JSON-formatted responses with predefined schema, ensuring deterministic parsing and seamless integration with downstream modules.
+    \item \textbf{Statistical Grounding}: Input statistics (min, max, mean, std) and semantic context are provided to anchor visual reasoning in quantitative reality, reducing out-of-range hallucinations.
+    \item \textbf{Task-Specific Anchors}: Different tasks require different anchor types---forecasting anchors define future trajectory shape, anomaly anchors contrast normal vs.\ abnormal patterns, classification anchors capture discriminative signatures, and imputation anchors guide local reconstruction.
+\end{enumerate}
+
+The anchor count range \texttt{\{min\_anchors\}-\{max\_anchors\}} is user-configurable. We empirically suggest: forecasting (8--15), anomaly detection (8--12), classification (5--8), and imputation (5--7), where longer prediction horizons generally benefit from denser anchors.
+
+%==============================================================================
+\subsection{Forecasting Prompt}
+\label{appx:prompt_forecast}
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, title=System Prompt (Forecasting)]
+\small
+\texttt{You are a senior time-series forecasting expert. Analyze the time series plot and provide predictions in strict JSON format. Always include a confidence score (0.00-1.00) based on pattern consistency.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=blue!5, colframe=blue!30, title=User Prompt Template (Forecasting)]
+\small
+\texttt{Analyze this time series plot for FORECASTING task (predict \{pred\_len\} future steps).}
+
+\texttt{Input sequence: \{seq\_len\} steps (t=0 to \{seq\_len-1\}), last value=\{last\_value\}}
+
+\texttt{Historical stats: range=[\{history\_min\}, \{history\_max\}], std=\{history\_std\}}
+
+\texttt{Requirements:}
+\begin{enumerate}[leftmargin=*, itemsep=0pt]
+    \item \texttt{Output ONLY \{min\_anchors\}-\{max\_anchors\} key anchor points (peaks/valleys/inflections) for the PREDICTION WINDOW}
+    \item \texttt{Anchor types: 'start', 'peak', 'valley', 'inflection', 'end'}
+    \item \texttt{All values MUST stay within reasonable bounds}
+    \item \texttt{Confidence score reflects pattern continuity}
+\end{enumerate}
+
+\texttt{Output JSON:}
+\begin{verbatim}
+{
+  "confidence": 0.85,
+  "anchors": [
+    {"t": 96, "v": 0.342, "type": "start"},
+    {"t": 120, "v": 0.456, "type": "peak"},
+    ...
+  ]
+}
+\end{verbatim}
+\end{tcolorbox}
+
+The forecasting prompt explicitly constrains anchors to the prediction window (timesteps $t \geq L$) rather than summarizing historical patterns. The \texttt{last\_value} field ensures continuity at the forecast boundary, while \texttt{history\_std} helps calibrate reasonable fluctuation magnitudes. These anchors are subsequently fed to the Latent ODE decoder for dense trajectory reconstruction.
+
+%==============================================================================
+\subsection{Classification Prompt}
+\label{appx:prompt_classification}
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, title=System Prompt (Classification)]
+\small
+\texttt{You are a senior time-series classification expert. Analyze the time series plot and classify the sequence pattern. Provide strict JSON with confidence score.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=green!5, colframe=green!70, title=User Prompt Template (Classification)]
+\small
+\texttt{Analyze this time series plot for CLASSIFICATION (input length=\{seq\_len\}).}
+
+\texttt{Input stats: range=[\{history\_min\}, \{history\_max\}], mean=\{history\_mean\}}
+
+\texttt{Requirements:}
+\begin{enumerate}[leftmargin=*, itemsep=0pt]
+    \item \texttt{Identify the dominant pattern type (periodic, trending, stationary, etc.)}
+    \item \texttt{Key anchors: \{min\_anchors\}-\{max\_anchors\} points that define the class signature}
+    \item \texttt{Confidence score reflects pattern uniqueness}
+\end{enumerate}
+
+\texttt{Output JSON:}
+\begin{verbatim}
+{
+  "confidence": 0.78,
+  "pattern_type": "periodic",
+  "key_anchors": [
+    {"t": 12, "v": 0.89, "type": "period_peak"},
+    {"t": 36, "v": -0.45, "type": "period_valley"}
+  ]
+}
+\end{verbatim}
+\end{tcolorbox}
+
+The prompt focuses on discriminative temporal features that characterize different classes. 
+%Classification anchors are intentionally sparse, capturing signature patterns (e.g., periodic peaks/valleys) rather than exhaustive sequence description. 
+The \texttt{pattern\_type} field provides high-level semantic guidance that can be fused with learned numerical features.
+
+%==============================================================================
+\subsection{Imputation Prompt}
+\label{appx:prompt_imputation}
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, title=System Prompt (Imputation)]
+\small
+\texttt{You are a senior time-series imputation expert. Analyze the time series plot and impute MISSING VALUES in the INPUT sequence. Provide JSON with confidence score.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=yellow!5, colframe=yellow!90, title=User Prompt Template (Imputation)]
+\small
+\texttt{Analyze this time series plot for IMPUTATION (input length=\{seq\_len\}).}
+
+\texttt{Missing values: marked at positions \{missing\_positions\}}
+
+\texttt{Input stats: range=[\{history\_min\}, \{history\_max\}], mean=\{history\_mean\}}
+
+\texttt{Requirements:}
+\begin{enumerate}[leftmargin=*, itemsep=0pt]
+    \item \texttt{Impute ONLY marked missing positions}
+    \item \texttt{Specify reasoning: 'interpolation' or 'extrapolation'}
+    \item \texttt{Key anchors: \{min\_anchors\}-\{max\_anchors\} critical points guiding imputation}
+\end{enumerate}
+
+\texttt{Output JSON:}
+\begin{verbatim}
+{
+  "confidence": 0.88,
+  "imputed_values": [
+    {"t": 25, "v": 0.34, "reason": "interpolation"},
+  ],
+  "key_anchors": [
+    {"t": 20, "v": 0.28, "type": "observed"},
+  ]
+}
+\end{verbatim}
+\end{tcolorbox}
+
+The imputation prompt explicitly marks missing positions to focus the VLM's attention on relevant gaps. The \texttt{reason} field distinguishes interpolation (bounded by observations on both sides) from extrapolation (extending from one-sided context), informing the Latent ODE about reconstruction confidence. Key anchors at observed boundaries provide hard constraints that ensure consistency with known data points.
+
+\subsection{Anomaly Detection Prompt}
+\label{appx:prompt_anomaly}
+
+\begin{tcolorbox}[colback=gray!5, colframe=gray!50, title=System Prompt (Anomaly Detection)]
+\small
+\texttt{You are a senior time-series anomaly detection expert. Analyze the time series plot and identify anomalous time steps in the INPUT sequence. Provide strict JSON with confidence scores.}
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=red!5, colframe=red!30, title=User Prompt Template (Anomaly Detection)]
+\small
+\texttt{Analyze this time series plot for ANOMALY DETECTION (input length=\{seq\_len\}).}
+
+\texttt{Input stats: range=[\{history\_min\}, \{history\_max\}], mean=\{history\_mean\}, std=\{history\_std\}}
+
+\texttt{Requirements:}
+\begin{enumerate}[leftmargin=*, itemsep=0pt]
+    \item \texttt{Focus ONLY on INPUT SEQUENCE (t=0 to \{seq\_len-1\})}
+    \item \texttt{Anomaly scores: 0.0-1.0 (higher = more anomalous)}
+    \item \texttt{For consecutive anomalies, report ONLY the most significant one}
+    \item \texttt{Key anchors: \{min\_anchors\}-\{max\_anchors\} points including normal patterns as reference}
+\end{enumerate}
+
+\texttt{Output JSON:}
+\begin{verbatim}
+{
+  "confidence": 0.82,
+  "anomaly_scores": [
+    {"t": 45, "score": 0.91, "reason": "spike"},
+    {"t": 78, "score": 0.85, "reason": "level_shift"}
+  ],
+  "key_anchors": [
+    {"t": 10, "v": 0.23, "type": "normal"},
+    {"t": 45, "v": 1.82, "type": "anomaly"}
+  ]
+}
+\end{verbatim}
+\end{tcolorbox}
+
+The anomaly detection prompt requests both anomaly scores and reference anchors. This dual-output structure enables the reconstruction-based detection pipeline to distinguish anomalous patterns from normal temporal dynamics. The \texttt{reason} field (spike, level\_shift, etc.) provides interpretability for downstream analysis. Requiring only the most significant anomaly among consecutive ones prevents redundant detections.
+
+%==============================================================================
+
+\newpage

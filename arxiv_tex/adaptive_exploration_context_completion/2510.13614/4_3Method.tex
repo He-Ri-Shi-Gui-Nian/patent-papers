@@ -1,0 +1,73 @@
+
+% Following the reasoning stage, the selected toolkits are executed over the temporal knowledge graph to extract and rank candidate reasoning paths.
+% The stage serves as the execution backbone of \mot, 
+% responsible for generating, validating, and ranking temporal reasoning paths from the knowledge graph.  
+% It operates under the guidance of the experience memory and toolkit configurations obtained from the recursive reasoning module.  
+% By integrating symbolic graph exploration with embedding-based retrieval, 
+% this layer achieves both high in temporal alignment and broad coverage in semantic relevance.  
+
+
+
+\myparagraphunderline{Retrieval initialization}
+Before path exploration begins, \mot\ performs seed selection to identify relevant entities that serve as starting points for reasoning.  
+If prior successful seeds exist in $\mathcal{E}_{pool}$, they are reused directly; otherwise, new seeds are chosen via the experience-augmented prompt:
+$
+S_i = \textsf{Prompt}_{\text{SeedSelect}}(Topics, \Ind_i, q_i, \mathcal{E}_{\text{seed}}),
+$
+where $\mathcal{E}_{\text{seed}}$ denotes the retrieved relevant examples  from memory.  
+% The selected seeds are then used to construct or expand the local temporal subgraph $\mathcal{G}(q_i)$ 
+% that anchors subsequent reasoning within the original knowledge graph $\mathcal{G}$.
+
+\myparagraph{Toolkit-driven temporal path retrieval}
+Each toolkit $T_\theta \in \mathcal{T}_i$ represents a specialized retrieval operator for a temporal reasoning pattern 
+(e.g., one-hop expansion, interval comparison, event ordering, or range detection).  
+Guided by the indicator $\Ind_i$, 
+each toolkit constrains both the semantic relation and temporal boundary of the retrieval.  
+Multiple toolkits are executed in parallel to form a diverse set of candidate paths $\mathcal{P}_i$. 
+
+\myparagraphunderline{Hybrid temporal retrieval}
+For graph-based retrieval, the system performs time-monotonic path expansion. 
+Instead of starting from the maximum depth $D_{\max}$, \mot  begins exploration at the predicted depth $D_{\text{pred}}(\Ind_i)$. Given the subgraph $\mathcal{G}_Q$, the ordered seed set $S_i$, the indicator $\Ind_{\text{i}}$, and the depth $D = \min(D_{\text{pred}}(\Ind_i), D_{\max})$, we identify candidate temporal paths that include all seeds in order. To avoid exhaustive search, we apply a tree-structured  bidirectional breadth-first search (BiBFS) from each entity to extract all potential paths, defined as:
+$
+C = \{p \mid |S_i| \cdot (D{-}1) < \operatorname{length}(p) \leq |S_i| \cdot D\}.$
+In parallel, an embedding retriever retrieves semantically relevant facts from document-indexed KG segments, 
+ensuring that implicit or cross-hop relations are also captured.  
+The two result streams are concatenated and unified into a hybrid candidate path pool. 
+% for downstream filtering.
+
+\noindent
+\textbf{Temporal and semantic pruning.}
+Candidate paths are then filtered through a multi-stage pruning pipeline by temporal consistency, semantics, and LLM selection.
+Together, these steps drastically reduce noise while retaining only candidates that satisfy both chronological and semantic alignment.
+
+\myparagraphunderline{Temporal-first pruning}
+Traditional relevance-first pruning may retain semantically similar but temporally inconsistent paths.  
+To mitigate this, \mot\ adopts a \emph{temporal-first} pruning policy.  
+Given the candidate pool $\mathcal{C} = \{p_i\}_{i=1}^{N}$ returned by the hybrid retriever,  
+\mot\ first applies a strict temporal filter that removes paths violating time constriction $\mathcal{C}_{time}$ or non-monotonic progressions,  
+yielding a valid subset $\widetilde{\mathcal{C}} \subseteq \mathcal{C}$ that satisfies all temporal constraints.  
+
+\myparagraphunderline{Semantic–temporal re-ranking}
+From $\widetilde{\mathcal{C}}$, candidates are re-ranked by jointly considering (i) semantic compatibility with the indicator and (ii) proximity of their timestamps to the expected reference time.  
+Let $\textsf{DRM}(\Ind_i,p)$ denote the semantic similarity between the indicator and path, 
+and $t(\cdot)$ denote the representative timestamp.  
+Each candidate receives a composite score:
+\[
+\text{Score}(p)
+= \lambda_{\text{sem}}\cdot \textsf{DRM}(\Ind_i,p)
++ \lambda_{\text{prox}}\cdot \exp \bigl(-|\,t(p)-t(\Ind_i)\,|/\sigma\bigr),
+\]
+where $\lambda_{\text{sem}}$ and $\lambda_{\text{prox}}$ balance semantic alignment and temporal proximity.  
+The top-$W_1$ candidates are retained as a compact, high-quality pool
+for LLM-based selection.
+
+\myparagraphunderline{LLM-aware selection}
+Following the re-ranking procedure, the candidate paths are reduced to $W_1$. We then prompt LLM to score and select the top-$W_{\max}$ reasoning paths most likely to satisfy question’s temporal and semantic constraints. 
+% The prompt template is shown in Appendix \ref{appendix:prompt}.
+% The specific prompt used to guide LLM in the selection phase can be found in Appendix \ref{appendix:prompt}.
+This final step emphasizes faithfulness and interpretability, producing a minimal but high-precision evidence set for the sufficiency verification in the reasoning loop.
+
+
+% The LLM performs a deliberative ranking, selecting the top-$W_{\max}$ reasoning paths most likely to satisfy the question’s temporal and semantic constraints.  
+% This final step emphasizes faithfulness and interpretability, producing a minimal yet high-precision evidence set for sufficiency verification in the reasoning loop.
+% \vspace{-1mm}

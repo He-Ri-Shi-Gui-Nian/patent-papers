@@ -1,0 +1,91 @@
+% !TEX root = main.tex
+
+
+\section{Efficient training system}
+\label{sec:system}
+
+
+\begin{figure}[t!]
+\centering
+\includegraphics[width=0.4\textwidth]{framework}
+\vspace{-2mm}
+\caption{Overall training paradigm of \modelshort.  \label{fig:training_paradigm}}
+\end{figure}
+%
+
+\begin{figure*}[t]
+\centering
+    \includegraphics[width=0.9\textwidth]{pipeline}
+    \caption{\modelshort pipeline of a single worker process. \label{fig:pipeline}}
+    \vspace{-3mm}
+\end{figure*}
+
+\input{table_stats}
+
+
+\modelshort is built for a shared memory environment with multi-cores and multi-GPUs. It combines the usage of CPU and GPU, where the dense matrix computations are deployed on GPUs, and the sampling operations are on CPUs. 
+
+
+\subsection{Distributed training paradigm}
+\label{sec:dist_train}
+
+Here we give a high-level introduction to the distributed training. 
+% 
+Most of the KG embedding methods would maintain an embedding matrix $\theta_E \in \RR^{|\Vcal| \times d}$, where $d$ is the embedding dimension which can typically be 512 or larger. For a large KG with more than millions of entities, the embeddings $\theta_E$ cannot be stored in GPUs, since most GPUs would have 16GB or lower memory. 
+% 
+%
+Thus similar as recent works~\citep{zheng2020dgl}, we put the embedding matrix on shared CPU memory, while putting a copy of other parameters $\theta_D = \theta \setminus \theta_E$, \eg, neural logical operators, in each individual GPU. 
+
+
+We launch one worker process per GPU device. For simplicity, we use subscript $w$ as an index of a worker. Worker $w$ gets the shared access to $\theta_E$ and local GPU copy of dense parameters $\theta_D$. Each worker repeats the following stages as shown in \Figref{fig:training_paradigm} until the training stops:
+\begin{enumerate}[noitemsep,topsep=0pt,parsep=1pt,partopsep=0pt, leftmargin=*]
+	\item Collect a mini-batch of training samples $\cbr{D_i}_w$ from $\Dcal_w$, which is the sampler.
+	\item Load relevant entity embeddings from CPU to GPU;
+	\item Compute gradients locally, and perform gradient \texttt{AllReduce} using $\frac{\partial \Lcal_w}{\partial \theta_D}$. Update local copy $\theta_D$.
+	\item Update shared $\theta_E$ asynchronously with $\frac{\partial \Lcal_w}{\partial \theta_E}$. 
+\end{enumerate}
+% 
+In the shared memory with multi-GPU scenario, the heavy CPU/GPU memory read/write with $\theta_E$ is necessary for every round of stochastic gradient update. This significantly lowers the FLOPS on GPU devices if we execute the above stages in a serialized way. So instead, we design the asynchronous pipeline that will be covered in \Secref{sec:async_design}.
+
+
+The different storage location of parameters also brings different read/update mechanisms. For the embedding parameters $\theta_E$, as only a tiny portion will be accessed during each iteration in stochastic training, the asynchronous update on the shared CPU memory would still result in a convergent behavior~\citep{niu2011hogwild}. Unlike link prediction models, most multi-hop reasoning models are additionally equipped with dense neural logical operators, used in all batches and iterations.
+To minimize the loss of performance of multi-GPU training of these dense parameters, we choose to synchronously update $\theta_D$ with \texttt{AllReduce} operations that are available in multi-GPU environment with the NVIDIA Collective Communication Library (NCCL).
+
+
+
+\subsection{Asynchronous design}
+\label{sec:async_design}
+
+
+In this section, we present the asynchronous mechanism for pipelining the stages in each stochastic gradient update. The stages can be virtually categorized into four kinds of \textit{meta-threads}, where each kind of meta-thread may consist of multiple CPU threads or CUDA streams. These meta-threads run concurrently, with possible synchronization events for pending resources, as illustrated in~\Figref{fig:pipeline}.
+% 
+Below we will elaborate each type of meta-thread individually. 
+
+
+
+\textbf{Multi-thread sampler.}
+Each worker $w$ maintains one sampler $\Dcal_w$ that has access to the shared KG. The sampler contains a thread pool for sampling queries and the corresponding positive/negative answers in parallel. 
+% 
+The data sampler works concurrently with the other meta-threads. The pre-fetching mechanism will obtain samples for the next mini-batch while training happens using current batch on other threads. So if the sampler is efficient enough, then the runtime can almost be ignored. 
+
+
+\textbf{Sparse embedding read/write.}
+For the embedding matrix $\theta_E$, we will create a single background thread with a CUDA stream for embedding read and write. Specifically, when loading the embedding of some entities into GPU, the background thread first loads that into a pinned memory area, then the CUDA asynchronous stream will perform pinned memory to GPU memory copy \cite{fey2021gnnautoscale}. This read operator is non-blocking, and will not be synchronized until the CUDA operator in the main CUDA stream asks for it. The write operation works similarly but in the reverse direction. It is also possible to have multiple background threads. Right part of \Figref{fig:pipeline} illustrates the idea. 
+
+\textbf{Dense computation.}
+The feed-forward of model $f_{\theta}$ starts when training data $(q, \Vcal_q, \Acal_q^{\Gcal}, \Ncal_q^{\Gcal})$ is ready and the embedding of the anchor entities $\Vcal_q$ is fetched into GPU. The embeddings of $\Acal_q^{\Gcal}$ and $\Ncal_q^{\Gcal}$ can be fetched as late as when we compute the loss function, in order to overlap the computation and memory copy. After obtaining the local gradients $\frac{\partial \Lcal_w}{\partial \theta_E}$ and $\frac{\partial \Lcal_w}{\partial \theta_D}$, the asynchronous update for $\theta_E$ will be invoked first without blocking,
+and at the same time the \texttt{AllReduce} operation will start, followed by the dense parameter update of $\theta_D$ on the GPU. 
+
+
+
+\textbf{Sparse optimizer with asynchronous read/write.}
+Different from $\theta_D$, only a small set of rows of $\theta_E$ will be involved in each stochastic update. So 
+%
+we only keep track of $\theta_E^{\Vcal_q}$, $\theta_E^{\Ncal_q^{\Gcal}}$, $\theta_E^{\Acal_q^{\Gcal}}$ and their gradients, \ie, the embeddings that are relevant to positive/negative and anchor entities. Once the back-propagation is finished, we will scatter $\frac{\partial \Lcal_w}{\partial \theta_E^{\Vcal_q}}$, $\frac{\partial \Lcal_w}{\partial \theta_E^{\Ncal_q^{\Gcal}}}$ and $\frac{\partial \Lcal_w}{\partial \theta_E^{\Acal_q^{\Gcal}}}$ into a single continuous memory, due to the potential overlap among the sets $\Vcal_q$, $\Ncal_q^{\Gcal}$ and $\Acal_q^{\Gcal}$.
+We use Adam~\citep{kingma2014adam} for \modelshort, thus we need to additionally keep the first and second order moments of gradients in CPU. They are treated in the same way as $\theta_E$, and thus will have the same asynchronous read/write behavior as discussed above.
+% 
+Every time a set of embeddings is retrieved from $\theta_E$, the optimizer will also start to pre-fetch the corresponding first/second order moments in a different background thread (``Adam Stats'' in \Figref{fig:pipeline}).  
+
+
+\input{table_detailed_calibration}
+\input{310_further_opt}

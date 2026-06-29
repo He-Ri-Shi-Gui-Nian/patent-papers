@@ -1,0 +1,102 @@
+\input{figures/figure_2}
+
+
+\section{Debate over Mixed-knowledge (DoM)} 
+
+The workflow of DoM is showed in Figure~\ref{fig:overview}. At the inference stage, DoM adopts the MAD framework to enhance the utilization of mixed knowledge in IKG scenarios. It constructs a KG Agent and a RAG Agent to independently infer from structured KGs and unstructured external data. Their outputs are then aligned and integrated by a Judge Agent. This pipeline consists of three phases: \textbf{Initialization}, \textbf{Sub-question Inference}, and \textbf{Final Answer Generation}.
+
+\subsection{Initialization}
+
+Given a natural language question $q$, we prompt the LLM to decompose it into a sequence of semantically meaningful sub-questions, forming an ordered list $Q$:
+\begin{equation}
+Q = \text{LLM}_{plan}(q) = \{q_1, q_2, \dots, q_n\},
+\end{equation}
+Each sub-question $q_i$ is treated as an intermediate goal and will be addressed sequentially in later stages. This decomposition transforms a complex question into a controllable step-by-step inference trajectory, serving as the structural foundation for the subsequent multi-agent debate. We also initialize a system memory $M$ to store intermediate inference results across sub-questions; its structure will be detailed in the final answer generation phase.
+
+
+\subsection{Sub-question Inference}
+After initialization, DoM enters the inference phase, iteratively integrating structured and unstructured knowledge to solve sub-questions. Each iteration consists of three main steps: \textbf{knowledge graph inference}, \textbf{external knowledge inference}, and \textbf{debate-based integration}.
+
+Formally, at the $i$-th iteration, the current inference context is centered around a set of topic entities, denoted as $E_{i}^{\text{topic}} = \{\hat{e}_{i}^1, \hat{e}_{i}^2, \dots, \hat{e}_{i}^m\}$. Based on these entities, the system retrieves:
+
+\begin{itemize}
+    \item A set of KG relation paths $P_i = \{T_i^1, T_i^2, \dots, T_i^m\}$, where each path $T_i^j = \{t_i^{j,1}, t_i^{j,2}, \dots, t_i^{j,l}\}$ is a sequence of triples starting from entity $\hat{e}_i^j$. Each triple $t_i^{j,k} = (h, r, t)$ denotes a factual relation in the KG.
+
+    \item A set of external textual evidence chunks $C_i = \{C_i^1, C_i^2, \dots, C_i^o\}$ retrieved by the RAG Agent.
+\end{itemize}
+
+
+These two sources of knowledge are independently processed by the KG Agent and the RAG Agent. Each agent infers from its respective evidence and proposes a candidate answer to $q_i$. The Judge Agent integrates these outputs and determines the result, based on which the system updates the next sub-question $q_{i+1}$.
+
+\subsubsection{Knowledge Graph Inference}
+
+This process focuses on answering the sub-question $q_i$ using structured knowledge, facilitated by the \textbf{KG Agent}. This KG-based processing pipeline consists of two phases: \textbf{entity linking} and \textbf{iterative exploration}. Although $E_i^{\text{topic}}$ may contain multiple entities, we select a representative $\hat{e}_i$ to illustrate these two steps.
+
+
+\textbf{Entity Linking} In each iteration (except the first), the topic entities are derived from the previous sub-question’s answer, which may originate from KG, external sources, or the LLM's internal knowledge. Since non-KG-originated entities may not align with the KG, we perform entity linking to map them to corresponding machine identifiers.
+
+This process involves two steps: (1) retrieving top candidate KG entities via embedding-based name similarity search, and (2) prompting the LLM to select the most suitable entity based on relational context in KG.
+
+Formally, for the ungrounded entity mention $\hat{e}_i$, we retrieve the $top_k$ KG entities $E_i'$ whose names are most similar to $\hat{e}_i$ in the embedding space, i.e., $E_i' = top_k(\text{sim}(E(\hat{e}_i), E(G)))$, where $E(\cdot)$ denotes the entity name encoder, $\text{sim}(\cdot, \cdot)$ denotes embedding similarity. Then, for each candidate entity in $E_i'$, we retrieve its associated KG description. The final linked entity $e_i$ is selected by the LLM:
+\begin{equation}
+e_i = \text{LLM}_{entity\_select}(\hat{e}_i, E_i').
+\end{equation}
+If all candidate entities are deemed unsuitable, we assume the target entity is missing from the KG. In this case, KG exploration is skipped for this sub-question, and the LLM resorts to internal CoT inference, as shown in Equation~\ref{eq:kg_cot_reasoning}.
+
+\textbf{Iterative KG Exploration} Once the entity $e_i$ is linked to the KG, we initialize the KG inference process by setting $e_i^1 = e_i$, and perform an iterative search for supporting evidence. At the $w$-th KG inference step for $q_i$, we first retrieve all 1-hop outbound relations of the current entity $e_i^w$—including both outbound and inbound edges (i.e., inverse relations)—via SPARQL, denoted as $S_r(e_i^w)$. The LLM then selects the $top_k$ relations most relevant to the current sub-question $q_i$:
+\begin{equation}
+R_i^{w} = \text{LLM}_{relation\_select}(S_r(e_i^{w}), q_i),
+\end{equation}
+For each selected relation, we extract the associated triples via $S_t(e_i^w, R_i^w)$, and incrementally update the candidate evidence set as $P_i \leftarrow P_i \cup T_i^w$. The union of retrieved triples across iterations constitutes the KG relation path for sub-question $q_i$. The evidence set $P_i$ is initialized as an empty set and progressively expanded over iterations.
+
+The LLM determines whether the current evidence set $P_i$ is sufficient to answer the sub-question $q_i$. If so, it directly produces the answer $\hat{a}_i^{kg}$; otherwise, it selects a new entity from $P_i$ to update the topic entity $e_i^{w+1}$ for the next iteration:
+\begin{equation}
+\text{LLM}_{kg\_inference}(P_i, q_i, M) =
+\begin{cases}
+\hat{a}_i^{kg}, & \text{sufficient;} \\
+e_i^{w+1}, & \text{otherwise.}
+\end{cases}
+\end{equation}
+The process continues iteratively until an answer is generated or a maximum of $W$ steps is reached. If no answer is derived within $W$ steps, or if entity linking fails, the LLM resorts to CoT inference:
+\begin{equation}
+\hat{a}_i^{kg}=\text{LLM}_{CoT}(q_i, M), w=W \text{ or } \hat{e}_i \text{ missing in KG}.
+\label{eq:kg_cot_reasoning}
+\end{equation}
+\subsubsection{External Knowledge Inference}
+This process aims to answer the sub-question $q_i$ using external unstructured knowledge, facilitated by the \textbf{RAG Agent}. To ensure factual reliability, we adopt Wikipedia as the external knowledge source.
+
+Given the topic entity $\hat{e}_i$, we retrieve the top-$k$ most relevant Wikipedia articles, which are then segmented into text chunks to construct the candidate evidence set $C_i$. We then compute relevance scores between each chunk $c \in C_i$ and the sub-question $q_i$ using an embedding model. The top-$k$ scored chunks $C_i' = \{c_i^1, \dots, c_i^k\}$ are selected as the contextual input for LLM-based inference.
+
+Similar to the KG Agent, if the retrieved evidence is insufficient, the RAG Agent resorts to the LLM's internal knowledge via CoT inference to preserve the continuity of the inference process.
+We formalize the RAG Agent’s inference process as follows: given the candidate evidence set $C_i$, the top-$k$ relevant chunks are selected as $C_i' = top_k(\text{sim}(E(C_i), E(q_i)))$, 
+\begin{equation}
+\hat{a}_i^{rag}=
+\begin{cases}
+\text{LLM}_{rag\_inference}(C_i',q_i, M), & \text{sufficient;} \\
+\text{LLM}_{CoT}(q_i, M), & \text{otherwise.}
+\end{cases}
+\end{equation}
+\subsubsection{Debate-based Integration}
+For each sub-question $q_i$, the KG Agent and RAG Agent independently generate answers accompanied by their respective inference chains. The \textbf{Judge Agent} then serves as an arbiter to evaluate, compare, and integrate these outputs, producing the consolidated sub-answer $a_i$.
+
+A new iteration is triggered either when sub-questions remain, or when existing information is deemed insufficient to answer the original query. The current sub-answer $a_i$ is used to update the topic entity set. If the next sub-question $q_{i+1}$ exists, it is revised based on the context; otherwise, a new sub-question is adaptively generated. This step is defined as:
+
+\begin{equation}
+a_i,q_{i+1}^{new} = \text{LLM}_{judge}(q,q_i,q_{i+1},\hat{a}_i^{kg}, \hat{a}_i^{rag}, M).
+\end{equation}
+
+This mechanism enables a dynamic and adaptive inference loop, guided by accumulated evidence. To ensure termination, the number of sub-question iterations is capped by a predefined threshold $I$.
+
+
+\subsection{Final Answer Generation}
+After all sub-questions have been processed or the maximum number of inference iterations $I$ has been reached, the system proceeds to generate the final answer. This step is based on the accumulated inference memory $M$, which records intermediate results from each sub-question in the form $M=[[q_1,\hat{a}_1^{kg},\hat{a}_1^{rag},a_1],...]$. The final answer $a_{final}$ is computed as:
+
+\begin{equation}
+a_{final} = 
+\begin{cases}
+\text{LLM}_{verifier}(q,M), & \text{sufficient;} \\
+\text{LLM}_{CoT}(q), & \text{otherwise.}
+\end{cases}
+\end{equation}
+
+% The full algorithmic workflow of DoM is provided in Appendix~A.
