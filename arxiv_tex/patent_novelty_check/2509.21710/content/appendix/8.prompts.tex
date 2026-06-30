@@ -1,0 +1,441 @@
+\section{Prompt Templates}
+\label{appendix:prompts}
+
+Our framework employs a multi-stage, prompt-driven reasoning pipeline that integrates structured knowledge graph (KG) extraction, community-based summarization, iterative sub-query decomposition, sub-graph refinement, and faithful answer synthesis. Each stage is governed by a specialized prompt template designed to ensure modularity, interpretability, and factual consistency. The complete sequence of prompts is as follows:
+
+\begin{enumerate}
+\item \textbf{KG Triplets Extraction}: As shown in Figure~\ref{fig:kg_extarct_prompt}, given raw textual input, this prompt instructs the model to extract structured subject-relation-object triples (e.g., \texttt{entity1 -> relation -> entity2}) to construct a fine-grained knowledge sub-graph. This step transforms unstructured text into a queryable graph structure.
+
+\item \textbf{Generate Community Summary}: As shown in Figure~\ref{fig:community_template}, based on densely connected sub-graphs (communities), this prompt synthesizes a concise natural language summary that captures the core themes and relationships within each community, enabling high-level semantic indexing and retrieval.
+
+\item \textbf{Keyword Expansion for Retrieval Augmentation}: As shown in Figure~\ref{fig:LLMSynonymRetriever_keyword_template}, to improve recall in the querying phase, this prompt generates a set of synonyms and related terms from the original query, considering variations in capitalization, pluralization, and common phrasings, separated by delimiter symbols.
+
+\item \textbf{Evolving Sub-Query Decomposition}: As shown in Figure~\ref{fig:decompose_query_template}, for complex multi-hop questions, this prompt recursively decomposes the current query into simpler, context-answerable sub-questions, guided by previously retrieved information and reasoning traces, enabling stepwise information gathering.
+
+\item \textbf{Evolving Sub-Graph Refinement}: As shown in Figure~\ref{fig:subgraph_refinement_template}, this prompt cleans and enhances the retrieved or extracted sub-graph by removing irrelevant triples, normalizing entity names, and optionally filling in strongly supported missing links, thereby improving the signal-to-noise ratio for downstream reasoning.
+
+\item \textbf{Final Answer Synthesis}: As shown in Figure~\ref{fig:final_answer_template}, in the final stage, the model generates a concise, context-grounded answer using \textit{only} the refined evidence, with explicit instructions to avoid hallucination or reliance on prior knowledge. If the answer cannot be determined, it returns ``Unknown'' to maintain factual integrity.
+\end{enumerate}
+
+These prompts work in concert to enable structured, interpretable, and reliable reasoning over hybrid text-and-graph knowledge sources. 
+And Figure~\ref{fig:answer_evaluator_template} shows the LLM evaluation prompt in the broad reasoning task.
+Their modular design allows for independent tuning and auditing, making the overall system transparent and robust to noise and ambiguity.
+
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.95, every node/.style={scale=0.95}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=6pt,
+    right=6pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+
+% ---------- 文字内容 ----------
+{
+
+  {\bfseries\color{roleblue!70!black} -Goal-}\\
+  Given a text document, identify all entities and their entity types from the text and all relationships among the identified entities.\\
+  Given the text, extract up to {\bfseries\color{varcolor}\{max\_knowledge\_triplets\}} entity-relation triplets.\\[4pt]
+
+  {\bfseries\color{roleblue!70!black} -Steps-}\\
+  1. Identify all entities. For each, extract:\\
+  \quad entity\_name | entity\_type | entity\_description\\[2pt]
+
+  2. Identify all related (source, target) pairs. For each, extract:\\
+  \quad source\_entity | target\_entity | relation | relationship\_description\\[2pt]
+
+  3. Output valid JSON only:\\
+  \quad \{ "entities": [...], "relationships": [...] \}\\[4pt]
+
+  {\bfseries\color{roleblue!70!black} -An Output Example-}\\
+  \{\\
+  \quad "entities": [\\
+  \quad\quad \{ "entity\_name": "Albert Einstein", "entity\_type": "Person", "entity\_description": "..." \},\\
+  \quad\quad \{ "entity\_name": "Theory of Relativity", "entity\_type": "Scientific Theory", "entity\_description": "..." \},\\
+  \quad\quad \{ "entity\_name": "Nobel Prize in Physics", "entity\_type": "Award", "entity\_description": "..." \}\\
+  \quad ],\\
+  \quad "relationships": [\\
+  \quad\quad \{ "source\_entity": "Albert Einstein", "target\_entity": "Theory of Relativity", "relation": "developed", "relationship\_description": "..." \},\\
+  \quad\quad \{ "source\_entity": "Albert Einstein", "target\_entity": "Nobel Prize in Physics", "relation": "won", "relationship\_description": "..." \}\\
+  \quad ]\\
+  \}\\[4pt]
+
+  {\bfseries\color{roleblue!70!black} -Real Data-}\\
+  \#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\\
+  text: {\bfseries\color{varcolor}\{text\}}\\
+  \#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\\
+  output:
+};
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{KG Triplets Extraction Prompt Template. The template provides structured instructions for extracting entities and relationships from text, with clear formatting for both input requirements and JSON output format.}
+\label{fig:kg_extarct_prompt}
+\end{figure*}
+
+
+
+
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.95, every node/.style={scale=0.95}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=6pt,
+    right=6pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+{\bfseries\color{roleblue} role="system"}\\
+You are provided with a set of relationships from a knowledge graph, each represented as \\
+\texttt{entity1 -> entity2 -> relation -> relationship\_description}. \\
+Your task is to create a summary of these relationships. The summary should include:
+Names of the entities involved, A concise synthesis of the relationship descriptions.
+The goal is to capture the most critical and relevant details that highlight the nature \\
+and significance of each relationship. Ensure the summary is coherent and integrates \\
+information to emphasize key aspects. Avoid redundancy and maintain clarity.
+
+\vspace{6pt}
+{\bfseries\color{roleblue} role="user"}\\
+\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\\
+\texttt{text: {\bfseries\color{varcolor}\{community\_info\}}}\\
+\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\#\\
+
+{\bfseries\color{roleblue} assistant:}\\
+\texttt{\% Generated summary based on \{community\_info\} will appear here.}
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{Community Summary Template. This template provides structured instructions for extracting entities and relationships from text, with clear formatting for input specifications and expected JSON-like output format.}
+\label{fig:community_template}
+\end{figure*}
+
+
+
+
+% 定义颜色
+\definecolor{roleblue}{rgb}{0,0.4,0.6}
+\definecolor{querycolor}{rgb}{0.6,0.2,0.8}  % 紫色表示 query
+\definecolor{keycolor}{rgb}{0.8,0.3,0}     % 橙色表示关键词输出
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.95, every node/.style={scale=0.95}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=6pt,
+    right=6pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+{\bfseries\color{roleblue} role="system"}\\
+Given some initial query, generate synonyms or related keywords up to {\color{roleblue}\{max\_keywords\}} in total, \\
+considering possible cases of capitalization, pluralization, common expressions, etc.\\
+Provide all synonyms/keywords separated by '\textasciicircum' symbols: 'keyword1\textasciicircum keyword2\textasciicircum...'.\\
+Note: result should be in one line, separated by '\textasciicircum' symbols.
+
+\vspace{8pt}
+{\bfseries\color{roleblue} role="user"}\\
+----\\
+\texttt{QUERY: {\bfseries\color{querycolor}\{query\_str\}}}\\
+----\\
+
+{\bfseries\color{roleblue} assistant:}\\
+\texttt{\% Example: KEYWORDS: machine learning\textasciicircum ML learning machines\textasciicircum AI models\textasciicircum neural networks\textasciicircum deep learning ...}
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{Keyword Expansion Prompt Template. This template instructs the model to generate up to \{max\_keywords\} synonyms or related terms for a given query, formatted as a single line separated by `\textasciicircum` symbols.}
+\label{fig:LLMSynonymRetriever_keyword_template}
+\end{figure*}
+
+
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.92, every node/.style={scale=0.92}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15.5cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=8pt,
+    right=8pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+{\bfseries\color{roleblue} role="system"}\\
+The original question is as follows: {\color{varcolor}\{query\_str\}}\\
+We have an opportunity to answer some, or all of the question from a knowledge source.\\
+Context information for the knowledge source is provided below, as well as previous reasoning steps.\\
+Given the context and previous reasoning, return a question that can be answered from the context.\\
+This question can be the same as the original question, or represent a subcomponent.\\
+It should not be irrelevant to the original question.\\
+If no further information can be extracted, return 'None'.
+
+\vspace{8pt}
+{\bfseries\color{roleblue} Examples:}
+
+\vspace{4pt}
+{\color{excolor}Question: How many Grand Slam titles does the winner of the 2020 Australian Open have?}\\
+{\color{excolor}Knowledge source context: Provides names of the winners of the 2020 Australian Open}\\
+{\color{excolor}Previous reasoning: None}\\
+{\color{excolor}Next question: Who was the winner of the 2020 Australian Open?}
+
+\vspace{4pt}
+{\color{excolor}Question: How many Grand Slam titles does the winner of the 2020 Australian Open have?}\\
+{\color{excolor}Knowledge source context: Includes biographical info for each winner}\\
+{\color{excolor}Previous reasoning:} \\
+{\color{excolor}  - Who was the winner of the 2020 Australian Open?}\\
+{\color{excolor}  - The winner was Novak Djokovic.}\\
+{\color{excolor}Next question: How many Grand Slam titles does Novak Djokovic have?}
+
+\vspace{8pt}
+{\bfseries\color{roleblue} Current Input:}
+
+\vspace{4pt}
+{\color{roleblue}Question:} {\color{varcolor}\{query\_str\}}\\
+{\color{roleblue}Knowledge source context:} {\color{varcolor}\{context\_str\}}\\
+{\color{roleblue}Previous reasoning:} {\color{varcolor}\{prev\_reasoning\}}
+
+\vspace{6pt}
+{\bfseries\color{roleblue} assistant:}\\
+\texttt{\% Output: <decomposed sub-question> OR 'None'}
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{Step-wise Query Evolution and Decomposition Prompt Template. This template guides the model to recursively break down a complex question into answerable sub-questions based on available context and prior reasoning, enabling multi-hop reasoning over knowledge sources.}
+\label{fig:decompose_query_template}
+\end{figure*}
+
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.92, every node/.style={scale=0.92}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15.5cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=8pt,
+    right=8pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+{\bfseries\color{roleblue} role="system"}\\
+You are given a sub-graph extracted from a knowledge graph, represented as a list of triples: \\
+\texttt{entity1 -> relation -> entity2}.\\
+This sub-graph may contain irrelevant, redundant, or incomplete information.\\
+Your task is to \textbf{refine} the sub-graph by:\\
+Removing irrelevant or noisy triples not related to the query,
+Filling in missing but inferable relationships (if strongly supported),\\
+Ensuring entity names are normalized (e.g., consistent capitalization, singular/plural).\\
+Return the refined sub-graph in the same triple format, one per line. \\
+If no refinement is needed, return the original sub-graph. \\
+If all triples are irrelevant, return 'None'.
+
+\vspace{8pt}
+{\bfseries\color{roleblue} Example Input:}
+
+\vspace{4pt}
+{\color{excolor}Query: What are the major achievements of Marie Curie?}\\
+{\color{excolor}Sub-graph:}\\
+{\color{excolor}Marie Curie -> won -> Nobel Prize in Physics}\\
+{\color{excolor}Marie Curie -> born in -> Warsaw}\\
+{\color{excolor}Marie Curie -> spouse -> Pierre Curie}\\
+{\color{excolor}Apple Inc. -> founded by -> Steve Jobs}
+
+\vspace{6pt}
+{\bfseries\color{roleblue} Refined Output:}
+\begin{verbatim}
+Marie Curie -> won -> Nobel Prize in Physics
+Marie Curie -> won -> Nobel Prize in Chemistry
+Marie Curie -> spouse -> Pierre Curie
+\end{verbatim}
+
+\vspace{-6pt}
+{\small\color{roleblue}(Note: Added Chemistry prize based on strong prior knowledge; removed birthplace and unrelated Apple fact)}
+
+\vspace{8pt}
+{\bfseries\color{roleblue} Current Input:}
+
+\vspace{4pt}
+{\color{roleblue}Query:} {\color{varcolor}\{query\_str\}}\\
+{\color{roleblue}Sub-graph:} \\
+{\color{varcolor}\{subgraph\_triples\}}
+
+\vspace{6pt}
+{\bfseries\color{roleblue} assistant:}
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{Sub-Graph Evolution and Refinement Prompt Template. This template guides the model to clean, complete, and normalize a noisy or incomplete knowledge sub-graph in response to a given query, improving its relevance and coherence for downstream reasoning.}
+\label{fig:subgraph_refinement_template}
+\end{figure*}
+
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.92, every node/.style={scale=0.92}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15.5cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=8pt,
+    right=8pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+{\bfseries\color{roleblue} role="system"}\\
+Context information is provided below.\\
+You must answer the query \textbf{using only this context}, and \textbf{not} any prior knowledge.\\
+Do not make assumptions or add information not present in the context.\\
+If the answer cannot be determined from the context, respond with 'Unknown'.
+
+\vspace{6pt}
+---------------------\\
+{\color{varcolor}\{context\_str\}}\\
+---------------------
+
+\vspace{6pt}
+{\bfseries\color{roleblue} Query:} {\color{varcolor}\{query\_str\}}
+
+\vspace{6pt}
+{\bfseries\color{roleblue} Instructions:}\\
+Extract or synthesize the answer strictly from the provided context.\\
+Keep the answer concise and factual.\\
+Avoid phrases like “The context states that…” — just give the answer.
+
+\vspace{6pt}
+{\bfseries\color{anscolor} assistant:}\\
+\texttt{\% Final answer derived solely from context.}
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{Final Answer Synthesis Prompt Template. This template enforces faithful response generation based exclusively on retrieved context, a core principle in Retrieval-Augmented Generation (RAG) systems. It suppresses model hallucination by explicitly forbidding the use of prior knowledge.}
+\label{fig:final_answer_template}
+\end{figure*}
+
+
+
+
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[font=\sffamily, scale=0.92, every node/.style={scale=0.92}]
+\node[anchor=north] at (0,0) {
+\begin{tcolorbox}[
+    width=15.5cm,
+    colback=gray!5,
+    colframe=gray!40,
+    arc=3mm,
+    boxrule=1pt,
+    left=8pt,
+    right=8pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\ttfamily\small,
+    breakable
+]
+{\bfseries\color{roleblue} role="system"}\\
+You are an expert tasked with evaluating two answers to the same question \\
+based on three criteria: {\bfseries\color{critcolor}Comprehensiveness}, {\bfseries\color{critcolor}Diversity}, and {\bfseries\color{critcolor}Empowerment}.
+
+\vspace{8pt}
+{\bfseries\color{roleblue} Evaluation Criteria:}
+
+\vspace{4pt}
+{\color{critcolor}\textbullet\ Comprehensiveness:} \\
+How much detail does the answer provide to cover all aspects \\
+and sub-questions implied by the original query?
+
+\vspace{4pt}
+{\color{critcolor}\textbullet\ Diversity:} \\
+How varied and rich is the answer in providing different perspectives, \\
+evidence sources, or reasoning paths?
+
+\vspace{4pt}
+{\color{critcolor}\textbullet\ Empowerment:} \\
+How well does the answer help the reader understand the topic \\
+and make informed judgments or decisions?
+
+\vspace{8pt}
+{\bfseries\color{roleblue} Instructions:}\\
+Compare Answer 1 and Answer 2 for each criterion.\\
+Choose the better answer and explain why.\\
+Select an overall winner based on balance across all three.
+
+\vspace{6pt}
+{\bfseries\color{roleblue} Input:}
+
+\vspace{4pt}
+{\color{roleblue}Question:} {\color{varcolor}\{query\}}\\
+{\color{roleblue}Answer 1:} {\color{varcolor}\{answer1\}}\\
+{\color{roleblue}Answer 2:} {\color{varcolor}\{answer2\}}
+
+\vspace{6pt}
+{\bfseries\color{roleblue} Output Format (JSON):}
+\begin{verbatim}
+{
+  "Comprehensiveness": {
+    "Winner": "Answer 1 or Answer 2",
+    "Explanation": "..."
+  },
+  "Diversity": {
+    "Winner": "Answer 1 or Answer 2",
+    "Explanation": "..."
+  },
+  "Empowerment": {
+    "Winner": "Answer 1 or Answer 2",
+    "Explanation": "..."
+  },
+  "Overall Winner": {
+    "Winner": "Answer 1 or Answer 2",
+    "Explanation": "..."
+  }
+}
+\end{verbatim}
+\end{tcolorbox}
+};
+\end{tikzpicture}
+\caption{Answer Evaluator Prompt Template. This template guides a dedicated agent to compare two candidate responses along three dimensions: comprehensiveness, diversity, and empowerment, promoting high-quality, informative, and user-centered answer selection in multi-agent systems.}
+\label{fig:answer_evaluator_template}
+\end{figure*}

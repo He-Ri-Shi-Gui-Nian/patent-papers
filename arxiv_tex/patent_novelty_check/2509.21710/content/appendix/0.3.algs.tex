@@ -1,0 +1,57 @@
+\section{ToG-3 Algorithms}
+\label{appendix:algs}
+
+Algorithms~\ref{alg:offline-construct} and~\ref{alg:tog3-full} present the two-stage pipeline of ToG-3. The first stage constructs a heterogeneous graph index comprising chunks, triplets, and communities, while the second stage implements a Multi-Agent Context Evolution and Retrieval (MACER) loop featuring a novel dual-evolution mechanism—Evolving Query and Evolving Subgraph—that dynamically refines both the query representation and the graph structure through iterative interaction.
+
+\begin{algorithm}[t]
+\caption{Offline Construction of Heterogeneous Index Graph $\mathcal{G}$}
+\label{alg:offline-construct}
+\begin{algorithmic}[1]
+\Require Corpus $\mathcal{D}=\{d_i\}_{i=1}^N$, lightweight LM $\mathcal{L}_{\text{light}}$, encoder $E_\theta$
+\Ensure Heterogeneous graph $\mathcal{G}=(\mathcal{V},\mathcal{E})$
+\State $\mathcal{V} \gets \emptyset$, $\mathcal{E} \gets \emptyset$
+\State $\mathcal{C} \gets \texttt{SplitIntoChunks}(\mathcal{D})$ \Comment{Sentence-level segmentation}
+\State $\mathcal{V} \gets \mathcal{V} \cup \mathcal{C}$
+\For{each chunk $c \in \mathcal{C}$}
+    \State $\mathcal{T}_c \gets \mathcal{L}_{\text{light}}(c)$ \Comment{Extract semantic triplets $(s,p,o,\texttt{type}_s,\texttt{type}_p,\texttt{type}_o)$} \label{line:extract}
+    \State $\mathcal{V} \gets \mathcal{V} \cup \mathcal{T}_c$
+    \For{each triplet $t \in \mathcal{T}_c$}
+        \State $\mathcal{E} \gets \mathcal{E} \cup \{\textsc{MentionedIn}(t, c)\}$
+    \EndFor
+\EndFor
+\State $G_e \gets \texttt{BuildEntityCoOccurrenceGraph}(\mathcal{T})$ \Comment{$\mathcal{T}$ is all triplets}
+\State $\{M_\ell\}_\ell \gets \texttt{LeidenClustering}(G_e)$
+\For{each community $M_\ell$}
+    \State $m_\ell \gets \mathcal{L}_{\text{light}}(M_\ell)$ \Comment{Generate community summary}
+    \State $\mathcal{V} \gets \mathcal{V} \cup \{m_\ell\}$
+    \For{each entity $e \in M_\ell$}
+        \State $\mathcal{E} \gets \mathcal{E} \cup \{\textsc{SummaryFor}(m_\ell, e)\}$
+    \EndFor
+\EndFor
+\State \textbf{Encode} every node $v \in \mathcal{V}$ using $E_\theta$ \Comment{Unified dense encoding}
+\State \Return $\mathcal{G}=(\mathcal{V},\mathcal{E})$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{ToG-3: Multi-Agent Context Evolution and Retrieval (MACER) Loop}
+\label{alg:tog3-full}
+\begin{algorithmic}[1]
+\Require Query $q$, heterogeneous graph $\mathcal{G}$, LLM $\mathcal{L}$, max rounds $K$
+\Ensure Final answer $a^*$
+\State $k \gets 0$, $\mathcal{G}_0 \gets \texttt{Retriever}(q, \mathcal{G})$ \Comment{Initial retrieval}
+\State $\mathcal{H}_0 \gets \{(q, \mathcal{G}_0, \text{init})\}$ \Comment{Initialize trajectory history}
+\Repeat
+    \State $G_k \gets \pi_{\text{rer}}(q, \mathcal{G}_{k-1})$ \Comment{Reranker Agent rerank and select the sub-graph} \label{line:rerank}
+    \State $a_k \gets \pi_{\text{resp}}(q, \mathcal{G}_k, \mathcal{H}_k)$ \Comment{Response Agent generates answer} \label{line:response}
+    \State $r_k \gets \pi_{\text{ref}}^{\text{suff}}(q, \mathcal{G}_k, a_k)$ \Comment{Reflector judges sufficiency} \label{line:suff}
+    \If{$r_k = 1$} \textbf{break} \EndIf
+    \State $q'_k \gets \pi_{\text{ref}}^{\text{evolve}}(q, \mathcal{G}_k)$ \Comment{Reflector evolves query}
+    \State $\mathcal{G}_{k+1} \gets \pi_{\text{const}}^{{\text{evolve}}}(q'_k, \mathcal{G}_k)$ \Comment{Constructor evolves subgraph} \label{line:refine}
+    \State $\mathcal{H}_{k+1} \gets \mathcal{H}_k \cup \{(q'_k, a_k, r_k, \mathcal{G}_{k+1})\}$
+    \State $k \gets k + 1$
+\Until{$k = K$}
+\State $a^* \gets \pi_{\text{resp}}^{\text{final}}(q, \mathcal{H}_k)$ \Comment{Synthesize answer from full trajectory}
+\State \Return $a^*$
+\end{algorithmic}
+\end{algorithm}
